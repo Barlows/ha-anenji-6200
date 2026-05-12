@@ -16,6 +16,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .runtime.coordinator import EybondLocalCoordinator
 from .drivers.registry import binary_sensors_for_runtime
 from .models import BinarySensorDescription
+from .platform_context import entity_setup_context
 
 _DEVICE_CLASS_MAP: dict[str, BinarySensorDeviceClass] = {
     "battery_charging": BinarySensorDeviceClass.BATTERY_CHARGING,
@@ -33,15 +34,15 @@ async def async_setup_entry(
     """Create all known binary sensors."""
 
     coordinator: EybondLocalCoordinator = entry.runtime_data
-    driver = coordinator.current_driver
+    driver, inverter, _has_inverter_identity = entity_setup_context(entry, coordinator)
     driver_key = driver.key if driver is not None else None
-    inverter = coordinator.data.inverter
     register_schema_name = getattr(inverter, "register_schema_name", "") if inverter is not None else ""
     async_add_entities(
         EybondBinaryValueSensor(coordinator, description)
         for description in binary_sensors_for_runtime(
             driver_key=driver_key,
             register_schema_name=register_schema_name,
+            include_all_drivers_when_unknown=False,
         )
     )
 
@@ -77,7 +78,7 @@ class EybondBinaryValueSensor(
 
     @property
     def device_info(self):
-        return self.coordinator.device_info()
+        return self.coordinator.inverter_device_info()
 
     @property
     def available(self) -> bool:

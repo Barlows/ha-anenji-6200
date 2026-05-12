@@ -10,6 +10,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .runtime.coordinator import EybondLocalCoordinator
 from .models import WriteCapability
+from .platform_context import entity_setup_context
 from .schema import serialize_capability
 
 
@@ -21,8 +22,7 @@ async def async_setup_entry(
     """Create switch entities for binary write capabilities."""
 
     coordinator: EybondLocalCoordinator = entry.runtime_data
-    driver = coordinator.current_driver
-    inverter = coordinator.data.inverter
+    driver, inverter, _has_inverter_identity = entity_setup_context(entry, coordinator)
     capabilities = (
         inverter.capabilities if inverter is not None else (driver.write_capabilities if driver is not None else ())
     )
@@ -54,7 +54,7 @@ class EybondCapabilitySwitch(CoordinatorEntity[EybondLocalCoordinator], SwitchEn
 
     @property
     def device_info(self):
-        return self.coordinator.device_info()
+        return self.coordinator.inverter_device_info()
 
     @property
     def available(self) -> bool:

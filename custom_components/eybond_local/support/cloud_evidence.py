@@ -161,7 +161,11 @@ def export_cloud_evidence(
     evidence: dict[str, Any],
     overwrite: bool = False,
 ) -> Path:
-    """Write one cloud-evidence JSON file under the HA config dir."""
+    """Write one cloud-evidence JSON file under the HA config dir.
+
+    Older files for the same identity stem are pruned so each collector identity
+    keeps exactly one stored evidence file (the most recently exported one).
+    """
 
     root = cloud_evidence_root(config_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -171,11 +175,68 @@ def export_cloud_evidence(
     destination = root / f"{stem}_{timestamp}.json"
     if destination.exists() and not overwrite:
         raise FileExistsError(destination)
-    destination.write_text(
+    tmp_path = destination.with_suffix(destination.suffix + ".tmp")
+    tmp_path.write_text(
         json.dumps(evidence, ensure_ascii=False, indent=2, sort_keys=False) + "\n",
         encoding="utf-8",
     )
+    tmp_path.replace(destination)
+    _prune_older_files_for_stem(root, stem=stem, keep=destination)
     return destination
+
+
+def _prune_older_files_for_stem(root: Path, *, stem: str, keep: Path) -> None:
+    """Remove previous evidence files that share the destination's identity stem."""
+
+    for path in root.glob(f"{stem}_*.json"):
+        if path == keep:
+            continue
+        try:
+            path.unlink()
+        except OSError:
+            continue
+
+
+def remove_cloud_evidence_for_entry(
+    config_dir: Path,
+    *,
+    entry_id: str = "",
+    collector_pn: str = "",
+) -> list[Path]:
+    """Delete all cloud-evidence files matching the given identity.
+
+    Returns the list of deleted paths (empty when nothing matched). Used from
+    ``async_remove_entry`` so files containing collector PNs and masked tokens do
+    not outlive the integration entry that produced them.
+    """
+
+    root = cloud_evidence_root(config_dir)
+    if not root.exists():
+        return []
+    normalized_entry_id = str(entry_id or "").strip()
+    normalized_collector_pn = str(collector_pn or "").strip()
+    if not normalized_entry_id and not normalized_collector_pn:
+        return []
+    deleted: list[Path] = []
+    for path in root.glob("*.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if not _matches(
+            payload,
+            entry_id=normalized_entry_id,
+            collector_pn=normalized_collector_pn,
+        ):
+            continue
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        deleted.append(path)
+    return deleted
 
 
 def load_latest_cloud_evidence(
@@ -222,10 +283,32 @@ def _matches(payload: dict[str, Any], *, entry_id: str, collector_pn: str) -> bo
     if not isinstance(match, dict):
         return False
     payload_entry_id = str(match.get("entry_id") or "").strip()
+    if entry_id and payload_entry_id == entry_id:
+        return True
+    if not collector_pn:
+        return False
+
     payload_collector_pn = str(match.get("collector_pn") or "").strip()
-    return bool(
-        (entry_id and payload_entry_id == entry_id)
-        or (collector_pn and payload_collector_pn == collector_pn)
+    identity = payload.get("device_identity")
+    payload_device_pn = ""
+    if isinstance(identity, dict):
+        payload_device_pn = str(identity.get("pn") or "").strip()
+
+    return any(
+        _collector_pn_matches(collector_pn, candidate)
+        for candidate in (payload_collector_pn, payload_device_pn)
+    )
+
+
+def _collector_pn_matches(requested: str, candidate: str) -> bool:
+    normalized_requested = str(requested or "").strip()
+    normalized_candidate = str(candidate or "").strip()
+    if not normalized_requested or not normalized_candidate:
+        return False
+    return (
+        normalized_requested == normalized_candidate
+        or normalized_requested.startswith(normalized_candidate)
+        or normalized_candidate.startswith(normalized_requested)
     )
 
 

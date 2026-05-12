@@ -3,15 +3,106 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
 import json
+from pathlib import Path
 from typing import Any
 
-from ..const import LOCAL_METADATA_DIR, LOCAL_SUPPORT_BUNDLES_DIR
+from ..const import LOCAL_METADATA_DIR, LOCAL_SUPPORT_PACKAGES_DIR
 
 
 _SMG_FAMILY_FALLBACK_VARIANT = "family_fallback"
 _SMG_READ_ONLY_PROFILE_NAME = "modbus_smg/family_fallback.json"
+_COLLECTOR_VALUE_PREFIXES = (
+    "collector_",
+    "proxy_capture_",
+    "smartess_",
+)
+_RUNTIME_DIAGNOSTIC_VALUE_PREFIXES = (
+    "runtime_",
+    "support_workflow_",
+)
+_RUNTIME_DIAGNOSTIC_VALUE_KEYS = frozenset(
+    {
+        "control_mode",
+        "cloud_evidence_path",
+        "last_error",
+        "local_metadata_status",
+        "support_bundle_path",
+        "support_package_download_path",
+        "support_package_download_relative_url",
+        "support_package_download_url",
+        "support_package_path",
+    }
+)
+
+
+def _split_runtime_values_by_role(values: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Return runtime values grouped by collector, inverter, and integration role."""
+
+    grouped: dict[str, dict[str, Any]] = {
+        "collector": {},
+        "inverter": {},
+        "integration": {},
+    }
+    for key, value in values.items():
+        normalized_key = str(key)
+        if normalized_key.startswith(_COLLECTOR_VALUE_PREFIXES):
+            grouped["collector"][normalized_key] = value
+            continue
+        if (
+            normalized_key in _RUNTIME_DIAGNOSTIC_VALUE_KEYS
+            or normalized_key.startswith(_RUNTIME_DIAGNOSTIC_VALUE_PREFIXES)
+        ):
+            grouped["integration"][normalized_key] = value
+            continue
+        grouped["inverter"][normalized_key] = value
+    return grouped
+
+
+def _build_role_payloads(
+    *,
+    collector: dict[str, Any] | None,
+    inverter: dict[str, Any] | None,
+    values: dict[str, Any],
+    data: dict[str, Any],
+    options: dict[str, Any],
+    source_metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """Build an explicit role split while preserving the legacy runtime payload."""
+
+    grouped_values = _split_runtime_values_by_role(values)
+    collector_identity = {
+        "collector_ip": data.get("collector_ip", ""),
+        "collector_pn": (collector or {}).get("collector_pn") or data.get("collector_pn", ""),
+        "cloud_family": data.get("collector_cloud_family", ""),
+        "operation_mode": options.get("collector_operation_mode") or data.get("collector_operation_mode", ""),
+    }
+    inverter_identity = {
+        "driver_key": source_metadata.get("effective_owner_key") or (inverter or {}).get("driver_key", ""),
+        "model_name": (inverter or {}).get("model_name") or data.get("detected_model", ""),
+        "serial_number": (inverter or {}).get("serial_number") or data.get("detected_serial", ""),
+        "variant_key": source_metadata.get("variant_key", ""),
+        "profile_name": source_metadata.get("profile_name", ""),
+        "register_schema_name": source_metadata.get("register_schema_name", ""),
+    }
+    return {
+        "collector": {
+            "present": collector is not None,
+            "payload_ref": "runtime.collector",
+            "identity": collector_identity,
+            "values": grouped_values["collector"],
+        },
+        "inverter": {
+            "present": inverter is not None,
+            "payload_ref": "runtime.inverter",
+            "identity": inverter_identity,
+            "values": grouped_values["inverter"],
+        },
+        "integration": {
+            "payload_ref": "runtime.values",
+            "values": grouped_values["integration"],
+        },
+    }
 
 
 def is_read_only_unverified_smg_family(
@@ -53,12 +144,6 @@ def build_support_marker(
     }
 
 
-def support_bundles_root(config_dir: Path) -> Path:
-    """Return the support bundle output directory."""
-
-    return config_dir / LOCAL_METADATA_DIR / LOCAL_SUPPORT_BUNDLES_DIR
-
-
 def build_support_bundle_payload(
     *,
     entry_id: str,
@@ -88,6 +173,26 @@ def build_support_bundle_payload(
         profile_name=profile_name,
     )
 
+    source_metadata = {
+        "profile_name": profile_name,
+        "register_schema_name": register_schema_name,
+        "variant_key": variant_key,
+        "support_marker": support_marker,
+        "effective_owner_key": effective_owner_key,
+        "effective_owner_name": effective_owner_name,
+        "smartess_family_name": smartess_family_name,
+        "raw_profile_name": raw_profile_name,
+        "raw_register_schema_name": raw_register_schema_name,
+        "smartess_protocol_asset_id": smartess_protocol_asset_id,
+        "smartess_profile_key": smartess_profile_key,
+    }
+    runtime_payload = {
+        "connected": connected,
+        "collector": collector,
+        "inverter": inverter,
+        "values": values,
+    }
+
     return {
         "bundle_version": 1,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -97,25 +202,16 @@ def build_support_bundle_payload(
             "data": data,
             "options": options,
         },
-        "source_metadata": {
-            "profile_name": profile_name,
-            "register_schema_name": register_schema_name,
-            "variant_key": variant_key,
-            "support_marker": support_marker,
-            "effective_owner_key": effective_owner_key,
-            "effective_owner_name": effective_owner_name,
-            "smartess_family_name": smartess_family_name,
-            "raw_profile_name": raw_profile_name,
-            "raw_register_schema_name": raw_register_schema_name,
-            "smartess_protocol_asset_id": smartess_protocol_asset_id,
-            "smartess_profile_key": smartess_profile_key,
-        },
-        "runtime": {
-            "connected": connected,
-            "collector": collector,
-            "inverter": inverter,
-            "values": values,
-        },
+        "source_metadata": source_metadata,
+        "runtime": runtime_payload,
+        "roles": _build_role_payloads(
+            collector=collector,
+            inverter=inverter,
+            values=values,
+            data=data,
+            options=options,
+            source_metadata=source_metadata,
+        ),
         "evidence": {
             "cloud": cloud_evidence,
         },
@@ -136,18 +232,17 @@ def export_support_bundle(
     profile_name: str,
     register_schema_name: str,
     variant_key: str = "",
+    effective_owner_key: str = "",
+    effective_owner_name: str = "",
+    smartess_family_name: str = "",
+    raw_profile_name: str = "",
+    raw_register_schema_name: str = "",
+    smartess_protocol_asset_id: str = "",
+    smartess_profile_key: str = "",
     cloud_evidence: dict[str, Any] | None = None,
     overwrite: bool = False,
 ) -> Path:
-    """Write one JSON support bundle under the local support bundle directory."""
-
-    bundles_root = support_bundles_root(config_dir)
-    bundles_root.mkdir(parents=True, exist_ok=True)
-
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    destination = bundles_root / f"{entry_id}_{timestamp}.json"
-    if destination.exists() and not overwrite:
-        raise FileExistsError(destination)
+    """Build and export one JSON support bundle payload for the current entry."""
 
     payload = build_support_bundle_payload(
         entry_id=entry_id,
@@ -161,10 +256,26 @@ def export_support_bundle(
         profile_name=profile_name,
         register_schema_name=register_schema_name,
         variant_key=variant_key,
+        effective_owner_key=effective_owner_key,
+        effective_owner_name=effective_owner_name,
+        smartess_family_name=smartess_family_name,
+        raw_profile_name=raw_profile_name,
+        raw_register_schema_name=raw_register_schema_name,
+        smartess_protocol_asset_id=smartess_protocol_asset_id,
+        smartess_profile_key=smartess_profile_key,
         cloud_evidence=cloud_evidence,
     )
+
+    output_root = config_dir / LOCAL_METADATA_DIR / LOCAL_SUPPORT_PACKAGES_DIR
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    destination = output_root / f"{entry_id}_{timestamp}_support_bundle.json"
+    if destination.exists() and not overwrite:
+        raise FileExistsError(destination)
+
     destination.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=False) + "\n",
+        json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     return destination

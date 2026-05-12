@@ -122,7 +122,7 @@ def export_support_package(
             "",
             "Send this ZIP file to the developer. The main files are:",
             "- manifest.json",
-            "- support_bundle.json",
+            "- support_bundle.json (includes explicit collector, inverter, and integration role sections)",
             "- raw_capture.json",
             "- fixture/anonymized_fixture.json",
         ]

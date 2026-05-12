@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from ..canonical_telemetry import all_canonical_measurements, canonical_measurements_for_driver
+from ..collector.entity_scope import is_collector_entity_key
 from ..const import DRIVER_HINT_AUTO
 from ..entity_descriptions import (
     BASE_BINARY_SENSOR_DESCRIPTIONS,
@@ -12,6 +13,7 @@ from ..entity_descriptions import (
     merge_descriptions,
 )
 from ..metadata.model_binding_catalog_loader import load_driver_model_binding_catalog
+from ..metadata.pi_family_catalog_loader import load_pi_family_catalog
 from ..metadata.profile_loader import load_driver_profile
 from ..metadata.register_schema_loader import load_register_schema
 from ..metadata.smartess_protocol_catalog_loader import load_smartess_protocol_catalog
@@ -21,6 +23,7 @@ from ..models import (
     CapabilityPreset,
     MeasurementDescription,
     WriteCapability,
+    decimals_for_divisor,
 )
 from .base import InverterDriver
 from .pi18 import Pi18Driver
@@ -35,6 +38,8 @@ _DRIVERS: tuple[InverterDriver, ...] = (
 _EXPERIMENTAL_REPLAY_DRIVERS: tuple[InverterDriver, ...] = (
     Pi18Driver(),
 )
+
+_COLLECTOR_ONLY_BASE_SENSOR_EXTRA_KEYS: frozenset[str] = frozenset({"last_error"})
 
 
 def driver_options() -> list[str]:
@@ -83,22 +88,36 @@ def measurements_for_runtime(
     driver_key: str | None = None,
     register_schema_name: str = "",
     write_capabilities: tuple[WriteCapability, ...] | None = None,
+    include_all_drivers_when_unknown: bool = True,
+    collector_only_mode: bool = False,
 ) -> tuple[MeasurementDescription, ...]:
     """Return measurements for one concrete runtime schema selection."""
 
-    driver_measurements = [BASE_SENSOR_DESCRIPTIONS]
+    driver_measurements = [
+        tuple(
+            description
+            for description in BASE_SENSOR_DESCRIPTIONS
+            if not collector_only_mode
+            or is_collector_entity_key(description.key)
+            or description.key in _COLLECTOR_ONLY_BASE_SENSOR_EXTRA_KEYS
+        )
+    ]
     if register_schema_name:
         driver_measurements.append(load_register_schema(register_schema_name).measurement_descriptions)
     elif driver_key is None:
-        driver_measurements.extend(driver.measurements for driver in _DRIVERS)
+        if include_all_drivers_when_unknown:
+            driver_measurements.extend(driver.measurements for driver in _DRIVERS)
     else:
         driver_measurements.append(get_driver(driver_key).measurements)
 
     if driver_key is None:
-        driver_measurements.append(all_canonical_measurements())
-        resolved_write_capabilities = (
-            all_write_capabilities() if write_capabilities is None else write_capabilities
-        )
+        if include_all_drivers_when_unknown:
+            driver_measurements.append(all_canonical_measurements())
+            resolved_write_capabilities = (
+                all_write_capabilities() if write_capabilities is None else write_capabilities
+            )
+        else:
+            resolved_write_capabilities = () if write_capabilities is None else write_capabilities
     else:
         driver_measurements.append(canonical_measurements_for_driver(driver_key))
         resolved_write_capabilities = (
@@ -130,20 +149,62 @@ def _promote_readback_defaults(
         for capability in write_capabilities
         if capability.value_kind != "action"
     }
-    if not default_readback_keys:
+    precision_by_key: dict[str, int] = {}
+    for capability in write_capabilities:
+        if capability.value_kind == "action":
+            continue
+        precision = _capability_display_precision(capability)
+        if precision is None:
+            continue
+        current = precision_by_key.get(capability.value_key)
+        if current is None or precision > current:
+            precision_by_key[capability.value_key] = precision
+
+    if not default_readback_keys and not precision_by_key:
         return measurements
     return tuple(
-        replace(description, enabled_default=True)
-        if description.key in default_readback_keys and not description.enabled_default
+        replace(
+            description,
+            enabled_default=(description.key in default_readback_keys or description.enabled_default),
+            suggested_display_precision=(
+                description.suggested_display_precision
+                if description.suggested_display_precision is not None
+                else precision_by_key.get(description.key)
+            ),
+        )
+        if (
+            (description.key in default_readback_keys and not description.enabled_default)
+            or (
+                description.suggested_display_precision is None
+                and description.key in precision_by_key
+            )
+        )
         else description
         for description in measurements
     )
+
+
+def _capability_display_precision(capability: WriteCapability) -> int | None:
+    """Infer sensor precision from one writable capability's native scale."""
+
+    if capability.divisor:
+        precision = decimals_for_divisor(capability.divisor)
+        if precision > 0 and 10**precision == capability.divisor:
+            return precision
+    step = capability.step
+    if step is None:
+        return None
+    text = format(float(step), ".6f").rstrip("0")
+    if "." not in text:
+        return 0
+    return len(text.rsplit(".", 1)[1])
 
 
 def binary_sensors_for_runtime(
     *,
     driver_key: str | None = None,
     register_schema_name: str = "",
+    include_all_drivers_when_unknown: bool = True,
 ) -> tuple[BinarySensorDescription, ...]:
     """Return binary sensors for one concrete runtime schema selection."""
 
@@ -151,7 +212,8 @@ def binary_sensors_for_runtime(
     if register_schema_name:
         driver_binary_sensors.append(load_register_schema(register_schema_name).binary_sensor_descriptions)
     elif driver_key is None:
-        driver_binary_sensors.extend(driver.binary_sensors for driver in _DRIVERS)
+        if include_all_drivers_when_unknown:
+            driver_binary_sensors.extend(driver.binary_sensors for driver in _DRIVERS)
     else:
         driver_binary_sensors.append(get_driver(driver_key).binary_sensors)
     return merge_descriptions(*driver_binary_sensors)
@@ -240,3 +302,9 @@ def _prime_catalog_driven_metadata() -> None:
         ):
             if schema_name:
                 load_register_schema(schema_name)
+
+    for variant in load_pi_family_catalog().pi30_variants:
+        if variant.profile_name:
+            load_driver_profile(variant.profile_name)
+        if variant.register_schema_name:
+            load_register_schema(variant.register_schema_name)

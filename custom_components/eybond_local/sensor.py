@@ -19,6 +19,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
+from .collector.signal import is_legacy_disabled_signal_entity_key
 from .runtime.coordinator import EybondLocalCoordinator
 from .derived_energy import (
     DerivedEnergyCycleDescription,
@@ -31,13 +32,16 @@ from .derived_energy import (
 from .drivers.registry import binary_sensors_for_runtime, measurements_for_runtime
 from .energy import CyclingEnergyAccumulator, EnergyAccumulator
 from .models import MeasurementDescription
+from .platform_context import entity_setup_context
 
 _DEVICE_CLASS_MAP: dict[str, SensorDeviceClass] = {
     "battery": SensorDeviceClass.BATTERY,
     "current": SensorDeviceClass.CURRENT,
     "energy": SensorDeviceClass.ENERGY,
+    "enum": getattr(SensorDeviceClass, "ENUM", "enum"),
     "frequency": SensorDeviceClass.FREQUENCY,
     "power": SensorDeviceClass.POWER,
+    "signal_strength": getattr(SensorDeviceClass, "SIGNAL_STRENGTH", "signal_strength"),
     "temperature": SensorDeviceClass.TEMPERATURE,
     "voltage": SensorDeviceClass.VOLTAGE,
 }
@@ -54,7 +58,6 @@ _FLOAT_PRECISION_DEVICE_CLASSES = {
     "temperature",
     "voltage",
 }
-
 _SUMMARY_ATTRIBUTE_MAP: dict[str, tuple[tuple[str, str], ...]] = {
     "operational_state": (
         ("site_mode", "site_mode_state"),
@@ -127,6 +130,21 @@ _SUMMARY_ATTRIBUTE_MAP: dict[str, tuple[tuple[str, str], ...]] = {
         ("configuration_safe_mode", "configuration_safe_mode"),
         ("remote_control_enabled", "remote_control_enabled"),
     ),
+    "collector_signal_quality": (
+        ("signal_strength_dbm", "collector_signal_strength"),
+        ("signal_source", "collector_signal_strength_source"),
+        ("raw_signal", "collector_signal_strength_raw"),
+        ("network_diagnostics", "collector_network_diagnostics"),
+    ),
+    "collector_onboarding_status": (
+        ("summary", "support_workflow_summary"),
+        ("detection_confidence", "detection_confidence"),
+        ("operation_mode", "collector_operation_mode"),
+        ("callback_endpoint", "collector_server_endpoint"),
+        ("protocol_asset_id", "smartess_protocol_asset_id"),
+        ("protocol_profile_key", "smartess_protocol_profile_key"),
+        ("collector_firmware", "smartess_collector_version"),
+    ),
 }
 
 
@@ -140,6 +158,22 @@ def _infer_float_display_precision(value: float) -> int | None:
         return 0
     return len(text.rsplit(".", 1)[1])
 
+
+def _is_legacy_collector_signal_sensor(
+    coordinator: EybondLocalCoordinator,
+    key: str,
+) -> bool:
+    family = ""
+    try:
+        family = str(getattr(coordinator, "collector_cloud_family", "") or "")
+    except Exception:
+        family = ""
+    if not family:
+        values = getattr(getattr(coordinator, "data", None), "values", {}) or {}
+        family = str(values.get("collector_cloud_family", "") or "")
+    return is_legacy_disabled_signal_entity_key(key, family)
+
+
 async def async_setup_entry(
     hass,
     entry: ConfigEntry,
@@ -148,9 +182,8 @@ async def async_setup_entry(
     """Create all known sensor entities."""
 
     coordinator: EybondLocalCoordinator = entry.runtime_data
-    driver = coordinator.current_driver
+    driver, inverter, has_inverter_identity = entity_setup_context(entry, coordinator)
     driver_key = driver.key if driver is not None else None
-    inverter = coordinator.data.inverter
     register_schema_name = getattr(inverter, "register_schema_name", "") if inverter is not None else ""
     write_capabilities = (
         inverter.capabilities
@@ -161,10 +194,18 @@ async def async_setup_entry(
         driver_key=driver_key,
         register_schema_name=register_schema_name,
         write_capabilities=write_capabilities,
+        include_all_drivers_when_unknown=False,
+        collector_only_mode=not has_inverter_identity,
+    )
+    measurement_descriptions = tuple(
+        description
+        for description in measurement_descriptions
+        if not _is_legacy_collector_signal_sensor(coordinator, description.key)
     )
     binary_sensor_descriptions = binary_sensors_for_runtime(
         driver_key=driver_key,
         register_schema_name=register_schema_name,
+        include_all_drivers_when_unknown=False,
     )
     measurement_keys = {description.key for description in measurement_descriptions}
     runtime_keys = measurement_keys | {
@@ -223,7 +264,15 @@ class EybondValueSensor(CoordinatorEntity[EybondLocalCoordinator], SensorEntity)
         self._attr_name = description.name
         self._attr_native_unit_of_measurement = description.unit
         self._attr_icon = description.icon
-        self._attr_entity_registry_enabled_default = description.enabled_default
+        self._attr_entity_registry_enabled_default = (
+            False
+            if _is_legacy_collector_signal_sensor(coordinator, description.key)
+            else description.enabled_default
+        )
+        if description.translation_key:
+            self._attr_translation_key = description.translation_key
+        if description.options:
+            self._attr_options = list(description.options)
 
         if description.diagnostic:
             self._attr_entity_category = EntityCategory.DIAGNOSTIC
@@ -238,12 +287,20 @@ class EybondValueSensor(CoordinatorEntity[EybondLocalCoordinator], SensorEntity)
             if state_class:
                 self._attr_state_class = state_class
 
+    async def async_added_to_hass(self) -> None:
+        parent_async_added_to_hass = getattr(super(), "async_added_to_hass", None)
+        if parent_async_added_to_hass is not None:
+            await parent_async_added_to_hass()
+        await self._async_self_heal_entity_registry_precision()
+
     @property
     def device_info(self):
-        return self.coordinator.device_info()
+        return self.coordinator.device_info_for_key(self._description.key)
 
     @property
     def available(self) -> bool:
+        if _is_legacy_collector_signal_sensor(self.coordinator, self._description.key):
+            return False
         snapshot = self.coordinator.data
         if self._description.key not in snapshot.values:
             return False
@@ -279,6 +336,36 @@ class EybondValueSensor(CoordinatorEntity[EybondLocalCoordinator], SensorEntity)
                 continue
             attributes[attribute_key] = value
         return attributes or None
+
+    async def _async_self_heal_entity_registry_precision(self) -> None:
+        desired_precision = self.suggested_display_precision
+        entity_id = getattr(self, "entity_id", None)
+        hass = getattr(self, "hass", None)
+        if desired_precision is None or not entity_id or hass is None:
+            return
+
+        from homeassistant.helpers import entity_registry as er
+
+        registry = er.async_get(hass)
+        update_entity_options = getattr(registry, "async_update_entity_options", None)
+        get_entity_entry = getattr(registry, "async_get", None)
+        if not callable(update_entity_options) or not callable(get_entity_entry):
+            return
+
+        entity_entry = get_entity_entry(entity_id)
+        if entity_entry is None:
+            return
+
+        options = dict(getattr(entity_entry, "options", {}) or {})
+        sensor_options = dict(options.get("sensor") or {})
+        current_precision = sensor_options.get("suggested_display_precision")
+        if current_precision == desired_precision:
+            return
+        if current_precision not in (None, 0):
+            return
+
+        sensor_options["suggested_display_precision"] = desired_precision
+        update_entity_options(entity_id, "sensor", sensor_options)
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -329,7 +416,7 @@ class EybondDerivedEnergySensor(
 
     @property
     def device_info(self):
-        return self.coordinator.device_info()
+        return self.coordinator.inverter_device_info()
 
     @property
     def available(self) -> bool:
@@ -408,7 +495,7 @@ class EybondDerivedEnergyCycleSensor(
 
     @property
     def device_info(self):
-        return self.coordinator.device_info()
+        return self.coordinator.inverter_device_info()
 
     @property
     def available(self) -> bool:

@@ -24,6 +24,8 @@ class InverterDriver(ABC):
     name: str
     profile_name: str = ""
     register_schema_name: str = ""
+    signature_timeout: float | None = None
+    probe_timeout: float | None = None
     probe_targets: tuple[ProbeTarget, ...]
     measurements: tuple[MeasurementDescription, ...]
     binary_sensors: tuple[BinarySensorDescription, ...] = ()
@@ -60,6 +62,15 @@ class InverterDriver(ABC):
 
         return {}
 
+    async def async_probe_signature(
+        self,
+        transport: PayloadLinkTransport,
+        target: ProbeTarget,
+    ) -> bool:
+        """Return whether a cheap protocol signature matches this driver."""
+
+        return False
+
     @abstractmethod
     async def async_probe(
         self,
@@ -79,6 +90,15 @@ class InverterDriver(ABC):
         now_monotonic: float | None = None,
     ) -> dict[str, Any]:
         """Read and decode the current inverter state."""
+
+    async def async_read_onboarding_values(
+        self,
+        transport: PayloadLinkTransport,
+        inverter: DetectedInverter,
+    ) -> dict[str, Any]:
+        """Read only the values needed to enrich onboarding confirmation UI."""
+
+        return await self.async_read_values(transport, inverter)
 
     @abstractmethod
     async def async_write_capability(

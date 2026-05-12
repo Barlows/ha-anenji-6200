@@ -67,10 +67,9 @@ custom_components/eybond_local/
 └── *.py                    # entity platforms, config flow, services
 
 docs/                       # public docs and generated reports
-tools/                      # CLI utilities and maintenance scripts
-.local/fixtures/catalog/    # local replay fixtures (gitignored)
+tools/                      # CLI utilities, validation scripts, and release helpers
+.local/                     # maintainer-only local notes, fixtures, generated reports, and release scratch files (gitignored)
 tests/                      # unit and regression tests
-.local/                     # ignored local research artifacts
 ```
 
 ---
@@ -107,8 +106,9 @@ These are the hard rules — don't cross them without discussion:
 - **No protocol or register knowledge in HA entities.** Entities are presentation only.
 - **Fixture-first over live debugging** when feasible — but keep those fixtures local unless you intentionally sanitize them for sharing.
 - **JSON-first over Python** for new family additions.
-- **Local fixtures belong under `.local/fixtures/catalog/`** and are not part of the public repository.
-- **`.local/`** is for private research, session notes, raw field dumps, and local debugging artifacts. It's gitignored on purpose.
+- **Local fixtures and maintainer-only notes belong under `.local/`** and are not part of the public repository.
+- **`tools/` is public project tooling** used by CI, release validation, and generated-doc checks.
+- **`.local/generated/`, `.local/release-notes/`, and raw research dumps** remain local-only artifacts and should stay out of git.
 
 ---
 

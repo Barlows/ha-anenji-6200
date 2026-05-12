@@ -12,6 +12,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from custom_components.eybond_local.drivers.registry import (
     binary_sensors_for_driver,
+    binary_sensors_for_runtime,
     get_driver,
     measurements_for_driver,
     measurements_for_runtime,
@@ -83,6 +84,46 @@ class RegistryTests(unittest.TestCase):
         self.assertIn("pv_generation_sum", descriptions)
         self.assertTrue(descriptions["input_mode"].enabled_default)
         self.assertTrue(descriptions["battery_type"].enabled_default)
+
+    def test_measurements_for_unknown_runtime_can_stay_base_only(self) -> None:
+        descriptions = {
+            description.key: description
+            for description in measurements_for_runtime(
+                include_all_drivers_when_unknown=False,
+            )
+        }
+
+        self.assertIn("collector_pn", descriptions)
+        self.assertIn("detection_confidence", descriptions)
+        self.assertNotIn("output_power", descriptions)
+        self.assertNotIn("warning_code", descriptions)
+        self.assertNotIn("protocol_id", descriptions)
+
+    def test_measurements_for_unknown_runtime_can_be_limited_to_collector_surface(self) -> None:
+        descriptions = {
+            description.key: description
+            for description in measurements_for_runtime(
+                include_all_drivers_when_unknown=False,
+                collector_only_mode=True,
+            )
+        }
+
+        self.assertIn("collector_pn", descriptions)
+        self.assertIn("collector_operation_mode", descriptions)
+        self.assertIn("last_error", descriptions)
+        self.assertNotIn("driver_key", descriptions)
+        self.assertNotIn("model_name", descriptions)
+        self.assertNotIn("serial_number", descriptions)
+        self.assertNotIn("detection_confidence", descriptions)
+        self.assertNotIn("support_package_path", descriptions)
+        self.assertNotIn("local_metadata_status", descriptions)
+
+    def test_binary_sensors_for_unknown_runtime_can_stay_base_only(self) -> None:
+        descriptions = binary_sensors_for_runtime(
+            include_all_drivers_when_unknown=False,
+        )
+
+        self.assertEqual(descriptions, ())
 
     def test_measurements_for_pi30_do_not_include_smg_only_keys(self) -> None:
         descriptions = {
@@ -183,6 +224,18 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(missing, [])
         self.assertIn("battery_redischarge_voltage", measurement_keys)
         self.assertIn("buzzer_enabled", binary_keys)
+
+    def test_pi30_fractional_voltage_readbacks_inherit_precision_from_capabilities(self) -> None:
+        descriptions = {
+            description.key: description
+            for description in measurements_for_driver("pi30")
+        }
+
+        self.assertEqual(descriptions["battery_recharge_voltage"].suggested_display_precision, 1)
+        self.assertEqual(descriptions["battery_redischarge_voltage"].suggested_display_precision, 1)
+        self.assertEqual(descriptions["battery_under_voltage"].suggested_display_precision, 1)
+        self.assertEqual(descriptions["battery_bulk_voltage"].suggested_display_precision, 1)
+        self.assertEqual(descriptions["battery_float_voltage"].suggested_display_precision, 1)
 
 
 if __name__ == "__main__":

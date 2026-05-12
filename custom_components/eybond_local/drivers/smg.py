@@ -59,6 +59,7 @@ class SmgModbusDriver(InverterDriver):
 
     key = "modbus_smg"
     name = "SMG / Modbus"
+    probe_timeout = 18.0
     probe_targets = (
         ProbeTarget(
             devcode=0x0001,

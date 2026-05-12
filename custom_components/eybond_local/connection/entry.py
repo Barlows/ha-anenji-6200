@@ -58,6 +58,12 @@ def build_detected_entry_settings(
         values[CONF_COLLECTOR_IP] = collector_ip
     for key in persisted_branch_setting_keys(connection_type):
         if overrides is not None and key in overrides:
+            if (
+                key == CONF_COLLECTOR_IP
+                and collector_ip
+                and not str(overrides[key] or "").strip()
+            ):
+                continue
             values[key] = overrides[key]
     return {
         key: values[key]

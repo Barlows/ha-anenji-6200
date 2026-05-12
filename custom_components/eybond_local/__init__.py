@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+from functools import partial
 import logging
+from math import isfinite
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -11,17 +14,48 @@ try:
 except ModuleNotFoundError:  # Local tooling imports the package without Home Assistant installed.
     cv = None
 
-from .const import CONF_CONNECTION_TYPE, CONF_SERVER_IP, CONNECTION_TYPE_EYBOND, PLATFORMS
-from .metadata.profile_loader import set_external_profile_roots
-from .metadata.register_schema_loader import set_external_register_schema_roots
-from .runtime.link import resolve_server_ip
-from .services import async_setup_services
+try:
+    from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+except ModuleNotFoundError:  # Local tooling imports the package without Home Assistant installed.
+    EVENT_HOMEASSISTANT_STOP = "homeassistant_stop"
+
+from .naming import installation_title, legacy_installation_titles
+from .collector.signal import is_legacy_disabled_signal_entity_key
+from .const import (
+    COLLECTOR_OPERATION_MODES,
+    CONF_COLLECTOR_CLOUD_FAMILY,
+    CONF_COLLECTOR_OPERATION_MODE,
+    CONF_COLLECTOR_ORIGINAL_SERVER_ENDPOINT,
+    CONF_COLLECTOR_PN,
+    CONF_CONTROL_MODE,
+    CONF_CONNECTION_TYPE,
+    CONF_PROXY_CAPTURE_DURATION_MINUTES,
+    CONF_SERVER_IP,
+    CONNECTION_TYPE_EYBOND,
+    CONTROL_MODE_FULL,
+    DEFAULT_COLLECTOR_OPERATION_MODE,
+    PLATFORMS,
+)
+from .platform_context import entity_setup_context
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
 logger = logging.getLogger(__name__)
+
+_SETUP_INITIAL_REFRESH_TIMEOUT = 20.0
+_EXPERT_ENTITY_MIGRATION_SETTLE_TIMEOUT = 1.0
+_FLOAT_PRECISION_DEVICE_CLASSES = {
+    "current",
+    "frequency",
+    "temperature",
+    "voltage",
+}
+_DEFAULT_ENABLED_RUNTIME_SELECT_KEYS = (
+    CONF_COLLECTOR_OPERATION_MODE,
+    CONF_CONTROL_MODE,
+)
 
 CONFIG_SCHEMA: Any = (
     cv.config_entry_only_config_schema("eybond_local")
@@ -30,8 +64,31 @@ CONFIG_SCHEMA: Any = (
 )
 
 
+def _cancel_task_callback(task: asyncio.Task) -> None:
+    """Cancel one background task from a Home Assistant unload callback."""
+
+    task.cancel()
+
+
+def _register_entry_stop_shutdown(hass: HomeAssistant, entry: ConfigEntry, coordinator) -> None:
+    """Stop the runtime explicitly when Home Assistant is shutting down."""
+
+    async def _async_shutdown_on_stop(_event) -> None:
+        try:
+            await coordinator.async_shutdown()
+        except Exception:
+            logger.exception("Failed to shut down EyeBond runtime for entry %s on Home Assistant stop", entry.entry_id)
+
+    entry.async_on_unload(
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _async_shutdown_on_stop)
+    )
+
+
 def _configure_local_metadata_roots(hass: HomeAssistant) -> None:
     """Configure external profile/schema roots under the HA config directory."""
+
+    from .metadata.profile_loader import set_external_profile_roots
+    from .metadata.register_schema_loader import set_external_register_schema_roots
 
     custom_root = Path(hass.config.path("eybond_local")).resolve()
     set_external_profile_roots((custom_root / "profiles",))
@@ -49,6 +106,8 @@ def _prime_metadata_caches() -> None:
 async def async_setup(hass: HomeAssistant, _config: dict) -> bool:
     """Initialize shared loader state for the integration."""
 
+    from .services import async_setup_services
+
     try:
         _configure_local_metadata_roots(hass)
         await hass.async_add_executor_job(_prime_metadata_caches)
@@ -59,8 +118,45 @@ async def async_setup(hass: HomeAssistant, _config: dict) -> bool:
     return True
 
 
+async def _async_initial_refresh_for_setup(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    coordinator,
+) -> None:
+    """Run the first coordinator refresh without letting startup hang forever."""
+
+    refresh_task = hass.async_create_task(coordinator.async_refresh())
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(refresh_task),
+            timeout=_SETUP_INITIAL_REFRESH_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Initial EyeBond refresh timed out after %.1fs for entry %s; continuing setup while refresh finishes in background",
+            _SETUP_INITIAL_REFRESH_TIMEOUT,
+            entry.entry_id,
+        )
+
+        def _log_background_refresh_result(task: asyncio.Task) -> None:
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception(
+                    "Background EyeBond refresh failed during setup for entry %s",
+                    entry.entry_id,
+                )
+
+        refresh_task.add_done_callback(_log_background_refresh_result)
+        entry.async_on_unload(partial(_cancel_task_callback, refresh_task))
+
+
 async def _async_self_heal_server_ip(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Persist a valid local listener IP if the stored one has gone stale."""
+
+    from .runtime.link import resolve_server_ip
 
     if entry.data.get(CONF_CONNECTION_TYPE, CONNECTION_TYPE_EYBOND) != CONNECTION_TYPE_EYBOND:
         return
@@ -69,9 +165,9 @@ async def _async_self_heal_server_ip(hass: HomeAssistant, entry: ConfigEntry) ->
         CONF_SERVER_IP,
         entry.data.get(CONF_SERVER_IP, ""),
     )
+    collector_ip = str(entry.data.get("collector_ip", "") or "").strip()
     resolved_server_ip = await hass.async_add_executor_job(
-        resolve_server_ip,
-        configured_server_ip,
+        partial(resolve_server_ip, configured_server_ip, collector_ip=collector_ip),
     )
     if not resolved_server_ip or resolved_server_ip == configured_server_ip:
         return
@@ -103,6 +199,127 @@ async def _async_self_heal_server_ip(hass: HomeAssistant, entry: ConfigEntry) ->
     )
 
 
+async def _async_self_heal_collector_operation_mode(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+) -> None:
+    """Persist a valid collector callback ownership mode on older entries."""
+
+    raw_mode = str(
+        entry.options.get(
+            CONF_COLLECTOR_OPERATION_MODE,
+            entry.data.get(CONF_COLLECTOR_OPERATION_MODE, DEFAULT_COLLECTOR_OPERATION_MODE),
+        )
+        or DEFAULT_COLLECTOR_OPERATION_MODE
+    ).strip()
+    mode = raw_mode if raw_mode in COLLECTOR_OPERATION_MODES else DEFAULT_COLLECTOR_OPERATION_MODE
+
+    data = dict(entry.data)
+    options = dict(entry.options)
+    changed = False
+    if data.get(CONF_COLLECTOR_OPERATION_MODE) != mode:
+        data[CONF_COLLECTOR_OPERATION_MODE] = mode
+        changed = True
+    if options.get(CONF_COLLECTOR_OPERATION_MODE) != mode:
+        options[CONF_COLLECTOR_OPERATION_MODE] = mode
+        changed = True
+    if not changed:
+        return
+
+    update_entry = getattr(hass.config_entries, "async_update_entry", None)
+    if update_entry is None:
+        return
+
+    update_entry(
+        entry,
+        data=data,
+        options=options,
+    )
+
+
+def _known_collector_cloud_family(value: object) -> str:
+    from .collector.cloud_family import COLLECTOR_CLOUD_FAMILY_UNKNOWN
+
+    family = str(value or "").strip().lower()
+    if not family or family == COLLECTOR_CLOUD_FAMILY_UNKNOWN:
+        return ""
+    return family
+
+
+def _cloud_family_from_entry_endpoint_shape(entry: ConfigEntry) -> str:
+    from .collector.cloud_family import (
+        COLLECTOR_CLOUD_FAMILY_LEGACY_BINARY,
+        collector_cloud_family_observation_from_endpoint,
+    )
+    from .collector_endpoint import inspect_collector_server_endpoint
+
+    endpoint = entry.options.get(
+        CONF_COLLECTOR_ORIGINAL_SERVER_ENDPOINT,
+        entry.data.get("collector_server_endpoint", ""),
+    )
+    observation = collector_cloud_family_observation_from_endpoint(endpoint)
+    family = _known_collector_cloud_family(observation.family)
+    if family:
+        return family
+
+    try:
+        parsed = inspect_collector_server_endpoint(
+            str(endpoint or ""),
+            require_explicit_port=False,
+            require_explicit_protocol=False,
+        )
+    except ValueError:
+        return ""
+
+    if not parsed.has_explicit_port:
+        return COLLECTOR_CLOUD_FAMILY_LEGACY_BINARY
+    return ""
+
+
+def _collector_cloud_family_for_entity_filter(entry: ConfigEntry | None, coordinator) -> str:
+    """Return the best collector family available while filtering entity surfaces."""
+
+    family = _known_collector_cloud_family(
+        getattr(coordinator, "collector_cloud_family", "")
+    )
+    if family:
+        return family
+
+    snapshot = getattr(coordinator, "data", None)
+    values = getattr(snapshot, "values", {}) if snapshot is not None else {}
+    if isinstance(values, dict):
+        family = _known_collector_cloud_family(values.get(CONF_COLLECTOR_CLOUD_FAMILY))
+        if family:
+            return family
+
+    if entry is not None:
+        data = getattr(entry, "data", {}) or {}
+        family = _known_collector_cloud_family(data.get(CONF_COLLECTOR_CLOUD_FAMILY))
+        if family:
+            return family
+        if hasattr(entry, "data") and hasattr(entry, "options"):
+            return _cloud_family_from_entry_endpoint_shape(entry)
+    return ""
+
+
+async def _async_self_heal_collector_cloud_family(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+) -> None:
+    """Restore legacy callback family when older runtime state persisted unknown."""
+
+    if _known_collector_cloud_family(entry.data.get(CONF_COLLECTOR_CLOUD_FAMILY)):
+        return
+
+    family = _cloud_family_from_entry_endpoint_shape(entry)
+    if not family:
+        return
+
+    data = dict(entry.data)
+    data[CONF_COLLECTOR_CLOUD_FAMILY] = family
+    hass.config_entries.async_update_entry(entry, data=data)
+
+
 def _entity_unique_id(entry_id: str, domain: str, key: str) -> str:
     """Return the unique_id format used by one HA entity platform."""
 
@@ -123,10 +340,81 @@ def _tool_unique_id(entry_id: str, key: str) -> str:
     return f"{entry_id}_tool_{key}"
 
 
+def _text_unique_id(entry_id: str, key: str) -> str:
+    """Return the unique_id format used by text entities."""
+
+    return f"{entry_id}_text_{key}"
+
+
+def _coordinator_has_inverter_identity(coordinator, inverter=None) -> bool:
+    """Return inverter identity state while tolerating lightweight test doubles."""
+
+    has_identity = getattr(coordinator, "has_inverter_identity", None)
+    if has_identity is not None:
+        return bool(has_identity)
+    if inverter is None:
+        inverter = getattr(getattr(coordinator, "data", None), "inverter", None)
+    return inverter is not None
+
+
+async def _async_self_heal_entry_title(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Migrate legacy inverter-first config-entry titles to collector-first titles."""
+
+    preferred_title = installation_title(
+        collector_pn=entry.data.get("collector_pn", ""),
+        collector_ip=entry.data.get("collector_ip", ""),
+        detected_model=entry.data.get("detected_model", ""),
+        detected_serial=entry.data.get("detected_serial", ""),
+    )
+    current_title = str(entry.title or "").strip()
+    if not preferred_title or current_title == preferred_title:
+        return
+
+    legacy_titles = legacy_installation_titles(
+        detected_model=entry.data.get("detected_model", ""),
+        detected_serial=entry.data.get("detected_serial", ""),
+        collector_ip=entry.data.get("collector_ip", ""),
+        server_ip=entry.data.get(CONF_SERVER_IP, ""),
+    )
+    if current_title not in legacy_titles:
+        return
+
+    logger.warning(
+        "Updating EyeBond entry title from %s to %s for entry %s",
+        current_title,
+        preferred_title,
+        entry.entry_id,
+    )
+    hass.config_entries.async_update_entry(entry, title=preferred_title)
+
+
+def _is_integration_disabled(disabled_by: object, integration_disabler: object) -> bool:
+    """Return whether one entity-registry disabled_by marker means integration-disabled."""
+
+    if disabled_by is None:
+        return False
+
+    normalized_disabled_by = str(disabled_by).strip().lower()
+    expected = {"integration"}
+
+    normalized_disabler = str(integration_disabler).strip().lower()
+    if normalized_disabler:
+        expected.add(normalized_disabler)
+
+    disabler_value = getattr(integration_disabler, "value", None)
+    if disabler_value is not None:
+        normalized_value = str(disabler_value).strip().lower()
+        if normalized_value:
+            expected.add(normalized_value)
+
+    return normalized_disabled_by in expected
+
+
 def _default_enabled_unique_ids(entry_id: str) -> set[str]:
     """Return all entity unique_ids that should be enabled by default."""
 
     from .derived_energy import default_enabled_derived_energy_keys
+    from .text import default_enabled_collector_text_keys_for_runtime
     from .drivers.registry import (
         all_binary_sensors,
         all_capability_presets,
@@ -147,6 +435,14 @@ def _default_enabled_unique_ids(entry_id: str) -> set[str]:
         if description.enabled_default:
             expected.add(_entity_unique_id(entry_id, "binary_sensor", description.key))
 
+    for key in default_enabled_collector_text_keys_for_runtime():
+        expected.add(_text_unique_id(entry_id, key))
+
+    for key in _DEFAULT_ENABLED_RUNTIME_SELECT_KEYS:
+        expected.add(_entity_unique_id(entry_id, "select", key))
+
+    expected.add(_entity_unique_id(entry_id, "number", CONF_PROXY_CAPTURE_DURATION_MINUTES))
+
     for capability in all_write_capabilities():
         if not capability.enabled_default:
             continue
@@ -163,16 +459,20 @@ def _default_enabled_unique_ids(entry_id: str) -> set[str]:
 
 def _default_enabled_unique_ids_for_current_runtime(
     entry_id: str,
+    coordinator,
     driver,
     inverter,
     can_expose_capability,
     can_expose_preset,
+    has_inverter_identity: bool | None = None,
 ) -> set[str]:
     """Return default-enabled unique_ids for the currently detected runtime metadata."""
 
     from .derived_energy import default_enabled_derived_energy_keys
     from .drivers.registry import binary_sensors_for_runtime, measurements_for_runtime
+    from .select import default_enabled_runtime_select_keys_for_runtime
     from .schema import entity_kind_for_capability
+    from .text import default_enabled_collector_text_keys_for_runtime
     from .tooling import default_enabled_tooling_button_keys_for_runtime
 
     driver_key = driver.key if driver is not None else None
@@ -184,6 +484,8 @@ def _default_enabled_unique_ids_for_current_runtime(
     )
     capability_keys = {capability.key for capability in capabilities}
     profile_name = getattr(inverter, "profile_name", "") if inverter is not None else ""
+    if has_inverter_identity is None:
+        has_inverter_identity = _coordinator_has_inverter_identity(coordinator, inverter)
     presets = (
         inverter.capability_presets
         if inverter is not None
@@ -193,14 +495,23 @@ def _default_enabled_unique_ids_for_current_runtime(
         driver_key=driver_key,
         register_schema_name=register_schema_name,
         write_capabilities=capabilities,
+        include_all_drivers_when_unknown=False,
+        collector_only_mode=not has_inverter_identity,
     )
     binary_sensor_descriptions = binary_sensors_for_runtime(
         driver_key=driver_key,
         register_schema_name=register_schema_name,
+        include_all_drivers_when_unknown=False,
     )
 
     expected: set[str] = set()
+    collector_cloud_family = _collector_cloud_family_for_entity_filter(
+        getattr(coordinator, "config_entry", None),
+        coordinator,
+    )
     for measurement in measurement_descriptions:
+        if is_legacy_disabled_signal_entity_key(measurement.key, collector_cloud_family):
+            continue
         if measurement.enabled_default:
             expected.add(_entity_unique_id(entry_id, "sensor", measurement.key))
 
@@ -211,7 +522,22 @@ def _default_enabled_unique_ids_for_current_runtime(
         if description.enabled_default:
             expected.add(_entity_unique_id(entry_id, "binary_sensor", description.key))
 
-    for key in default_enabled_tooling_button_keys_for_runtime(capability_keys, profile_name):
+    for key in default_enabled_collector_text_keys_for_runtime():
+        expected.add(_text_unique_id(entry_id, key))
+
+    for key in default_enabled_runtime_select_keys_for_runtime(
+        has_inverter_identity=has_inverter_identity,
+    ):
+        expected.add(_entity_unique_id(entry_id, "select", key))
+
+    if hasattr(coordinator, "async_set_proxy_capture_duration_minutes"):
+        expected.add(_entity_unique_id(entry_id, "number", CONF_PROXY_CAPTURE_DURATION_MINUTES))
+
+    for key in default_enabled_tooling_button_keys_for_runtime(
+        capability_keys,
+        profile_name,
+        has_inverter_identity=has_inverter_identity,
+    ):
         expected.add(_tool_unique_id(entry_id, key))
 
     for capability in capabilities:
@@ -244,18 +570,24 @@ async def _async_self_heal_enabled_defaults(
     from homeassistant.helpers.entity_registry import RegistryEntryDisabler
 
     registry = er.async_get(hass)
+    driver, inverter, has_inverter_identity = entity_setup_context(entry, coordinator)
     expected_unique_ids = await hass.async_add_executor_job(
         _default_enabled_unique_ids_for_current_runtime,
         entry.entry_id,
-        coordinator.current_driver,
-        coordinator.data.inverter,
+        coordinator,
+        driver,
+        inverter,
         coordinator.can_expose_capability,
         coordinator.can_expose_preset,
+        has_inverter_identity,
     )
     for entity_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
         if entity_entry.unique_id not in expected_unique_ids:
             continue
-        if entity_entry.disabled_by != RegistryEntryDisabler.INTEGRATION:
+        if not _is_integration_disabled(
+            entity_entry.disabled_by,
+            RegistryEntryDisabler.INTEGRATION,
+        ):
             continue
         logger.warning(
             "Re-enabling newly default-enabled entity %s for entry %s",
@@ -263,6 +595,158 @@ async def _async_self_heal_enabled_defaults(
             entry.entry_id,
         )
         registry.async_update_entity(entity_entry.entity_id, disabled_by=None)
+
+
+async def _async_self_heal_expert_defaults(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+) -> None:
+    """Reconcile expert-only entities against the current control mode."""
+
+    from homeassistant.helpers import entity_registry as er
+    from homeassistant.helpers.entity_registry import RegistryEntryDisabler
+
+    registry = er.async_get(hass)
+    coordinator = getattr(entry, "runtime_data", None)
+    expose_expert_entities = getattr(coordinator, "control_mode", "") == CONTROL_MODE_FULL
+    expert_only_unique_ids: set[str] = {
+        _text_unique_id(entry.entry_id, "collector_callback_endpoint"),
+    }
+    if not expert_only_unique_ids:
+        return
+
+    for entity_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if entity_entry.unique_id not in expert_only_unique_ids:
+            continue
+        if expose_expert_entities:
+            if not _is_integration_disabled(
+                entity_entry.disabled_by,
+                RegistryEntryDisabler.INTEGRATION,
+            ):
+                continue
+            logger.warning(
+                "Re-enabling full-control expert entity %s for entry %s",
+                entity_entry.entity_id,
+                entry.entry_id,
+            )
+            registry.async_update_entity(entity_entry.entity_id, disabled_by=None)
+            continue
+        if entity_entry.disabled_by is not None:
+            continue
+        logger.warning(
+            "Disabling newly expert-only entity %s for entry %s",
+            entity_entry.entity_id,
+            entry.entry_id,
+        )
+        registry.async_update_entity(
+            entity_entry.entity_id,
+            disabled_by=RegistryEntryDisabler.INTEGRATION,
+        )
+
+
+def _infer_sensor_display_precision(value: float) -> int | None:
+    """Infer a stable display precision for one float-like sensor value."""
+
+    if not isfinite(value):
+        return None
+    if value.is_integer():
+        return 1
+    text = format(value, ".6f").rstrip("0")
+    if "." not in text:
+        return 0
+    return len(text.rsplit(".", 1)[1])
+
+
+async def _async_self_heal_sensor_display_precision(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+) -> None:
+    """Repair stale zero-precision sensor overrides after runtime values are known."""
+
+    from homeassistant.helpers import entity_registry as er
+
+    from .drivers.registry import measurements_for_runtime
+
+    coordinator = getattr(entry, "runtime_data", None)
+    if coordinator is None:
+        return
+
+    registry = er.async_get(hass)
+    update_entity_options = getattr(registry, "async_update_entity_options", None)
+    if not callable(update_entity_options):
+        return
+
+    driver, inverter, has_inverter_identity = entity_setup_context(entry, coordinator)
+    driver_key = driver.key if driver is not None else None
+    register_schema_name = getattr(inverter, "register_schema_name", "") if inverter is not None else ""
+    write_capabilities = (
+        inverter.capabilities
+        if inverter is not None
+        else (driver.write_capabilities if driver is not None else ())
+    )
+    descriptions_by_key = {
+        description.key: description
+        for description in measurements_for_runtime(
+            driver_key=driver_key,
+            register_schema_name=register_schema_name,
+            write_capabilities=write_capabilities,
+            include_all_drivers_when_unknown=False,
+            collector_only_mode=not has_inverter_identity,
+        )
+    }
+    values = coordinator.data.values
+    unique_id_prefix = f"{entry.entry_id}_"
+
+    for entity_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+        entity_id = getattr(entity_entry, "entity_id", None)
+        unique_id = str(getattr(entity_entry, "unique_id", "") or "")
+        if not entity_id or not unique_id.startswith(unique_id_prefix):
+            continue
+
+        description = descriptions_by_key.get(unique_id[len(unique_id_prefix) :])
+        if description is None:
+            continue
+
+        desired_precision = description.suggested_display_precision
+        if desired_precision is None and description.device_class in _FLOAT_PRECISION_DEVICE_CLASSES:
+            native_value = values.get(description.key)
+            if isinstance(native_value, float):
+                desired_precision = _infer_sensor_display_precision(native_value)
+        if desired_precision is None:
+            continue
+
+        options = dict(getattr(entity_entry, "options", {}) or {})
+        sensor_options = dict(options.get("sensor") or {})
+        current_precision = sensor_options.get("suggested_display_precision")
+        if current_precision == desired_precision:
+            continue
+        if current_precision not in (None, 0):
+            continue
+
+        sensor_options["suggested_display_precision"] = desired_precision
+        update_entity_options(entity_id, "sensor", sensor_options)
+
+
+async def _async_finalize_expert_entity_migration(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+) -> None:
+    """Run expert-only entity migration after platform setup finishes."""
+
+    async_block_till_done = getattr(hass, "async_block_till_done", None)
+    if async_block_till_done is not None:
+        try:
+            await asyncio.wait_for(
+                async_block_till_done(),
+                timeout=_EXPERT_ENTITY_MIGRATION_SETTLE_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Timed out waiting to finalize EyeBond expert entity migration for entry %s; continuing best-effort cleanup",
+                entry.entry_id,
+            )
+    await _async_self_heal_expert_defaults(hass, entry)
+    await _async_self_heal_sensor_display_precision(hass, entry)
 
 
 async def _async_cleanup_obsolete_entities(
@@ -281,12 +765,13 @@ async def _async_cleanup_obsolete_entities(
         derived_energy_entity_descriptions_for_keys,
     )
     from .drivers.registry import binary_sensors_for_runtime, measurements_for_runtime
+    from .select import runtime_select_keys_for_runtime
     from .schema import entity_kind_for_capability
+    from .text import collector_text_keys_for_runtime
     from .tooling import tooling_button_keys_for_runtime
 
     registry = er.async_get(hass)
-    driver = coordinator.current_driver
-    inverter = coordinator.data.inverter
+    driver, inverter, has_inverter_identity = entity_setup_context(entry, coordinator)
     driver_key = driver.key if driver is not None else None
     register_schema_name = getattr(inverter, "register_schema_name", "") if inverter is not None else ""
     capabilities = (
@@ -305,10 +790,13 @@ async def _async_cleanup_obsolete_entities(
         driver_key=driver_key,
         register_schema_name=register_schema_name,
         write_capabilities=capabilities,
+        include_all_drivers_when_unknown=False,
+        collector_only_mode=not has_inverter_identity,
     )
     binary_sensor_descriptions = binary_sensors_for_runtime(
         driver_key=driver_key,
         register_schema_name=register_schema_name,
+        include_all_drivers_when_unknown=False,
     )
     measurement_keys = {description.key for description in measurement_descriptions}
     runtime_keys = measurement_keys | {
@@ -323,6 +811,10 @@ async def _async_cleanup_obsolete_entities(
     expected_unique_ids: set[str] = {
         _entity_unique_id(entry.entry_id, "sensor", description.key)
         for description in measurement_descriptions
+        if not is_legacy_disabled_signal_entity_key(
+            description.key,
+            _collector_cloud_family_for_entity_filter(entry, coordinator),
+        )
     }
     expected_unique_ids.update(
         _entity_unique_id(entry.entry_id, "sensor", description.key)
@@ -344,13 +836,31 @@ async def _async_cleanup_obsolete_entities(
     )
     expected_unique_ids.update(
         _tool_unique_id(entry.entry_id, key)
-        for key in tooling_button_keys_for_runtime(capability_keys, profile_name)
+        for key in tooling_button_keys_for_runtime(
+            capability_keys,
+            profile_name,
+            has_inverter_identity=has_inverter_identity,
+        )
+    )
+    expected_unique_ids.update(
+        _text_unique_id(entry.entry_id, key)
+        for key in collector_text_keys_for_runtime()
+    )
+    expected_unique_ids.update(
+        _entity_unique_id(entry.entry_id, "select", key)
+        for key in runtime_select_keys_for_runtime(
+            has_inverter_identity=has_inverter_identity,
+        )
     )
     for capability in capabilities:
+        if not coordinator.can_expose_capability(capability):
+            continue
         entity_kind = entity_kind_for_capability(capability)
         if entity_kind in {"select", "number", "switch", "button"}:
             expected_unique_ids.add(_entity_unique_id(entry.entry_id, entity_kind, capability.key))
     for preset in presets:
+        if not coordinator.can_expose_preset(preset):
+            continue
         expected_unique_ids.add(_preset_unique_id(entry.entry_id, preset.key))
 
     removable = []
@@ -372,19 +882,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up EyeBond Local from a config entry."""
 
     from .runtime.coordinator import EybondLocalCoordinator
+    from .services import async_setup_services
 
     try:
         _configure_local_metadata_roots(hass)
-        await hass.async_add_executor_job(_prime_metadata_caches)
+        await async_setup_services(hass)
         await _async_self_heal_server_ip(hass, entry)
+        await _async_self_heal_collector_operation_mode(hass, entry)
+        await _async_self_heal_collector_cloud_family(hass, entry)
+        await _async_self_heal_entry_title(hass, entry)
         coordinator = EybondLocalCoordinator(hass, entry)
         await coordinator.async_setup()
         entry.runtime_data = coordinator
-        await coordinator.async_refresh()
+        _register_entry_stop_shutdown(hass, entry, coordinator)
+        await _async_initial_refresh_for_setup(hass, entry, coordinator)
         await _async_self_heal_enabled_defaults(hass, entry, coordinator)
         await _async_cleanup_obsolete_entities(hass, entry, coordinator)
 
+        platforms_started_with_inverter_identity = bool(coordinator.has_inverter_identity)
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        coordinator.mark_entity_platforms_initialized(
+            has_inverter_identity=platforms_started_with_inverter_identity
+        )
+        expert_migration_task = hass.async_create_task(
+            _async_finalize_expert_entity_migration(hass, entry)
+        )
+        entry.async_on_unload(partial(_cancel_task_callback, expert_migration_task))
         coordinator.async_sync_device_registry()
         entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     except Exception:
@@ -405,7 +928,37 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unload_ok
 
 
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Drop saved cloud-evidence files for the entry being removed."""
+
+    from .support.cloud_evidence import remove_cloud_evidence_for_entry
+
+    config_dir = Path(hass.config.path())
+    collector_pn = str(entry.data.get(CONF_COLLECTOR_PN) or "").strip()
+    deleted = await hass.async_add_executor_job(
+        partial(
+            remove_cloud_evidence_for_entry,
+            config_dir,
+            entry_id=entry.entry_id,
+            collector_pn=collector_pn,
+        )
+    )
+    if deleted:
+        logger.debug(
+            "Removed %d cloud-evidence file(s) for entry %s", len(deleted), entry.entry_id
+        )
+
+
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload the entry after options changes."""
+
+    coordinator = getattr(entry, "runtime_data", None)
+    consume_reload_suppression = getattr(
+        coordinator,
+        "consume_entry_reload_suppression",
+        None,
+    )
+    if callable(consume_reload_suppression) and consume_reload_suppression():
+        return
 
     await hass.config_entries.async_reload(entry.entry_id)

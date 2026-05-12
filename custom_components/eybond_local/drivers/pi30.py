@@ -144,6 +144,8 @@ class Pi30Driver(InverterDriver):
 
     key = "pi30"
     name = "PI30 / ASCII"
+    signature_timeout = 4.0
+    probe_timeout = 12.0
     probe_targets = (
         ProbeTarget(devcode=0x0994, collector_addr=0x01, device_addr=0),
         ProbeTarget(devcode=0x0994, collector_addr=0xFF, device_addr=0),
@@ -177,6 +179,20 @@ class Pi30Driver(InverterDriver):
     def write_capabilities(self):
         profile = self.profile_metadata
         return profile.capabilities if profile is not None else ()
+
+    async def async_probe_signature(self, transport, target: ProbeTarget) -> bool:
+        session = self._session(transport, target)
+        try:
+            values = parse_protocol_id(await session.request("QPI"))
+        except Pi30Error:
+            return False
+
+        protocol_id = values.get("protocol_id")
+        if not isinstance(protocol_id, str):
+            return False
+
+        identity = resolve_pi_identity(protocol_id, values)
+        return identity is not None and identity.family_key == "pi30"
 
     async def async_probe(self, transport, target: ProbeTarget) -> DetectedInverter | None:
         session = self._session(transport, target)
@@ -245,6 +261,36 @@ class Pi30Driver(InverterDriver):
                 _schema_for_inverter(inverter, self.register_schema_name),
             )
         )
+        return values
+
+    async def async_read_onboarding_values(
+        self,
+        transport,
+        inverter: DetectedInverter,
+    ) -> dict[str, Any]:
+        session = self._session(transport, inverter.probe_target)
+        values = await _async_collect_values(session, _FAST_RUNTIME_COMMAND_SPECS)
+        values.update(
+            _translate_runtime_metadata(
+                values,
+                _schema_for_inverter(inverter, self.register_schema_name),
+            )
+        )
+
+        for key in ("rated_power", "output_rating_active_power"):
+            value = inverter.details.get(key)
+            if value not in (None, ""):
+                values.setdefault(key, value)
+
+        battery_percent = values.get("battery_percent")
+        battery_voltage = values.get("battery_voltage")
+        if isinstance(battery_percent, int) and 0 <= battery_percent <= 100:
+            values.setdefault("battery_connected", True)
+            values.setdefault("battery_connection_state", "Connected")
+        elif isinstance(battery_voltage, (int, float)) and float(battery_voltage) > 0:
+            values.setdefault("battery_connected", True)
+            values.setdefault("battery_connection_state", "Connected")
+
         return values
 
     async def async_write_capability(

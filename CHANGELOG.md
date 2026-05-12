@@ -23,6 +23,37 @@ the GitHub release body should be rendered from the matching version section her
 
 - Nothing yet.
 
+## [0.2.0-beta.1] - 2026-05-12
+
+### Beta Notice
+
+- This is a prerelease for the 0.2.0 line; install it only when testing the new collector-first onboarding, local callback ownership, and collector operation mode flows.
+- Keep a Support Archive before reporting collector matching, callback ownership, proxy capture, or inverter detection issues.
+
+### Added
+
+- Added a collector-first onboarding flow with collector network choice, optional Bluetooth Wi-Fi provisioning, scan-interface selection, and clearer quick-scan / deep-scan / manual-setup branching.
+- Added separate collector device management with collector operation mode, Wi-Fi change, restart, proxy capture, and collector-scoped diagnostics.
+
+### Changed
+
+- EyeBond Local now presents collector and inverter devices as separate parts of one installation, with user-facing runtime settings centered on collector mode and control mode.
+- User-facing setup and runtime copy now explain the two everyday collector modes, `SmartESS + HA` and `HA only`, in plain user terms.
+- Support artifacts now split collector, inverter, and integration roles so beta reports are easier to triage.
+
+### Fixed
+
+- Switching between `Auto` and `Full Control` now reloads the entity set correctly instead of leaving stale expert entities behind.
+- Collector callback endpoint override is available again in `Full Control`, and hidden full-control entities are cleaned up correctly when returning to safer modes.
+- Legacy EyeBond cloud endpoints now resolve with the legacy port default when only the host name is known.
+- Legacy collector signal entities are cleaned up from existing installs instead of remaining visible after their defaults changed.
+- Removed collector entries and Home Assistant Core restarts now close owner-specific callback sockets and avoid accepting orphan collector callbacks.
+- Local onboarding no longer offers SmartESS cloud assist before creating a local entry, and HA-only mode applies its callback binding silently.
+
+### Docs
+
+- Updated the English README around the new onboarding flow and collector modes, added a public collector-management guide, refreshed the docs index, and replaced outdated setup screenshots.
+
 ## [0.1.53] - 2026-04-25
 
 ### Added

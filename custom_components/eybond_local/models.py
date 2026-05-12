@@ -422,6 +422,9 @@ class CollectorInfo:
     collector_pn_digits: str = ""
     heartbeat_age_seconds: float | None = None
     heartbeat_fresh: bool | None = None
+    collector_cloud_family: str = ""
+    collector_cloud_family_source: str = ""
+    collector_cloud_family_confidence: str = ""
     smartess_collector_version: str = ""
     smartess_protocol_raw_id: str = ""
     smartess_protocol_asset_id: str = ""
@@ -523,9 +526,11 @@ class MeasurementDescription:
 
     key: str
     name: str
+    translation_key: str | None = None
     unit: str | None = None
     device_class: str | None = None
     state_class: str | None = None
+    options: tuple[str, ...] | None = None
     icon: str | None = None
     diagnostic: bool = False
     enabled_default: bool = True

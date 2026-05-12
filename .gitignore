@@ -1,5 +1,5 @@
 # Local-only publication prep artifacts
-.local/
+.local/*
 field_dumps/
 
 # Python bytecode and caches

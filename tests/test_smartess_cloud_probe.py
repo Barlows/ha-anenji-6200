@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 from pathlib import Path
 import sys
@@ -14,7 +15,16 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
-from tools import smartess_cloud_probe
+_PROBE_PATH = REPO_ROOT / "tools" / "smartess_cloud_probe.py"
+if not _PROBE_PATH.is_file():
+    raise unittest.SkipTest(f"smartess_cloud_probe not present at {_PROBE_PATH}")
+_spec = importlib.util.spec_from_file_location(
+    "smartess_cloud_probe", _PROBE_PATH
+)
+assert _spec is not None and _spec.loader is not None
+smartess_cloud_probe = importlib.util.module_from_spec(_spec)
+sys.modules["smartess_cloud_probe"] = smartess_cloud_probe
+_spec.loader.exec_module(smartess_cloud_probe)
 
 
 class SmartEssCloudProbeTests(unittest.TestCase):

@@ -53,3 +53,177 @@ create_local_schema_draft:
 reload_local_metadata:
   name: Reload local metadata
   description: Clear EyeBond Local metadata caches and reload all configured EyeBond Local entries.
+
+bind_collector_to_home_assistant:
+  name: Bind collector to Home Assistant
+  description: Move the collector callback endpoint to this Home Assistant listener and apply the redirect immediately. Use this instead of raw parameter 21 editing when you want the collector to report locally.
+  fields:
+    entry_id:
+      name: Config entry ID
+      description: EyeBond Local config entry ID that owns the collector.
+      required: true
+      selector:
+        text:
+    confirm_redirect:
+      name: Confirm callback redirect to Home Assistant
+      description: Must be enabled to acknowledge that the collector callback target will move away from SmartESS and over to this Home Assistant listener.
+      required: true
+      selector:
+        boolean:
+
+apply_collector_changes:
+  name: Apply collector changes
+  description: Trigger SmartESS collector parameter 29 to apply staged collector-side settings. This may disconnect the current session while the collector restarts networking.
+  fields:
+    entry_id:
+      name: Config entry ID
+      description: EyeBond Local config entry ID that owns the collector.
+      required: true
+      selector:
+        text:
+    confirm_restart:
+      name: Confirm collector restart
+      description: Must be enabled to acknowledge that the collector can disconnect and reconnect after applying changes.
+      required: true
+      selector:
+        boolean:
+
+reboot_collector:
+  name: Reboot collector
+  description: Trigger the collector restart intent over SmartESS collector parameter 29. At the protocol level this currently uses the same local system-action path as apply.
+  fields:
+    entry_id:
+      name: Config entry ID
+      description: EyeBond Local config entry ID that owns the collector.
+      required: true
+      selector:
+        text:
+    confirm_restart:
+      name: Confirm collector restart
+      description: Must be enabled to acknowledge that the collector can disconnect and reconnect.
+      required: true
+      selector:
+        boolean:
+
+rollback_collector_server_endpoint:
+  name: Restore SmartESS access
+  description: Restore collector parameter 21 to the last previous endpoint remembered by the current runtime session. Use this after binding the collector to Home Assistant when you want SmartESS cloud access back. This rollback is only available after a prior endpoint change in the same Home Assistant runtime.
+  fields:
+    entry_id:
+      name: Config entry ID
+      description: EyeBond Local config entry ID that owns the collector.
+      required: true
+      selector:
+        text:
+    apply_changes:
+      name: Apply rollback immediately
+      description: If enabled, the integration also writes collector parameter 29 with value 1 after restoring parameter 21.
+      required: false
+      default: true
+      selector:
+        boolean:
+    confirm_redirect:
+      name: Confirm SmartESS restore
+      description: Must be enabled to acknowledge that the collector callback target will move away from Home Assistant and back to the remembered SmartESS endpoint.
+      required: true
+      selector:
+        boolean:
+
+start_proxy_capture:
+  name: Start proxy capture
+  description: Start live collector proxy capture, optionally redirecting the collector callback endpoint to Home Assistant and writing a standalone JSONL trace.
+  fields:
+    entry_id:
+      name: Config entry ID
+      description: EyeBond Local config entry ID that owns the collector.
+      required: true
+      selector:
+        text:
+    anonymized:
+      name: Export anonymized capture
+      description: If enabled, the downloadable bundle contains an anonymized JSONL trace. The local raw trace remains under the Home Assistant config directory for owner-controlled diagnostics.
+      required: false
+      default: true
+      selector:
+        boolean:
+    confirm_redirect:
+      name: Confirm collector redirect
+      description: Must be enabled to acknowledge that starting capture may temporarily move collector parameter 21 away from SmartESS and restore it afterward.
+      required: false
+      default: false
+      selector:
+        boolean:
+    proxy_capture_duration_minutes:
+      name: Proxy mode duration
+      description: Minutes before Home Assistant automatically stops proxy capture and restores the collector connection.
+      required: false
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 120
+          step: 1
+          mode: box
+          unit_of_measurement: min
+
+stop_proxy_capture:
+  name: Stop proxy capture
+  description: Stop live collector proxy capture, restore the original callback endpoint if needed, and write the final manifest.
+  fields:
+    entry_id:
+      name: Config entry ID
+      description: EyeBond Local config entry ID that owns the collector.
+      required: true
+      selector:
+        text:
+
+set_collector_server_endpoint:
+  name: Set collector server endpoint
+  description: Guarded SmartESS collector parameter 21 write for the active callback endpoint. Use only when you intentionally want the collector to call back to a different host or port.
+  fields:
+    entry_id:
+      name: Config entry ID
+      description: EyeBond Local config entry ID that owns the collector you want to reconfigure.
+      required: true
+      selector:
+        text:
+    server_host:
+      name: Server host
+      description: IPv4 address or DNS hostname to place into collector parameter 21.
+      required: true
+      example: 192.168.1.193
+      selector:
+        text:
+    server_port:
+      name: Server port
+      description: Port to place into collector parameter 21.
+      required: true
+      example: 18899
+      selector:
+        number:
+          min: 1
+          max: 65535
+          mode: box
+    server_protocol:
+      name: Server protocol
+      description: Protocol token for collector parameter 21. Only TCP is accepted.
+      required: false
+      default: TCP
+      example: TCP
+      selector:
+        select:
+          options:
+            - TCP
+    apply_changes:
+      name: Apply changes immediately
+      description: If enabled, the integration also writes collector parameter 29 with value 1, which may disconnect the current session.
+      required: false
+      default: true
+      selector:
+        boolean:
+    confirm_redirect:
+      name: Confirm collector redirect
+      description: Must be enabled to acknowledge that this can move the collector away from the current Home Assistant listener.
+      required: true
+      selector:
+        boolean:

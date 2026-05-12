@@ -10,9 +10,17 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Sequence
 
-from ..collector.discovery import async_probe_target
+from ..canonical_telemetry import apply_canonical_measurements
+from ..collector.at_runtime import query_runtime_collector_at_values
+from ..collector.discovery import async_probe_target, async_probe_target_replies
+from ..collector.parameter_registry import RUNTIME_COLLECTOR_PARAMETERS, query_runtime_collector_values
 from ..collector.smartess_local import SmartEssLocalSession, SmartEssProtocolDescriptor
-from ..collector.transport import SharedEybondTransport
+from ..collector.transport import (
+    SharedCollectorAtTransport,
+    SharedEybondTransport,
+    _acquire_shared_listener,
+    _release_shared_listener,
+)
 from ..connection.models import EybondConnectionSpec
 from ..const import (
     CONNECTION_TYPE_EYBOND,
@@ -25,6 +33,7 @@ from ..const import (
 )
 from ..metadata.smartess_protocol_catalog_loader import SmartEssProtocolCatalogEntry, load_smartess_protocol_catalog
 from .driver_detection import DetectedDriverContext, async_detect_inverter
+from .timeouts import DEFAULT_ONBOARDING_TIMEOUT_POLICY, OnboardingDeadline
 from ..models import CollectorCandidate, OnboardingResult
 
 logger = logging.getLogger(__name__)
@@ -39,6 +48,26 @@ _CONFIDENCE_SCORE = {
 _UNICAST_FALLBACK_PROBE_TIMEOUT = 0.35
 _UNICAST_FALLBACK_CONCURRENCY = 32
 _CONNECT_TIMEOUT_WITHOUT_UDP_REPLY = 0.75
+_TARGET_DETECTION_CONCURRENCY = 8
+_BROADCAST_FANOUT_SETTLE_TIMEOUT = 3.0
+_BROADCAST_FANOUT_POLL_INTERVAL = 0.1
+_ONBOARDING_RUNTIME_DETAIL_KEYS = {
+    "battery_connected",
+    "battery_connection_state",
+    "battery_percent",
+    "collector_pn",
+    "collector_signal_strength",
+    "collector_signal_strength_raw",
+    "collector_signal_strength_source",
+    "output_rating_active_power",
+    "rated_power",
+}
+
+_ONBOARDING_RUNTIME_COLLECTOR_PARAMETERS = tuple(
+    definition
+    for definition in RUNTIME_COLLECTOR_PARAMETERS
+    if definition.parameter != 41
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +91,12 @@ class SmartEssOnboardingProbe:
         if self.known_protocol is None or not self.known_protocol.device_addresses:
             return None
         return self.known_protocol.device_addresses[0]
+
+
+@dataclass(slots=True)
+class _TargetDetectionState:
+    target: DiscoveryTarget
+    candidate: CollectorCandidate | None = None
 
 
 def build_default_discovery_targets(
@@ -118,6 +153,31 @@ def iter_unicast_fallback_targets(
         if host_ip in excluded:
             continue
         yield DiscoveryTarget(ip=host_ip, source="subnet_unicast")
+
+
+def _dedupe_discovery_targets(targets: Sequence[DiscoveryTarget]) -> tuple[DiscoveryTarget, ...]:
+    deduped: list[DiscoveryTarget] = []
+    seen: set[str] = set()
+    for target in targets:
+        if target.ip in seen:
+            continue
+        seen.add(target.ip)
+        deduped.append(target)
+    return tuple(deduped)
+
+
+def _concrete_detection_targets(targets: Sequence[DiscoveryTarget]) -> tuple[DiscoveryTarget, ...]:
+    return tuple(target for target in targets if not _is_broadcast_detection_placeholder(target))
+
+
+def _is_broadcast_detection_placeholder(target: DiscoveryTarget) -> bool:
+    if target.source != "broadcast":
+        return False
+    try:
+        address = ipaddress.ip_address(target.ip)
+    except ValueError:
+        return False
+    return address.version == 4 and str(address).endswith(".255")
 
 
 async def async_probe_fallback_targets(
@@ -199,28 +259,87 @@ class OnboardingDetector:
         discovery_timeout: float = 1.5,
         connect_timeout: float = 5.0,
         heartbeat_timeout: float = 2.0,
+        enrich_runtime_details: bool = True,
+        cleanup_new_shared_connection: bool = False,
+        total_timeout: float | None = None,
+        concurrency: int = _TARGET_DETECTION_CONCURRENCY,
+        return_after_first_match: bool = False,
     ) -> tuple[OnboardingResult, ...]:
         """Run one-shot detection against a list of discovery targets."""
 
+        deadline = OnboardingDeadline.from_timeout(total_timeout)
+        semaphore = asyncio.Semaphore(max(1, int(concurrency)))
         results: list[OnboardingResult] = []
+        task_states: dict[asyncio.Task[OnboardingResult], _TargetDetectionState] = {}
+
+        async def _run_target(state: _TargetDetectionState) -> OnboardingResult:
+            async with semaphore:
+                remaining = deadline.remaining_seconds()
+                if remaining is not None and remaining <= 0:
+                    return self._timeout_result_for_state(state)
+                try:
+                    return await deadline.wait_for(
+                        self._async_detect_target(
+                            state.target,
+                            discovery_timeout=discovery_timeout,
+                            connect_timeout=connect_timeout,
+                            heartbeat_timeout=heartbeat_timeout,
+                            enrich_runtime_details=enrich_runtime_details,
+                            cleanup_new_shared_connection=cleanup_new_shared_connection,
+                            detection_state=state,
+                        )
+                    )
+                except TimeoutError:
+                    return self._timeout_result_for_state(state)
+                except Exception as exc:
+                    target = state.target
+                    logger.warning(
+                        "Onboarding detection failed target=%s source=%s error=%s",
+                        target.ip,
+                        target.source,
+                        exc,
+                    )
+                    return OnboardingResult(
+                        collector=CollectorCandidate(target_ip=target.ip, source=target.source, ip=target.ip),
+                        connection_type=CONNECTION_TYPE_EYBOND,
+                        connection_mode=target.source,
+                        next_action="manual_input",
+                        last_error=str(exc),
+                    )
+
         for target in targets:
-            try:
-                result = await self._async_detect_target(
-                    target,
-                    discovery_timeout=discovery_timeout,
-                    connect_timeout=connect_timeout,
-                    heartbeat_timeout=heartbeat_timeout,
-                )
-            except Exception as exc:
-                logger.warning("Onboarding detection failed target=%s source=%s error=%s", target.ip, target.source, exc)
-                result = OnboardingResult(
-                    collector=CollectorCandidate(target_ip=target.ip, source=target.source, ip=target.ip),
-                    connection_type=CONNECTION_TYPE_EYBOND,
-                    connection_mode=target.source,
-                    next_action="manual_input",
-                    last_error=str(exc),
-                )
-            results.append(result)
+            state = _TargetDetectionState(target=target)
+            task = asyncio.create_task(_run_target(state), name=f"eybond_detect_{target.ip}")
+            task_states[task] = state
+
+        pending = set(task_states)
+        while pending:
+            remaining = deadline.remaining_seconds()
+            if remaining is not None and remaining <= 0:
+                break
+            done, pending = await asyncio.wait(
+                pending,
+                timeout=remaining,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                break
+            should_stop = False
+            for task in done:
+                result = task.result()
+                results.append(result)
+                if return_after_first_match and result.match is not None:
+                    should_stop = True
+            if should_stop:
+                break
+
+        if pending:
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            for task in pending:
+                results.append(self._timeout_result_for_state(task_states[task]))
+
         return tuple(self._dedupe_results(results))
 
     async def async_auto_detect(
@@ -234,9 +353,12 @@ class OnboardingDetector:
         heartbeat_timeout: float = 2.0,
         attempts: int = 3,
         attempt_delay: float = 0.75,
+        enrich_runtime_details: bool = True,
+        total_timeout: float | None = None,
     ) -> tuple[OnboardingResult, ...]:
         """Run the default EyeBond onboarding discovery order."""
 
+        deadline = OnboardingDeadline.from_timeout(total_timeout)
         targets = tuple(
             discovery_targets
             or build_default_discovery_targets(
@@ -244,24 +366,160 @@ class OnboardingDetector:
                 discovery_target=discovery_target,
             )
         )
+        listener = None
+        if any(target.source == "broadcast" for target in targets):
+            try:
+                listener = await _acquire_shared_listener(
+                    self._connection.server_ip,
+                    self._connection.tcp_port,
+                )
+            except OSError as exc:
+                logger.debug(
+                    "Quick-scan fan-out listener unavailable host=%s port=%s error=%s",
+                    self._connection.server_ip,
+                    self._connection.tcp_port,
+                    exc,
+                )
         aggregated: list[OnboardingResult] = []
+        try:
+            for attempt_index in range(max(1, attempts)):
+                targets = await self._async_expand_broadcast_targets(
+                    targets,
+                    discovery_timeout=discovery_timeout,
+                    deadline=deadline,
+                )
+
+                fanout_targets = await self._async_wait_for_fanout_targets(
+                    listener=listener,
+                    discovery_targets=targets,
+                    results=aggregated,
+                    timeout=deadline.bounded_timeout(
+                        min(connect_timeout, _BROADCAST_FANOUT_SETTLE_TIMEOUT)
+                    ),
+                )
+                targets = _dedupe_discovery_targets((*targets, *fanout_targets))
+
+                detection_targets = _concrete_detection_targets(targets)
+                if detection_targets:
+                    results = await self.async_detect_targets(
+                        detection_targets,
+                        discovery_timeout=discovery_timeout,
+                        connect_timeout=connect_timeout,
+                        heartbeat_timeout=heartbeat_timeout,
+                        enrich_runtime_details=enrich_runtime_details,
+                        total_timeout=deadline.remaining_seconds(),
+                        return_after_first_match=True,
+                    )
+                    aggregated.extend(results)
+
+                late_fanout_targets = await self._async_wait_for_fanout_targets(
+                    listener=listener,
+                    discovery_targets=targets,
+                    results=aggregated,
+                    timeout=deadline.bounded_timeout(
+                        min(connect_timeout, _BROADCAST_FANOUT_SETTLE_TIMEOUT)
+                    ),
+                )
+                late_fanout_targets = tuple(
+                    target
+                    for target in late_fanout_targets
+                    if target.ip not in {known.ip for known in _concrete_detection_targets(targets)}
+                )
+                if late_fanout_targets:
+                    targets = _dedupe_discovery_targets((*targets, *late_fanout_targets))
+                    aggregated.extend(
+                        await self.async_detect_targets(
+                            late_fanout_targets,
+                            discovery_timeout=discovery_timeout,
+                            connect_timeout=connect_timeout,
+                            heartbeat_timeout=heartbeat_timeout,
+                            enrich_runtime_details=enrich_runtime_details,
+                            total_timeout=deadline.remaining_seconds(),
+                            return_after_first_match=True,
+                        )
+                    )
+
+                deduped = self._dedupe_results(aggregated)
+                best = deduped[0] if deduped else None
+                if best is not None and best.match is not None:
+                    aggregated = list(deduped)
+                    break
+                if attempt_index < max(1, attempts) - 1:
+                    await deadline.sleep(attempt_delay)
+
+            deduped = self._dedupe_results(aggregated)
+            best = deduped[0] if deduped else None
+            if best is None or best.match is None:
+                fallback_targets = await self._async_auto_unicast_fallback_targets(
+                    resolved_targets=targets,
+                    results=deduped,
+                    discovery_timeout=discovery_timeout,
+                    deadline=deadline,
+                )
+                if fallback_targets:
+                    aggregated.extend(
+                        await self.async_detect_targets(
+                            fallback_targets,
+                            discovery_timeout=discovery_timeout,
+                            connect_timeout=connect_timeout,
+                            heartbeat_timeout=heartbeat_timeout,
+                            enrich_runtime_details=enrich_runtime_details,
+                            total_timeout=deadline.remaining_seconds(),
+                            return_after_first_match=True,
+                        )
+                    )
+                    deduped = self._dedupe_results(aggregated)
+            return tuple(deduped)
+        finally:
+            if listener is not None:
+                await _release_shared_listener(listener)
+
+    async def async_handoff_detect(
+        self,
+        *,
+        collector_ip: str,
+        discovery_timeout: float = 1.5,
+        connect_timeout: float = 5.0,
+        heartbeat_timeout: float = 2.0,
+        attempts: int = 3,
+        attempt_delay: float = 0.75,
+        enrich_runtime_details: bool = True,
+        cleanup_new_shared_connection: bool = False,
+    ) -> OnboardingResult | None:
+        """Retry direct known-IP detection for post-provisioning handoff.
+
+        This keeps the BLE handoff path narrow: it probes only the collector IP that
+        just received Wi-Fi credentials and does not reopen broadcast discovery.
+        """
+
+        if not str(collector_ip or "").strip():
+            raise ValueError("collector_ip_required")
+
+        targets = build_default_discovery_targets(
+            collector_ip=collector_ip,
+            discovery_target="",
+        )
+        aggregated: list[OnboardingResult] = []
+
         for attempt_index in range(max(1, attempts)):
             results = await self.async_detect_targets(
                 targets,
                 discovery_timeout=discovery_timeout,
                 connect_timeout=connect_timeout,
                 heartbeat_timeout=heartbeat_timeout,
+                enrich_runtime_details=enrich_runtime_details,
+                cleanup_new_shared_connection=cleanup_new_shared_connection,
             )
             aggregated.extend(results)
             deduped = self._dedupe_results(aggregated)
             best = deduped[0] if deduped else None
             if best is not None and best.match is not None:
-                aggregated = list(deduped)
-                break
+                return best
             if attempt_index < max(1, attempts) - 1:
                 await asyncio.sleep(attempt_delay)
 
-        return tuple(self._dedupe_results(aggregated))
+        deduped = self._dedupe_results(aggregated)
+        return deduped[0] if deduped else None
 
     async def async_deep_detect(
         self,
@@ -275,9 +533,12 @@ class OnboardingDetector:
         heartbeat_timeout: float = 2.0,
         attempts: int = 3,
         attempt_delay: float = 0.75,
+        enrich_runtime_details: bool = True,
+        total_timeout: float | None = None,
     ) -> tuple[OnboardingResult, ...]:
         """Run broadcast discovery first, then sweep the full selected IPv4 network."""
 
+        deadline = OnboardingDeadline.from_timeout(total_timeout)
         resolved_targets = tuple(
             discovery_targets
             or build_default_discovery_targets(
@@ -295,21 +556,46 @@ class OnboardingDetector:
                 heartbeat_timeout=heartbeat_timeout,
                 attempts=attempts,
                 attempt_delay=attempt_delay,
+                enrich_runtime_details=enrich_runtime_details,
+                total_timeout=deadline.remaining_seconds(),
             )
         )
 
-        replied_targets = await async_probe_fallback_targets(
-            bind_ip=self._connection.server_ip,
-            advertised_server_ip=self._connection.effective_advertised_server_ip,
-            advertised_server_port=self._connection.effective_advertised_tcp_port,
-            udp_port=self._connection.udp_port,
-            targets=iter_unicast_fallback_targets(
-                server_ip=self._connection.server_ip,
-                collector_ip=collector_ip,
-                network_cidr=unicast_network_cidr,
-            ),
-            timeout=min(discovery_timeout, _UNICAST_FALLBACK_PROBE_TIMEOUT),
-        )
+        listener = None
+        try:
+            listener = await _acquire_shared_listener(
+                self._connection.server_ip,
+                self._connection.tcp_port,
+            )
+        except OSError as exc:
+            logger.debug(
+                "Deep-scan fallback listener unavailable host=%s port=%s error=%s",
+                self._connection.server_ip,
+                self._connection.tcp_port,
+                exc,
+            )
+        try:
+            fallback_timeout = deadline.bounded_timeout(
+                min(discovery_timeout, _UNICAST_FALLBACK_PROBE_TIMEOUT)
+            )
+            if fallback_timeout is not None and fallback_timeout <= 0:
+                replied_targets = ()
+            else:
+                replied_targets = await async_probe_fallback_targets(
+                    bind_ip=self._connection.server_ip,
+                    advertised_server_ip=self._connection.effective_advertised_server_ip,
+                    advertised_server_port=self._connection.effective_advertised_tcp_port,
+                    udp_port=self._connection.udp_port,
+                    targets=iter_unicast_fallback_targets(
+                        server_ip=self._connection.server_ip,
+                        collector_ip=collector_ip,
+                        network_cidr=unicast_network_cidr,
+                    ),
+                    timeout=fallback_timeout or min(discovery_timeout, _UNICAST_FALLBACK_PROBE_TIMEOUT),
+                )
+        finally:
+            if listener is not None:
+                await _release_shared_listener(listener)
         if not replied_targets:
             return tuple(self._dedupe_results(aggregated))
 
@@ -328,6 +614,8 @@ class OnboardingDetector:
             discovery_timeout=discovery_timeout,
             connect_timeout=connect_timeout,
             heartbeat_timeout=heartbeat_timeout,
+            enrich_runtime_details=enrich_runtime_details,
+            total_timeout=deadline.remaining_seconds(),
         )
         aggregated.extend(fallback_results)
         return tuple(self._dedupe_results(aggregated))
@@ -339,19 +627,28 @@ class OnboardingDetector:
         discovery_timeout: float,
         connect_timeout: float,
         heartbeat_timeout: float,
+        enrich_runtime_details: bool = True,
+        cleanup_new_shared_connection: bool = False,
+        detection_state: _TargetDetectionState | None = None,
     ) -> OnboardingResult:
         transport = SharedEybondTransport(
             host=self._connection.server_ip,
             port=self._connection.tcp_port,
             request_timeout=self._connection.request_timeout,
             heartbeat_interval=float(self._connection.heartbeat_interval),
-            collector_ip="",
+            collector_ip=target.ip,
         )
         candidate = CollectorCandidate(
             target_ip=target.ip,
             source=target.source,
             ip=target.ip,
         )
+        if detection_state is not None:
+            detection_state.candidate = candidate
+
+        existing_shared_connection = None
+        if cleanup_new_shared_connection:
+            existing_shared_connection = await transport.async_snapshot_shared_connection()
 
         await transport.start()
         try:
@@ -370,7 +667,7 @@ class OnboardingDetector:
                 transport.set_collector_ip(candidate.ip)
 
             effective_connect_timeout = connect_timeout
-            if not probe.reply:
+            if not probe.reply and target.source != "known_ip":
                 effective_connect_timeout = min(connect_timeout, _CONNECT_TIMEOUT_WITHOUT_UDP_REPLY)
             connected = await transport.wait_until_connected(timeout=effective_connect_timeout)
             if not connected:
@@ -402,7 +699,19 @@ class OnboardingDetector:
                 warnings.append("collector_heartbeat_not_observed")
 
             try:
-                context = await self._async_detect_driver_with_retries(transport)
+                context = await asyncio.wait_for(
+                    self._async_detect_driver_with_retries(transport),
+                    timeout=DEFAULT_ONBOARDING_TIMEOUT_POLICY.driver_detection_timeout,
+                )
+            except TimeoutError:
+                return OnboardingResult(
+                    collector=candidate,
+                    connection_type=CONNECTION_TYPE_EYBOND,
+                    connection_mode=target.source,
+                    warnings=tuple(warnings),
+                    next_action="manual_driver_selection",
+                    last_error="target_detection_timeout",
+                )
             except RuntimeError as exc:
                 return OnboardingResult(
                     collector=candidate,
@@ -416,6 +725,12 @@ class OnboardingDetector:
             if smartess_probe is not None:
                 _apply_smartess_probe_to_match(context.match.details, smartess_probe)
                 _apply_smartess_probe_to_match(context.inverter.details, smartess_probe)
+            if enrich_runtime_details:
+                await self._async_enrich_onboarding_runtime_details(
+                    transport,
+                    context,
+                    collector_ip=candidate.ip,
+                )
 
             return OnboardingResult(
                 collector=candidate,
@@ -426,6 +741,18 @@ class OnboardingDetector:
                 next_action="create_entry",
             )
         finally:
+            if cleanup_new_shared_connection:
+                try:
+                    await transport.async_disconnect_if_new_shared_connection(
+                        existing_shared_connection
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "Onboarding shared-connection cleanup failed target=%s source=%s error=%s",
+                        target.ip,
+                        target.source,
+                        exc,
+                    )
             await transport.stop()
 
     async def _async_detect_driver_with_retries(self, transport: Any) -> DetectedDriverContext:
@@ -441,6 +768,263 @@ class OnboardingDetector:
                     raise
                 await asyncio.sleep(0.35)
         raise last_error or RuntimeError("no_supported_driver_matched")
+
+    async def _async_enrich_onboarding_runtime_details(
+        self,
+        transport: Any,
+        context: DetectedDriverContext,
+        *,
+        collector_ip: str,
+    ) -> None:
+        """Best-effort collector/inverter reads used only to enrich onboarding UI data."""
+
+        policy = DEFAULT_ONBOARDING_TIMEOUT_POLICY
+        deadline = OnboardingDeadline.from_timeout(policy.runtime_enrichment_timeout)
+        details: dict[str, object] = {}
+
+        if hasattr(transport, "async_send_collector"):
+            try:
+                details.update(
+                    await deadline.wait_for(
+                        query_runtime_collector_values(
+                            SmartEssLocalSession(transport),
+                            parameters=_ONBOARDING_RUNTIME_COLLECTOR_PARAMETERS,
+                        ),
+                        timeout_seconds=policy.collector_query_timeout,
+                    )
+                )
+            except Exception as exc:
+                logger.debug("Onboarding collector FC query failed ip=%s error=%s", collector_ip, exc)
+
+        at_timeout = deadline.bounded_timeout(policy.collector_query_timeout)
+        try:
+            if at_timeout is not None and at_timeout > 0:
+                at_transport = SharedCollectorAtTransport(
+                    host=self._connection.server_ip,
+                    port=self._connection.tcp_port,
+                    request_timeout=min(self._connection.request_timeout, at_timeout),
+                    collector_ip=collector_ip,
+                )
+                await at_transport.start()
+                try:
+                    details.update(
+                        await deadline.wait_for(
+                            query_runtime_collector_at_values(at_transport),
+                            timeout_seconds=at_timeout,
+                        )
+                    )
+                except Exception as exc:
+                    logger.debug("Onboarding collector AT query failed ip=%s error=%s", collector_ip, exc)
+                finally:
+                    await at_transport.stop()
+        except Exception as exc:
+            logger.debug("Onboarding collector AT transport unavailable ip=%s error=%s", collector_ip, exc)
+
+        try:
+            runtime_values = await deadline.wait_for(
+                context.driver.async_read_values(transport, context.inverter),
+                timeout_seconds=policy.driver_onboarding_read_timeout,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Onboarding inverter runtime read failed model=%s serial=%s error=%s",
+                context.inverter.model_name,
+                context.inverter.serial_number,
+                exc,
+            )
+        else:
+            apply_canonical_measurements(context.inverter.driver_key, runtime_values)
+            for key in _ONBOARDING_RUNTIME_DETAIL_KEYS:
+                value = runtime_values.get(key)
+                if value not in (None, ""):
+                    details[key] = value
+
+        if not details:
+            return
+
+        filtered_details = {
+            key: value
+            for key, value in details.items()
+            if key in _ONBOARDING_RUNTIME_DETAIL_KEYS and value not in (None, "")
+        }
+        if not filtered_details:
+            return
+
+        context.inverter.details.update(filtered_details)
+        context.match.details.update(filtered_details)
+
+    async def _async_expand_broadcast_targets(
+        self,
+        targets: Sequence[DiscoveryTarget],
+        *,
+        discovery_timeout: float,
+        deadline: OnboardingDeadline,
+    ) -> tuple[DiscoveryTarget, ...]:
+        expanded: list[DiscoveryTarget] = []
+        known_ips: set[str] = set()
+
+        for target in targets:
+            if target.source != "broadcast":
+                if target.ip not in known_ips:
+                    known_ips.add(target.ip)
+                    expanded.append(target)
+                continue
+
+            timeout = deadline.bounded_timeout(discovery_timeout)
+            if timeout is None or timeout > 0:
+                try:
+                    replies = await async_probe_target_replies(
+                        bind_ip=self._connection.server_ip,
+                        advertised_server_ip=self._connection.effective_advertised_server_ip,
+                        advertised_server_port=self._connection.effective_advertised_tcp_port,
+                        target_ip=target.ip,
+                        udp_port=self._connection.udp_port,
+                        timeout=timeout or discovery_timeout,
+                    )
+                except Exception as exc:
+                    logger.debug("Broadcast discovery expansion failed target=%s error=%s", target.ip, exc)
+                    replies = ()
+            else:
+                replies = ()
+
+            reply_ips = tuple(
+                reply.reply_from.split(":", 1)[0]
+                for reply in replies
+                if reply.reply_from
+            )
+            if not reply_ips:
+                if target.ip not in known_ips:
+                    known_ips.add(target.ip)
+                    expanded.append(target)
+                continue
+
+            for reply_ip in reply_ips:
+                if reply_ip in known_ips:
+                    continue
+                known_ips.add(reply_ip)
+                expanded.append(DiscoveryTarget(ip=reply_ip, source=target.source))
+
+        return tuple(expanded)
+
+    async def _async_auto_unicast_fallback_targets(
+        self,
+        *,
+        resolved_targets: Sequence[DiscoveryTarget],
+        results: Sequence[OnboardingResult],
+        discovery_timeout: float,
+        deadline: OnboardingDeadline,
+    ) -> tuple[DiscoveryTarget, ...]:
+        if not any(target.source == "broadcast" for target in resolved_targets):
+            return ()
+
+        known_ips = {
+            result.collector.ip
+            for result in results
+            if result.collector is not None and result.collector.ip
+        }
+        known_ips.update(target.ip for target in resolved_targets)
+
+        timeout = deadline.bounded_timeout(min(discovery_timeout, _UNICAST_FALLBACK_PROBE_TIMEOUT))
+        if timeout is not None and timeout <= 0:
+            return ()
+
+        replied_targets = await async_probe_fallback_targets(
+            bind_ip=self._connection.server_ip,
+            advertised_server_ip=self._connection.effective_advertised_server_ip,
+            advertised_server_port=self._connection.effective_advertised_tcp_port,
+            udp_port=self._connection.udp_port,
+            targets=iter_unicast_fallback_targets(
+                server_ip=self._connection.server_ip,
+                collector_ip="",
+                network_cidr="",
+            ),
+            timeout=timeout or min(discovery_timeout, _UNICAST_FALLBACK_PROBE_TIMEOUT),
+        )
+        return tuple(target for target in replied_targets if target.ip not in known_ips)
+
+    async def _async_wait_for_fanout_targets(
+        self,
+        *,
+        listener: Any,
+        discovery_targets: Sequence[DiscoveryTarget],
+        results: Sequence[OnboardingResult],
+        timeout: float | None,
+    ) -> tuple[DiscoveryTarget, ...]:
+        if listener is None:
+            return ()
+
+        fanout_deadline = OnboardingDeadline.from_timeout(timeout)
+        while True:
+            fanout_targets = self._fanout_broadcast_targets(
+                listener=listener,
+                discovery_targets=discovery_targets,
+                results=results,
+            )
+            if fanout_targets:
+                return fanout_targets
+
+            remaining = fanout_deadline.remaining_seconds()
+            if remaining is not None and remaining <= 0:
+                return ()
+            await asyncio.sleep(
+                min(
+                    _BROADCAST_FANOUT_POLL_INTERVAL,
+                    remaining if remaining is not None else _BROADCAST_FANOUT_POLL_INTERVAL,
+                )
+            )
+
+    @staticmethod
+    def _timeout_result_for_state(state: _TargetDetectionState) -> OnboardingResult:
+        candidate = state.candidate
+        if candidate is None:
+            candidate = CollectorCandidate(
+                target_ip=state.target.ip,
+                source=state.target.source,
+                ip=state.target.ip,
+            )
+            next_action = "manual_input"
+        else:
+            next_action = "manual_driver_selection" if candidate.connected else "manual_input"
+
+        return OnboardingResult(
+            collector=candidate,
+            connection_type=CONNECTION_TYPE_EYBOND,
+            connection_mode=state.target.source,
+            next_action=next_action,
+            last_error="target_detection_timeout",
+        )
+
+    @staticmethod
+    def _fanout_broadcast_targets(
+        *,
+        listener: Any,
+        discovery_targets: Sequence[DiscoveryTarget],
+        results: Sequence[OnboardingResult],
+    ) -> tuple[DiscoveryTarget, ...]:
+        if listener is None:
+            return ()
+
+        known_ips = {
+            result.collector.ip
+            for result in results
+            if result.collector is not None and result.collector.ip
+        }
+        known_ips.update(
+            target.ip
+            for target in discovery_targets
+            if target.source != "broadcast"
+        )
+
+        fanout_targets: list[DiscoveryTarget] = []
+        for target in discovery_targets:
+            if target.source != "broadcast":
+                continue
+            for remote_ip in listener.matching_callback_ips(target.ip):
+                if remote_ip in known_ips:
+                    continue
+                known_ips.add(remote_ip)
+                fanout_targets.append(DiscoveryTarget(ip=remote_ip, source=target.source))
+        return tuple(fanout_targets)
 
     @staticmethod
     def _dedupe_results(results: Sequence[OnboardingResult]) -> list[OnboardingResult]:

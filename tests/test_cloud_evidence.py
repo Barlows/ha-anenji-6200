@@ -82,6 +82,31 @@ class CloudEvidenceTests(unittest.TestCase):
 
             self.assertIsNone(record)
 
+    def test_loads_legacy_short_pn_cloud_evidence_for_full_current_pn(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_dir = Path(temp_dir)
+            evidence = build_cloud_evidence_payload(
+                source="smartess_cloud_probe",
+                payload={"request": {"command": "device-bundle"}},
+                entry_id="legacy-entry",
+                collector_pn="E5000025388419",
+                pn="E50000253884199645",
+                sn="E50000253884199645094801",
+                devcode=2376,
+                devaddr=1,
+            )
+            exported_path = export_cloud_evidence(config_dir=config_dir, evidence=evidence)
+
+            record = load_latest_cloud_evidence(
+                config_dir,
+                entry_id="current-entry",
+                collector_pn="E50000253884199645",
+            )
+
+            self.assertIsNotNone(record)
+            assert record is not None
+            self.assertEqual(record.path, exported_path)
+
     def test_skips_non_utf8_cloud_evidence_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_dir = Path(temp_dir)

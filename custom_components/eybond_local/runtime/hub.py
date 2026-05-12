@@ -16,6 +16,19 @@ from ..const import (
     DRIVER_HINT_AUTO,
 )
 from ..connection.models import EybondConnectionSpec
+from ..collector.at_runtime import query_runtime_collector_at_values
+from ..collector_endpoint import (
+    DEFAULT_COLLECTOR_SERVER_PORT,
+    inspect_collector_server_endpoint,
+    normalize_collector_server_endpoint as normalize_runtime_collector_server_endpoint,
+)
+from ..collector.parameter_registry import query_runtime_collector_values
+from ..collector.smartess_local import (
+    QUERY_REBOOT_REQUIRED,
+    SET_REBOOT_OR_APPLY,
+    SET_SERVER_ENDPOINT,
+    SmartEssLocalSession,
+)
 from ..drivers.base import InverterDriver
 from ..drivers.registry import iter_drivers
 from ..onboarding.driver_detection import async_detect_inverter
@@ -25,6 +38,108 @@ from ..runtime_labels import runtime_path_label
 from .link import EybondRuntimeLinkManager, resolve_server_ip
 
 logger = logging.getLogger(__name__)
+
+
+def _prefer_more_complete_collector_pn(current: object, candidate: object) -> str:
+    normalized_current = str(current or "").strip()
+    normalized_candidate = str(candidate or "").strip()
+    if not normalized_candidate:
+        return normalized_current
+    if not normalized_current:
+        return normalized_candidate
+    if normalized_candidate == normalized_current:
+        return normalized_candidate
+    if normalized_candidate.startswith(normalized_current):
+        return normalized_candidate
+    if normalized_current.startswith(normalized_candidate):
+        return normalized_current
+    return normalized_candidate
+
+
+def _split_collector_endpoint(endpoint: object) -> tuple[str, int | None, str]:
+    raw = str(endpoint or "").strip()
+    if not raw:
+        return "", None, ""
+    try:
+        parsed = inspect_collector_server_endpoint(
+            raw,
+            require_explicit_port=False,
+            require_explicit_protocol=False,
+        )
+    except ValueError:
+        return raw, None, ""
+    return parsed.host, parsed.port, parsed.protocol
+
+
+_DEFAULT_PROXY_CAPTURE_PORT = DEFAULT_COLLECTOR_SERVER_PORT
+
+
+def _is_home_assistant_callback_endpoint(
+    endpoint: object,
+    *,
+    server_ip: str,
+    advertised_server_ip: str,
+    advertised_tcp_port: int,
+) -> bool:
+    host, port, protocol = _split_collector_endpoint(endpoint)
+    normalized_host = host.lower()
+    allowed_hosts = {
+        str(server_ip or "").strip().lower(),
+        str(advertised_server_ip or "").strip().lower(),
+    }
+    allowed_hosts.discard("")
+    return (
+        bool(normalized_host)
+        and normalized_host in allowed_hosts
+        and port in {int(advertised_tcp_port or 0), _DEFAULT_PROXY_CAPTURE_PORT}
+        and protocol.upper() == "TCP"
+    )
+
+
+def _callback_owner_label(
+    endpoint: object,
+    *,
+    server_ip: str,
+    advertised_server_ip: str,
+    advertised_tcp_port: int,
+) -> str:
+    host, _port, _protocol = _split_collector_endpoint(endpoint)
+    normalized_host = host.lower()
+    if _is_home_assistant_callback_endpoint(
+        endpoint,
+        server_ip=server_ip,
+        advertised_server_ip=advertised_server_ip,
+        advertised_tcp_port=advertised_tcp_port,
+    ):
+        return "Home Assistant"
+    if "eybond" in normalized_host or "smartess" in normalized_host:
+        return "SmartESS cloud"
+    if normalized_host:
+        return "Custom endpoint"
+    return "Unknown"
+
+
+def _collector_signal_quality(signal_strength: object) -> str:
+    try:
+        value = int(signal_strength)
+    except (TypeError, ValueError):
+        return "unknown"
+    if value >= -70:
+        return "excellent"
+    if value >= -85:
+        return "good"
+    if value >= -100:
+        return "fair"
+    return "weak"
+
+
+def _collector_signal_source_label(source: object) -> str:
+    normalized = str(source or "").strip().lower()
+    if normalized == "wifi_rssi":
+        return "Wi-Fi RSSI"
+    if normalized == "gprs_csq":
+        return "GPRS CSQ"
+    return "Unknown"
 
 
 def _error_code(exc: BaseException) -> str:
@@ -61,6 +176,15 @@ def _should_force_reconnect(exc: BaseException) -> bool:
         "request_timeout",
         "collector_write_timeout",
     }
+
+
+def _normalize_collector_server_endpoint(endpoint: str) -> str:
+    return normalize_runtime_collector_server_endpoint(
+        endpoint,
+        require_explicit_port=False,
+        require_explicit_protocol=False,
+        preserve_shape=True,
+    )
 
 
 def _modbus_exception_code(exc: BaseException) -> int | None:
@@ -231,6 +355,14 @@ def _write_not_confirmed_error(
 class EybondHub:
     """Coordinates runtime link connectivity, driver probing and polling."""
 
+    @property
+    def collector_server_endpoint_rollback_target(self) -> str:
+        """Return the rollback endpoint remembered during the active runtime session."""
+
+        if self._collector_last_server_endpoint_before_change:
+            return self._collector_last_server_endpoint_before_change
+        return ""
+
     def __init__(
         self,
         *,
@@ -256,6 +388,11 @@ class EybondHub:
         self._inverter: DetectedInverter | None = None
         self._last_snapshot = RuntimeSnapshot()
         self._runtime_read_state: dict[str, Any] = {}
+        self._collector_runtime_values: dict[str, object] = {}
+        self._collector_runtime_last_refresh_monotonic = 0.0
+        self._collector_at_runtime_values: dict[str, object] = {}
+        self._collector_at_runtime_last_refresh_monotonic = 0.0
+        self._collector_last_server_endpoint_before_change = ""
         self._write_blockers: dict[str, CapabilityBlocker] = {}
         self._last_operating_mode: object | None = None
         self._last_success_monotonic: float | None = None
@@ -274,6 +411,67 @@ class EybondHub:
 
         await self._link_manager.async_stop()
 
+    def set_reverse_discovery_enabled(self, enabled: bool) -> None:
+        """Pass reverse-discovery policy changes through to the runtime link layer."""
+
+        self._link_manager.set_reverse_discovery_enabled(enabled)
+
+    async def async_ensure_callback_listener(self, port: int) -> None:
+        """Ensure one auxiliary callback listener is available for collector redirects."""
+
+        await self._link_manager.async_ensure_callback_listener(port)
+
+    async def async_trigger_reverse_discovery(
+        self,
+        *,
+        port: int = 0,
+        timeout: float = 0.75,
+    ) -> dict[str, object]:
+        """Send one explicit UDP bootstrap redirect through the runtime link layer."""
+
+        return await self._link_manager.async_trigger_reverse_discovery(
+            port=port,
+            timeout=timeout,
+        )
+
+    async def async_start_proxy_capture_route(
+        self,
+        *,
+        collector_ip: str,
+        listen_port: int,
+        upstream_host: str,
+        upstream_port: int,
+        output_path,
+        masked_endpoint: str = "",
+        restore_trigger_path=None,
+    ) -> None:
+        """Start one in-process proxy capture route on the active runtime link."""
+
+        await self._link_manager.async_start_proxy_capture_route(
+            collector_ip=collector_ip,
+            listen_port=listen_port,
+            upstream_host=upstream_host,
+            upstream_port=upstream_port,
+            output_path=output_path,
+            masked_endpoint=masked_endpoint,
+            restore_trigger_path=restore_trigger_path,
+        )
+
+    async def async_stop_proxy_capture_route(self) -> None:
+        """Stop the active in-process proxy capture route."""
+
+        await self._link_manager.async_stop_proxy_capture_route()
+
+    def proxy_capture_route_running(self) -> bool:
+        """Return whether the runtime link currently owns one proxy route."""
+
+        return self._link_manager.proxy_capture_route_running()
+
+    async def async_disconnect_collector_connections(self, *, reason: str = "") -> None:
+        """Drop active collector sockets without changing collector settings."""
+
+        await self._link_manager.async_disconnect_collector_connections(reason=reason)
+
     async def async_refresh(self, *, poll_interval: float | None = None) -> RuntimeSnapshot:
         """Refresh the current runtime snapshot."""
 
@@ -281,25 +479,63 @@ class EybondHub:
             self._runtime_read_state.clear()
             ok = await self._link_manager.async_try_connect(timeout=0.75)
             if not ok:
-                snapshot = self._build_snapshot(last_error="waiting_for_collector")
+                collector_values = await self._async_read_collector_runtime_values(poll_interval=poll_interval)
+                snapshot = self._build_snapshot(
+                    extra_values=collector_values,
+                    last_error="waiting_for_collector",
+                    connected=False,
+                )
                 self._last_snapshot = snapshot
                 return snapshot
 
         ok = await self._link_manager.async_try_connect(timeout=1.5, require_heartbeat=True)
         if not ok:
             self._runtime_read_state.clear()
+            if self._link_manager.connected:
+                logger.warning(
+                    "Collector heartbeat timed out; resetting stale runtime connection"
+                )
+                try:
+                    await self._async_recover_heartbeat_timeout(timeout=5.0)
+                    ok = True
+                except Exception as exc:
+                    logger.warning("Collector heartbeat recovery failed: %s", exc)
+                    self._record_recovery_failure(reason="collector_heartbeat_timeout")
+                    collector_values = await self._async_read_collector_runtime_values(poll_interval=poll_interval)
+                    snapshot = self._build_snapshot(
+                        extra_values=collector_values,
+                        last_error="collector_heartbeat_timeout",
+                        connected=False,
+                    )
+                    self._last_snapshot = snapshot
+                    return snapshot
+            else:
+                collector_values = await self._async_read_collector_runtime_values(poll_interval=poll_interval)
+                snapshot = self._build_snapshot(
+                    extra_values=collector_values,
+                    last_error="waiting_for_collector",
+                    connected=False,
+                )
+                self._last_snapshot = snapshot
+                return snapshot
+
+        if not ok:
+            collector_values = await self._async_read_collector_runtime_values(poll_interval=poll_interval)
             snapshot = self._build_snapshot(
-                last_error="collector_heartbeat_timeout" if self._link_manager.connected else "waiting_for_collector",
+                extra_values=collector_values,
+                last_error="collector_heartbeat_timeout",
                 connected=False,
             )
             self._last_snapshot = snapshot
             return snapshot
 
+        collector_values = await self._async_read_collector_runtime_values(poll_interval=poll_interval)
+
         if self._driver is None or self._inverter is None:
             detect_error = await self._async_detect_driver()
             if self._driver is None or self._inverter is None:
                 logger.warning("Driver detection failed: %s", detect_error)
-                snapshot = self._build_snapshot(last_error=detect_error)
+                snapshot = self._build_snapshot(extra_values=collector_values, last_error=detect_error)
                 self._last_snapshot = snapshot
                 return snapshot
 
@@ -311,6 +547,7 @@ class EybondHub:
                 remaining_backoff,
             )
             snapshot = self._build_snapshot(
+                extra_values=collector_values,
                 last_error=self._last_recovery_reason or self._last_snapshot.last_error or "request_timeout",
                 connected=False,
             )
@@ -344,6 +581,7 @@ class EybondHub:
                     self._runtime_read_state.clear()
                     self._record_recovery_failure(reason=_error_code(retry_exc))
                     snapshot = self._build_snapshot(
+                        extra_values=collector_values,
                         last_error=str(retry_exc),
                         connected=False if _should_mark_snapshot_disconnected(retry_exc) else None,
                     )
@@ -371,6 +609,7 @@ class EybondHub:
                     self._runtime_read_state.clear()
                     self._record_recovery_failure(reason=_error_code(retry_exc))
                     snapshot = self._build_snapshot(
+                        extra_values=collector_values,
                         last_error=str(retry_exc),
                         connected=False if _should_mark_snapshot_disconnected(retry_exc) else None,
                     )
@@ -380,16 +619,76 @@ class EybondHub:
                 logger.warning("Runtime refresh failed: %s", exc)
                 self._runtime_read_state.clear()
                 snapshot = self._build_snapshot(
+                    extra_values=collector_values,
                     last_error=str(exc),
                     connected=False if _should_mark_snapshot_disconnected(exc) else None,
                 )
                 self._last_snapshot = snapshot
                 return snapshot
 
-            self._record_refresh_success()
-        snapshot = self._build_snapshot(extra_values=runtime_values)
+        self._record_refresh_success()
+        snapshot = self._build_snapshot(extra_values={**collector_values, **runtime_values})
         self._last_snapshot = snapshot
         return snapshot
+
+    async def _async_read_collector_runtime_values(
+        self,
+        *,
+        poll_interval: float | None,
+    ) -> dict[str, object]:
+        """Best-effort collector-side metadata refresh over FC=2 and plain AT helpers."""
+
+        missing = object()
+        active_transport = getattr(self._link_manager, "active_transport", missing)
+        if active_transport is missing:
+            transport = self._link_manager.transport if self._link_manager.connected else None
+        else:
+            transport = active_transport
+
+        active_at_transport = getattr(self._link_manager, "active_collector_at_transport", missing)
+        if active_at_transport is missing:
+            at_transport = getattr(self._link_manager, "collector_at_transport", None)
+        else:
+            at_transport = active_at_transport
+        allow_disconnected_at_query = active_at_transport is missing and not self._link_manager.connected
+
+        now_monotonic = asyncio.get_running_loop().time()
+        refresh_interval = max(float(poll_interval or 0.0) * 3.0, 30.0)
+        if transport is not None and hasattr(transport, "async_send_collector") and (
+            not self._collector_runtime_values
+            or now_monotonic - self._collector_runtime_last_refresh_monotonic >= refresh_interval
+        ):
+            try:
+                values = await query_runtime_collector_values(SmartEssLocalSession(transport))
+            except Exception as exc:
+                logger.debug("Collector runtime FC query failed: %s", exc)
+            else:
+                if values:
+                    self._collector_runtime_values = dict(values)
+                    self._collector_runtime_last_refresh_monotonic = now_monotonic
+
+        if at_transport is not None and (
+            getattr(at_transport, "connected", False)
+            or allow_disconnected_at_query
+        ) and (
+            not self._collector_at_runtime_values
+            or now_monotonic - self._collector_at_runtime_last_refresh_monotonic >= refresh_interval
+        ):
+            try:
+                values = await query_runtime_collector_at_values(at_transport)
+            except Exception as exc:
+                logger.debug("Collector runtime AT query failed: %s", exc)
+            else:
+                if values:
+                    self._collector_at_runtime_values = dict(values)
+                    self._collector_at_runtime_last_refresh_monotonic = now_monotonic
+
+        return self._combined_collector_runtime_values()
+
+    def _combined_collector_runtime_values(self) -> dict[str, object]:
+        values = dict(self._collector_runtime_values)
+        values.update(self._collector_at_runtime_values)
+        return values
 
     async def async_write_capability(
         self,
@@ -544,6 +843,118 @@ class EybondHub:
             "warnings": list(runtime_state.warnings),
         }
 
+    async def async_set_collector_server_endpoint(
+        self,
+        endpoint: str,
+        *,
+        apply_changes: bool = True,
+    ) -> dict[str, object]:
+        """Stage or apply collector parameter 21 on the local SmartESS management path."""
+
+        await self._async_ensure_connected(timeout=5.0, require_heartbeat=True)
+
+        transport = self._link_manager.transport
+        if not hasattr(transport, "async_send_collector"):
+            raise RuntimeError("collector_local_management_not_supported")
+
+        normalized_endpoint = _normalize_collector_server_endpoint(endpoint)
+        session = SmartEssLocalSession(transport)
+        previous_endpoint = await self._async_query_collector_text(session, SET_SERVER_ENDPOINT)
+        if previous_endpoint and previous_endpoint != normalized_endpoint:
+            self._collector_last_server_endpoint_before_change = previous_endpoint
+
+        set_response = await session.set_collector(SET_SERVER_ENDPOINT, normalized_endpoint)
+        if set_response.status != 0 or set_response.parameter != SET_SERVER_ENDPOINT:
+            raise RuntimeError(
+                f"collector_set_failed:parameter={SET_SERVER_ENDPOINT}:status={set_response.status}"
+            )
+
+        readback_endpoint = await self._async_query_collector_text(session, SET_SERVER_ENDPOINT)
+        reboot_required = await self._async_query_collector_text(session, QUERY_REBOOT_REQUIRED)
+
+        effective_endpoint = readback_endpoint or normalized_endpoint
+        self._collector_runtime_values["collector_server_endpoint"] = effective_endpoint
+        if reboot_required:
+            self._collector_runtime_values["collector_reboot_required"] = reboot_required
+        self._collector_runtime_last_refresh_monotonic = asyncio.get_running_loop().time()
+
+        result: dict[str, object] = {
+            "status": "staged",
+            "requested_endpoint": normalized_endpoint,
+            "readback_endpoint": effective_endpoint,
+            "apply_changes": apply_changes,
+        }
+        if previous_endpoint:
+            result["previous_endpoint"] = previous_endpoint
+        if reboot_required:
+            result["reboot_required"] = reboot_required
+
+        if not apply_changes:
+            return result
+
+        apply_response = await session.set_collector(SET_REBOOT_OR_APPLY, "1")
+        if apply_response.status != 0 or apply_response.parameter != SET_REBOOT_OR_APPLY:
+            raise RuntimeError(
+                f"collector_set_failed:parameter={SET_REBOOT_OR_APPLY}:status={apply_response.status}"
+            )
+
+        result["status"] = "applied"
+        result["warning"] = "collector redirect apply accepted; the current session may disconnect before the next refresh"
+        return result
+
+    async def async_apply_collector_changes(self) -> dict[str, object]:
+        """Trigger collector apply on parameter 29 without changing parameter 21."""
+
+        return await self._async_execute_collector_system_action(action="apply")
+
+    async def async_reboot_collector(self) -> dict[str, object]:
+        """Trigger collector reboot-intent on parameter 29."""
+
+        return await self._async_execute_collector_system_action(action="reboot")
+
+    async def async_rollback_collector_server_endpoint(
+        self,
+        *,
+        apply_changes: bool = True,
+    ) -> dict[str, object]:
+        """Rollback parameter 21 to the cached endpoint remembered in this runtime session."""
+
+        rollback_endpoint = self.collector_server_endpoint_rollback_target
+        if not rollback_endpoint:
+            raise RuntimeError("collector_rollback_endpoint_unavailable")
+
+        result = await self.async_set_collector_server_endpoint(
+            rollback_endpoint,
+            apply_changes=apply_changes,
+        )
+        result["status"] = "rollback_applied" if apply_changes else "rollback_staged"
+        result["rollback_source"] = "session_cached_previous_endpoint"
+        result["rollback_endpoint"] = rollback_endpoint
+        return result
+
+    async def async_get_collector_server_endpoint_state(self) -> dict[str, object]:
+        """Return the live collector endpoint and reboot-required flag from local management."""
+
+        await self._async_ensure_connected(timeout=5.0, require_heartbeat=True)
+
+        transport = self._link_manager.transport
+        if not hasattr(transport, "async_send_collector"):
+            raise RuntimeError("collector_local_management_not_supported")
+
+        session = SmartEssLocalSession(transport)
+        current_endpoint = await self._async_query_collector_text(session, SET_SERVER_ENDPOINT)
+        reboot_required = await self._async_query_collector_text(session, QUERY_REBOOT_REQUIRED)
+
+        if current_endpoint:
+            self._collector_runtime_values["collector_server_endpoint"] = current_endpoint
+        if reboot_required:
+            self._collector_runtime_values["collector_reboot_required"] = reboot_required
+        self._collector_runtime_last_refresh_monotonic = asyncio.get_running_loop().time()
+        return {
+            "current_endpoint": current_endpoint,
+            "reboot_required": reboot_required,
+        }
+
     async def async_capture_support_evidence(self) -> dict[str, object]:
         """Capture matched-driver or generic raw evidence for one support archive."""
 
@@ -658,6 +1069,47 @@ class EybondHub:
             "captures": captures,
         }
 
+    async def _async_query_collector_text(
+        self,
+        session: SmartEssLocalSession,
+        parameter: int,
+    ) -> str:
+        response = await session.query_collector(parameter)
+        if response.code != 0:
+            return ""
+        return str(response.text or "").strip().strip("\x00")
+
+    async def _async_execute_collector_system_action(self, *, action: str) -> dict[str, object]:
+        """Run collector parameter 29 for apply/reboot intent without changing endpoint state."""
+
+        await self._async_ensure_connected(timeout=5.0, require_heartbeat=True)
+
+        transport = self._link_manager.transport
+        if not hasattr(transport, "async_send_collector"):
+            raise RuntimeError("collector_local_management_not_supported")
+
+        session = SmartEssLocalSession(transport)
+        current_endpoint = await self._async_query_collector_text(session, SET_SERVER_ENDPOINT)
+        reboot_required = await self._async_query_collector_text(session, QUERY_REBOOT_REQUIRED)
+
+        apply_response = await session.set_collector(SET_REBOOT_OR_APPLY, "1")
+        if apply_response.status != 0 or apply_response.parameter != SET_REBOOT_OR_APPLY:
+            raise RuntimeError(
+                f"collector_set_failed:parameter={SET_REBOOT_OR_APPLY}:status={apply_response.status}"
+            )
+
+        if current_endpoint:
+            self._collector_runtime_values["collector_server_endpoint"] = current_endpoint
+        self._collector_runtime_values["collector_reboot_required"] = "0"
+        self._collector_runtime_last_refresh_monotonic = asyncio.get_running_loop().time()
+        return {
+            "status": "applied" if action == "apply" else "reboot_triggered",
+            "action": action,
+            "current_endpoint": current_endpoint,
+            "reboot_required_before": reboot_required,
+            "warning": "collector system action accepted; the current session may disconnect before the next refresh",
+        }
+
     async def _async_ensure_connected(
         self,
         *,
@@ -666,9 +1118,25 @@ class EybondHub:
     ) -> None:
         """Ensure there is an active collector connection, retrying discovery if needed."""
 
+        try:
+            await self._link_manager.async_ensure_connected(
+                timeout=timeout,
+                require_heartbeat=require_heartbeat,
+            )
+        except ConnectionError as exc:
+            if require_heartbeat and _error_code(exc) == "collector_heartbeat_timeout":
+                await self._async_recover_heartbeat_timeout(timeout=timeout)
+                return
+            raise
+
+    async def _async_recover_heartbeat_timeout(self, *, timeout: float) -> None:
+        """Drop a stale connected socket and wait for a fresh heartbeat."""
+
+        self._record_recovery_attempt(reason="collector_heartbeat_timeout")
+        await self._link_manager.async_reset_connection(reason="collector_heartbeat_timeout")
         await self._link_manager.async_ensure_connected(
             timeout=timeout,
-            require_heartbeat=require_heartbeat,
+            require_heartbeat=True,
         )
 
     async def _async_detect_driver(self) -> str:
@@ -738,6 +1206,40 @@ class EybondHub:
         }
         collector = self._link_manager.collector_info
 
+        collector_field_overrides = extra_values or {}
+        if collector_field_overrides:
+            merged_collector_pn = _prefer_more_complete_collector_pn(
+                collector.collector_pn,
+                collector_field_overrides.get("collector_pn"),
+            )
+            if merged_collector_pn and merged_collector_pn != collector.collector_pn:
+                collector.collector_pn = merged_collector_pn
+                collector.collector_pn_prefix = merged_collector_pn[:1]
+                collector.collector_pn_digits = merged_collector_pn[1:]
+            collector.smartess_collector_version = str(
+                collector_field_overrides.get("smartess_collector_version", collector.smartess_collector_version) or ""
+            )
+            collector.smartess_protocol_raw_id = str(
+                collector_field_overrides.get("smartess_protocol_raw_id", collector.smartess_protocol_raw_id) or ""
+            )
+            collector.smartess_protocol_asset_id = str(
+                collector_field_overrides.get("smartess_protocol_asset_id", collector.smartess_protocol_asset_id) or ""
+            )
+            collector.smartess_protocol_asset_name = str(
+                collector_field_overrides.get("smartess_protocol_asset_name", collector.smartess_protocol_asset_name) or ""
+            )
+            collector.smartess_protocol_suffix = str(
+                collector_field_overrides.get("smartess_protocol_suffix", collector.smartess_protocol_suffix) or ""
+            )
+            collector.smartess_protocol_profile_key = str(
+                collector_field_overrides.get("smartess_protocol_profile_key", collector.smartess_protocol_profile_key) or ""
+            )
+            collector.smartess_protocol_name = str(
+                collector_field_overrides.get("smartess_protocol_name", collector.smartess_protocol_name) or ""
+            )
+            if collector_field_overrides.get("smartess_device_address") is not None:
+                collector.smartess_device_address = int(collector_field_overrides["smartess_device_address"])
+
         if collector.remote_ip:
             values["collector_remote_ip"] = collector.remote_ip
         values["collector_connection_count"] = collector.connection_count
@@ -798,6 +1300,22 @@ class EybondHub:
             values["collector_udp_reply"] = collector.last_udp_reply
         if collector.last_udp_reply_from:
             values["collector_udp_reply_from"] = collector.last_udp_reply_from
+        if collector.smartess_collector_version:
+            values["smartess_collector_version"] = collector.smartess_collector_version
+        if collector.smartess_protocol_raw_id:
+            values["smartess_protocol_raw_id"] = collector.smartess_protocol_raw_id
+        if collector.smartess_protocol_asset_id:
+            values["smartess_protocol_asset_id"] = collector.smartess_protocol_asset_id
+        if collector.smartess_protocol_asset_name:
+            values["smartess_protocol_asset_name"] = collector.smartess_protocol_asset_name
+        if collector.smartess_protocol_suffix:
+            values["smartess_protocol_suffix"] = collector.smartess_protocol_suffix
+        if collector.smartess_protocol_profile_key:
+            values["smartess_protocol_profile_key"] = collector.smartess_protocol_profile_key
+        if collector.smartess_protocol_name:
+            values["smartess_protocol_name"] = collector.smartess_protocol_name
+        if collector.smartess_device_address is not None:
+            values["smartess_device_address"] = collector.smartess_device_address
 
         if self._inverter is not None:
             values["driver_key"] = self._inverter.driver_key
@@ -818,6 +1336,31 @@ class EybondHub:
 
         if extra_values:
             values.update(extra_values)
+
+        callback_endpoint = values.get("collector_server_endpoint")
+        if callback_endpoint:
+            values["collector_callback_owner"] = _callback_owner_label(
+                callback_endpoint,
+                server_ip=self._connection.server_ip,
+                advertised_server_ip=self._connection.effective_advertised_server_ip,
+                advertised_tcp_port=self._connection.effective_advertised_tcp_port,
+            )
+        else:
+            values.pop("collector_callback_owner", None)
+
+        signal_strength = values.get("collector_signal_strength")
+        if signal_strength is not None:
+            values["collector_signal_quality"] = _collector_signal_quality(signal_strength)
+        else:
+            values.pop("collector_signal_quality", None)
+
+        signal_source = values.get("collector_signal_strength_source")
+        if signal_source:
+            values["collector_signal_strength_source"] = _collector_signal_source_label(
+                signal_source
+            )
+        else:
+            values.pop("collector_signal_strength_source", None)
 
         if self._inverter is not None:
             apply_canonical_measurements(self._inverter.driver_key, values)

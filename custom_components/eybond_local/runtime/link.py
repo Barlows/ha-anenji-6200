@@ -2,19 +2,49 @@
 
 from __future__ import annotations
 
+import asyncio
+import ipaddress
 import json
 import logging
 import socket
 import subprocess
 from typing import Protocol
 
-from ..collector.discovery import DiscoveryAnnouncer
-from ..collector.transport import CollectorTransport, SharedEybondTransport
+from ..collector.cloud_family import (
+    apply_collector_cloud_family_observation,
+    collector_cloud_family_observation_from_collector,
+    select_preferred_collector_cloud_family,
+)
+from ..collector.discovery import DiscoveryAnnouncer, async_probe_target
+from ..collector.transport import (
+    CollectorAtTransport,
+    CollectorTransport,
+    SharedCollectorAtTransport,
+    SharedEybondTransport,
+    SharedProxyCaptureRoute,
+)
 from ..const import DEFAULT_REQUEST_TIMEOUT
 from ..link_transport import PayloadLinkTransport
 from ..models import CollectorInfo
+from ..support.proxy_session import InProcessProxyCaptureHandler
 
 logger = logging.getLogger(__name__)
+
+
+def _prefer_more_complete_collector_pn(current: str, candidate: str) -> str:
+    normalized_current = str(current or "").strip()
+    normalized_candidate = str(candidate or "").strip()
+    if not normalized_candidate:
+        return normalized_current
+    if not normalized_current:
+        return normalized_candidate
+    if normalized_candidate == normalized_current:
+        return normalized_candidate
+    if normalized_candidate.startswith(normalized_current):
+        return normalized_candidate
+    if normalized_current.startswith(normalized_candidate):
+        return normalized_current
+    return normalized_current
 
 
 def _default_local_ip() -> str:
@@ -26,12 +56,18 @@ def _default_local_ip() -> str:
         ip = sock.getsockname()[0]
         sock.close()
         return ip
-    except OSError:
+    except Exception:
         return ""
 
 
 def _active_ipv4_addresses() -> tuple[str, ...]:
     """Return active global IPv4 addresses on this host."""
+
+    return tuple(ip for ip, _prefixlen in _active_ipv4_interfaces())
+
+
+def _active_ipv4_interfaces() -> tuple[tuple[str, int], ...]:
+    """Return active global IPv4 addresses with prefix lengths on this host."""
 
     try:
         output = subprocess.check_output(
@@ -41,10 +77,9 @@ def _active_ipv4_addresses() -> tuple[str, ...]:
         )
         raw = json.loads(output)
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
-        fallback = _default_local_ip()
-        return (fallback,) if fallback else ()
+        raw = []
 
-    addresses: list[str] = []
+    addresses: list[tuple[str, int]] = []
     for item in raw:
         for addr in item.get("addr_info", []):
             ip = str(addr.get("local", "")).strip()
@@ -56,19 +91,81 @@ def _active_ipv4_addresses() -> tuple[str, ...]:
                 continue
             if ip.startswith("127."):
                 continue
-            addresses.append(ip)
+            try:
+                prefixlen = int(addr.get("prefixlen", 32) or 32)
+            except (TypeError, ValueError):
+                prefixlen = 32
+            addresses.append((ip, prefixlen))
+    if not addresses:
+        try:
+            output = subprocess.check_output(
+                ["ip", "-o", "-4", "addr", "show", "up"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.SubprocessError):
+            output = ""
+        for line in output.splitlines():
+            parts = line.split()
+            if "inet" not in parts:
+                continue
+            try:
+                cidr = parts[parts.index("inet") + 1]
+                interface = ipaddress.ip_interface(cidr)
+            except (ValueError, IndexError):
+                continue
+            ip = str(interface.ip)
+            if ip.startswith("127."):
+                continue
+            addresses.append((ip, interface.network.prefixlen))
     if not addresses:
         fallback = _default_local_ip()
-        return (fallback,) if fallback else ()
+        return ((fallback, 32),) if fallback else ()
     return tuple(dict.fromkeys(addresses))
 
 
-def resolve_server_ip(configured_ip: str) -> str:
-    """Return a bindable server IP, falling back if the configured one is stale."""
+def _same_ipv4_24_subnet(left: str, right: str) -> bool:
+    """Return whether two IPv4 addresses share the same /24 subnet."""
 
-    active_ips = _active_ipv4_addresses()
+    try:
+        left_address = ipaddress.ip_address(left)
+        right_address = ipaddress.ip_address(right)
+    except ValueError:
+        return False
+    if left_address.version != 4 or right_address.version != 4:
+        return False
+    return ipaddress.ip_network(f"{left}/24", strict=False) == ipaddress.ip_network(
+        f"{right}/24",
+        strict=False,
+    )
+
+
+def resolve_server_ip(configured_ip: str, *, collector_ip: str = "") -> str:
+    """Return a bindable server IP, preferring the collector-facing subnet when possible."""
+
+    active_interfaces = _active_ipv4_interfaces()
+    active_ips = tuple(ip for ip, _prefixlen in active_interfaces)
     if configured_ip and configured_ip in active_ips:
         return configured_ip
+
+    try:
+        collector_address = ipaddress.ip_address(collector_ip) if collector_ip else None
+    except ValueError:
+        collector_address = None
+
+    if collector_address is not None and collector_address.version == 4:
+        for ip, prefixlen in active_interfaces:
+            try:
+                network = ipaddress.ip_interface(f"{ip}/{prefixlen}").network
+            except ValueError:
+                continue
+            if collector_address in network:
+                return ip
+
+        # For direct AP-mode collectors, keeping the same-subnet callback IP is safer than
+        # auto-healing to an unrelated default-route interface that the collector cannot reach.
+        if configured_ip and _same_ipv4_24_subnet(configured_ip, collector_ip):
+            return configured_ip
 
     fallback = _default_local_ip()
     if fallback and fallback in active_ips:
@@ -144,9 +241,11 @@ class EybondRuntimeLinkManager:
         self._discovery_target = discovery_target
         self._discovery_interval = int(discovery_interval)
         self._heartbeat_interval = int(heartbeat_interval)
-        self._effective_server_ip = resolve_server_ip(server_ip)
+        self._effective_server_ip = resolve_server_ip(server_ip, collector_ip=collector_ip)
         self._discovery_restart_count = 0
         self._last_discovery_reason = ""
+        self._reverse_discovery_enabled = True
+        self._auxiliary_listener_ports: set[int] = set()
         if server_ip and self._effective_server_ip and self._effective_server_ip != server_ip:
             logger.warning(
                 "Configured EyeBond server_ip %s is not active on this host; falling back to %s",
@@ -154,26 +253,77 @@ class EybondRuntimeLinkManager:
                 self._effective_server_ip,
             )
         self._transport: CollectorTransport
+        self._at_transport: CollectorAtTransport
+        self._auxiliary_transports: dict[int, SharedEybondTransport]
+        self._auxiliary_at_transports: dict[int, SharedCollectorAtTransport]
+        self._proxy_capture_route: SharedProxyCaptureRoute | None = None
+        self._proxy_capture_handler: InProcessProxyCaptureHandler | None = None
         self._announcer: DiscoveryAnnouncer
         self._rebuild_link(self._effective_server_ip)
+
+    @property
+    def active_transport(self) -> CollectorTransport | None:
+        """Return the connected payload transport selected for the active collector."""
+
+        return self._connected_payload_transport()
+
+    @property
+    def active_collector_at_transport(self) -> CollectorAtTransport | None:
+        """Return the connected AT transport selected for the active collector."""
+
+        return self._connected_at_transport()
 
     @property
     def transport(self) -> CollectorTransport:
         """Return the active payload-capable transport."""
 
-        return self._transport
+        return self.active_transport or self._transport
+
+    @property
+    def collector_at_transport(self) -> CollectorAtTransport:
+        """Return the collector AT transport sharing the same listener port."""
+
+        return self.active_collector_at_transport or self._at_transport
 
     @property
     def connected(self) -> bool:
         """Return whether the physical link is currently connected."""
 
-        return self._transport.connected
+        return self.active_transport is not None
 
     @property
     def collector_info(self) -> CollectorInfo:
         """Return collector metadata merged with the latest UDP discovery reply."""
 
-        collector = self._transport.collector_info
+        _, ambiguous = self._selected_connected_remote_ip()
+        if ambiguous:
+            collector = CollectorInfo()
+            at_collector = CollectorInfo()
+        else:
+            collector_transport = self.active_transport
+            at_transport = self.active_collector_at_transport
+            collector = collector_transport.collector_info if collector_transport is not None else self._transport.collector_info
+            at_collector = at_transport.collector_info if at_transport is not None else self._at_transport.collector_info
+        if not collector.remote_ip and at_collector.remote_ip:
+            collector.remote_ip = at_collector.remote_ip
+            collector.remote_port = at_collector.remote_port
+        merged_pn = _prefer_more_complete_collector_pn(
+            collector.collector_pn,
+            at_collector.collector_pn,
+        )
+        if merged_pn and merged_pn != collector.collector_pn:
+            collector.collector_pn = merged_pn
+            collector.collector_pn_prefix = merged_pn[:1]
+            collector.collector_pn_digits = merged_pn[1:]
+        apply_collector_cloud_family_observation(
+            collector,
+            select_preferred_collector_cloud_family(
+                collector_cloud_family_observation_from_collector(collector),
+                collector_cloud_family_observation_from_collector(at_collector),
+            ),
+        )
+        if not collector.smartess_collector_version and at_collector.smartess_collector_version:
+            collector.smartess_collector_version = at_collector.smartess_collector_version
         collector.last_udp_reply = self._announcer.last_reply
         collector.last_udp_reply_from = self._announcer.last_reply_from
         collector.discovery_restart_count = self._discovery_restart_count
@@ -186,10 +336,19 @@ class EybondRuntimeLinkManager:
 
         return self._effective_server_ip
 
+    @property
+    def effective_advertised_server_ip(self) -> str:
+        """Return the advertised callback IP used by UDP bootstrap probes."""
+
+        return self._configured_advertised_server_ip or self._effective_server_ip
+
     async def async_start(self) -> None:
         """Start the active link transport and its discovery loop."""
 
-        resolved_server_ip = resolve_server_ip(self._configured_server_ip)
+        resolved_server_ip = resolve_server_ip(
+            self._configured_server_ip,
+            collector_ip=self._collector_ip,
+        )
         if resolved_server_ip != self._effective_server_ip:
             logger.warning(
                 "EyeBond listener IP changed from %s to %s; rebuilding transport",
@@ -197,17 +356,145 @@ class EybondRuntimeLinkManager:
                 resolved_server_ip,
             )
             await self._announcer.stop()
-            await self._transport.stop()
+            await self._stop_all_transports()
             self._rebuild_link(resolved_server_ip)
 
-        await self._transport.start()
-        await self._ensure_discovery(reason="runtime_start")
+        await self._start_all_transports()
+        if self._reverse_discovery_enabled:
+            await self._ensure_discovery(reason="runtime_start")
+        else:
+            await self._announcer.stop()
 
     async def async_stop(self) -> None:
         """Stop discovery and the active link transport."""
 
+        await self.async_stop_proxy_capture_route()
         await self._announcer.stop()
-        await self._transport.stop()
+        await self._stop_all_transports()
+
+    async def async_ensure_callback_listener(self, port: int) -> None:
+        """Ensure one auxiliary callback listener is available for collector redirects."""
+
+        requested_port = int(port or 0)
+        if requested_port <= 0 or requested_port == self._tcp_port:
+            return
+
+        if requested_port not in self._auxiliary_listener_ports:
+            self._auxiliary_listener_ports.add(requested_port)
+            payload_transport, at_transport = self._build_transport_pair(
+                self._effective_server_ip,
+                requested_port,
+            )
+            self._auxiliary_transports[requested_port] = payload_transport
+            self._auxiliary_at_transports[requested_port] = at_transport
+
+        await self._auxiliary_transports[requested_port].start()
+        await self._auxiliary_at_transports[requested_port].start()
+
+    async def async_trigger_reverse_discovery(
+        self,
+        *,
+        port: int = 0,
+        timeout: float = 0.75,
+    ) -> dict[str, object]:
+        """Send one explicit UDP bootstrap probe without enabling background discovery."""
+
+        target_ip = str(self._collector_ip or self._discovery_target or "").strip()
+        if not target_ip:
+            raise RuntimeError("collector_discovery_target_unavailable")
+
+        advertised_port = int(port or self._configured_advertised_tcp_port or self._tcp_port)
+        probe = await async_probe_target(
+            bind_ip=self._effective_server_ip,
+            advertised_server_ip=self.effective_advertised_server_ip,
+            advertised_server_port=advertised_port,
+            target_ip=target_ip,
+            udp_port=self._udp_port,
+            timeout=float(timeout),
+        )
+        self._announcer.last_reply = probe.reply
+        self._announcer.last_reply_from = probe.reply_from
+        return {
+            "status": "reply_received" if probe.reply else "probe_sent",
+            "target_ip": probe.target_ip,
+            "advertised_endpoint": (
+                f"{self.effective_advertised_server_ip}:{advertised_port}"
+            ),
+            "message": probe.message,
+            "reply": probe.reply,
+            "reply_from": probe.reply_from,
+            "local_port": probe.local_port,
+        }
+
+    def set_reverse_discovery_enabled(self, enabled: bool) -> None:
+        """Control whether UDP reverse discovery may redirect the collector."""
+
+        self._reverse_discovery_enabled = bool(enabled)
+
+    async def async_start_proxy_capture_route(
+        self,
+        *,
+        collector_ip: str,
+        listen_port: int,
+        upstream_host: str,
+        upstream_port: int,
+        output_path,
+        masked_endpoint: str = "",
+        restore_trigger_path=None,
+    ) -> None:
+        """Route one collector's callback connection through the in-process proxy."""
+
+        await self.async_stop_proxy_capture_route()
+        handler = InProcessProxyCaptureHandler(
+            upstream_host=upstream_host,
+            upstream_port=upstream_port,
+            output_path=output_path,
+            masked_endpoint=masked_endpoint,
+            restore_trigger_path=restore_trigger_path,
+        )
+        await handler.start()
+        route = SharedProxyCaptureRoute(
+            host=self._effective_server_ip,
+            port=int(listen_port),
+            collector_ip=collector_ip,
+            handler=handler.handle_client,
+        )
+        try:
+            await route.start()
+        except Exception:
+            await handler.stop()
+            raise
+        self._proxy_capture_handler = handler
+        self._proxy_capture_route = route
+
+    async def async_stop_proxy_capture_route(self) -> None:
+        """Stop the active in-process proxy route, if any."""
+
+        route = self._proxy_capture_route
+        handler = self._proxy_capture_handler
+        self._proxy_capture_route = None
+        self._proxy_capture_handler = None
+        if route is not None:
+            await route.stop()
+        if handler is not None:
+            await handler.stop()
+
+    def proxy_capture_route_running(self) -> bool:
+        """Return whether an in-process proxy route is currently active."""
+
+        handler = self._proxy_capture_handler
+        return bool(handler is not None and handler.running)
+
+    async def async_disconnect_collector_connections(self, *, reason: str = "") -> None:
+        """Drop current collector sockets without restarting discovery."""
+
+        logger.warning(
+            "Disconnecting collector runtime connections after %s remote=%s configured_collector_ip=%s",
+            reason or "runtime_disconnect",
+            self.collector_info.remote_ip or "unknown",
+            self._collector_ip or "unknown",
+        )
+        await self._disconnect_all_transports()
 
     async def async_try_connect(
         self,
@@ -217,20 +504,22 @@ class EybondRuntimeLinkManager:
     ) -> bool:
         """Try to ensure a live collector connection without raising on timeout."""
 
-        if not self._transport.connected:
-            await self._ensure_discovery(reason="waiting_for_callback")
-            ok = await self._transport.wait_until_connected(timeout=timeout)
+        if not self.connected:
+            if self._reverse_discovery_enabled:
+                await self._ensure_discovery(reason="waiting_for_callback")
+            ok = await self._async_wait_for_payload_connection(timeout=timeout)
             if not ok:
                 return False
 
         if require_heartbeat:
-            heartbeat_ok = await self._transport.wait_until_heartbeat(timeout=min(timeout, 1.5))
+            heartbeat_ok = await self._async_wait_for_payload_heartbeat(timeout=min(timeout, 1.5))
             if not heartbeat_ok:
-                await self._ensure_discovery(reason="heartbeat_timeout")
+                if self._reverse_discovery_enabled:
+                    await self._ensure_discovery(reason="heartbeat_timeout")
                 return False
 
         await self._announcer.stop()
-        return self._transport.connected
+        return self.connected
 
     async def async_ensure_connected(
         self,
@@ -245,7 +534,7 @@ class EybondRuntimeLinkManager:
             require_heartbeat=require_heartbeat,
         )
         if not ok:
-            if require_heartbeat and self._transport.connected:
+            if require_heartbeat and self.connected:
                 raise ConnectionError("collector_heartbeat_timeout")
             raise ConnectionError("collector_not_connected")
 
@@ -260,8 +549,160 @@ class EybondRuntimeLinkManager:
             f"0x{collector.heartbeat_devcode:04X}" if collector.heartbeat_devcode is not None else "unknown",
             f"0x{collector.last_devcode:04X}" if collector.last_devcode is not None else "unknown",
         )
-        await self._transport.disconnect()
-        await self._ensure_discovery(reason=reason or "runtime_reset")
+        await self._disconnect_all_transports()
+        if self._reverse_discovery_enabled:
+            await self._ensure_discovery(reason=reason or "runtime_reset")
+
+    def _payload_transports(self) -> tuple[CollectorTransport, ...]:
+        transports: list[CollectorTransport] = [self._transport]
+        transports.extend(
+            self._auxiliary_transports[port]
+            for port in sorted(self._auxiliary_listener_ports)
+            if port in self._auxiliary_transports
+        )
+        return tuple(transports)
+
+    def _at_transports(self) -> tuple[CollectorAtTransport, ...]:
+        transports: list[CollectorAtTransport] = [self._at_transport]
+        transports.extend(
+            self._auxiliary_at_transports[port]
+            for port in sorted(self._auxiliary_listener_ports)
+            if port in self._auxiliary_at_transports
+        )
+        return tuple(transports)
+
+    def _selected_connected_remote_ip(self) -> tuple[str, bool]:
+        if self._collector_ip:
+            return self._collector_ip, False
+
+        payload_ips = {
+            str(transport.collector_info.remote_ip or "").strip()
+            for transport in self._payload_transports()
+            if transport.connected and str(transport.collector_info.remote_ip or "").strip()
+        }
+        at_ips = {
+            str(transport.collector_info.remote_ip or "").strip()
+            for transport in self._at_transports()
+            if transport.connected and str(transport.collector_info.remote_ip or "").strip()
+        }
+
+        if len(payload_ips) > 1 or len(at_ips) > 1:
+            return "", True
+        if payload_ips and at_ips:
+            if payload_ips == at_ips:
+                return next(iter(payload_ips)), False
+            return "", True
+        if payload_ips:
+            return next(iter(payload_ips)), False
+        if at_ips:
+            return next(iter(at_ips)), False
+        return "", False
+
+    def _connected_payload_transport(self) -> CollectorTransport | None:
+        selected_remote_ip, ambiguous = self._selected_connected_remote_ip()
+        if ambiguous:
+            return None
+
+        connected: list[CollectorTransport] = []
+        for transport in self._payload_transports():
+            if not transport.connected:
+                continue
+            remote_ip = str(transport.collector_info.remote_ip or "").strip()
+            if selected_remote_ip and remote_ip and remote_ip != selected_remote_ip:
+                continue
+            connected.append(transport)
+            if transport.collector_info.heartbeat_fresh:
+                return transport
+        return connected[0] if connected else None
+
+    def _connected_at_transport(self) -> CollectorAtTransport | None:
+        selected_remote_ip, ambiguous = self._selected_connected_remote_ip()
+        if ambiguous:
+            return None
+
+        for transport in self._at_transports():
+            if not transport.connected:
+                continue
+            remote_ip = str(transport.collector_info.remote_ip or "").strip()
+            if selected_remote_ip and remote_ip and remote_ip != selected_remote_ip:
+                continue
+            return transport
+        return None
+
+    async def _async_wait_for_payload_connection(self, *, timeout: float) -> bool:
+        transports = self._payload_transports()
+        if len(transports) == 1:
+            return await transports[0].wait_until_connected(timeout=timeout) and transports[0].connected
+
+        deadline = asyncio.get_running_loop().time() + timeout
+        while True:
+            if self.active_transport is not None:
+                return True
+
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return False
+
+            wait_timeout = min(0.1, remaining)
+            for transport in transports:
+                ok = await transport.wait_until_connected(timeout=wait_timeout)
+                if ok and self._connected_payload_transport() is not None:
+                    return True
+
+    async def _async_wait_for_payload_heartbeat(self, *, timeout: float) -> bool:
+        selected_remote_ip, ambiguous = self._selected_connected_remote_ip()
+        if ambiguous:
+            return False
+
+        transports = tuple(
+            transport
+            for transport in self._payload_transports()
+            if transport.connected
+            and (
+                not selected_remote_ip
+                or not str(transport.collector_info.remote_ip or "").strip()
+                or str(transport.collector_info.remote_ip or "").strip() == selected_remote_ip
+            )
+        )
+        if not transports:
+            return False
+        if len(transports) == 1:
+            return await transports[0].wait_until_heartbeat(timeout=timeout)
+
+        deadline = asyncio.get_running_loop().time() + timeout
+        while True:
+            for transport in transports:
+                if not transport.connected:
+                    continue
+
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    return False
+
+                ok = await transport.wait_until_heartbeat(timeout=min(0.1, remaining))
+                if ok:
+                    return True
+
+            if deadline - asyncio.get_running_loop().time() <= 0:
+                return False
+
+    async def _start_all_transports(self) -> None:
+        for transport in self._payload_transports():
+            await transport.start()
+        for transport in self._at_transports():
+            await transport.start()
+
+    async def _stop_all_transports(self) -> None:
+        for transport in reversed(self._at_transports()):
+            await transport.stop()
+        for transport in reversed(self._payload_transports()):
+            await transport.stop()
+
+    async def _disconnect_all_transports(self) -> None:
+        for transport in reversed(self._at_transports()):
+            await transport.disconnect()
+        for transport in reversed(self._payload_transports()):
+            await transport.disconnect()
 
     async def _ensure_discovery(self, *, reason: str) -> None:
         """Start discovery if needed and track why it restarted."""
@@ -280,13 +721,13 @@ class EybondRuntimeLinkManager:
         effective_advertised_server_ip = self._configured_advertised_server_ip or server_ip
         effective_advertised_tcp_port = self._configured_advertised_tcp_port or self._tcp_port
         self._effective_server_ip = server_ip
-        self._transport = SharedEybondTransport(
-            host=server_ip,
-            port=self._tcp_port,
-            request_timeout=DEFAULT_REQUEST_TIMEOUT,
-            heartbeat_interval=float(self._heartbeat_interval),
-            collector_ip=self._collector_ip,
-        )
+        self._transport, self._at_transport = self._build_transport_pair(server_ip, self._tcp_port)
+        self._auxiliary_transports = {}
+        self._auxiliary_at_transports = {}
+        for port in sorted(self._auxiliary_listener_ports):
+            payload_transport, at_transport = self._build_transport_pair(server_ip, port)
+            self._auxiliary_transports[port] = payload_transport
+            self._auxiliary_at_transports[port] = at_transport
         self._announcer = DiscoveryAnnouncer(
             bind_ip=server_ip,
             advertised_server_ip=effective_advertised_server_ip,
@@ -295,3 +736,23 @@ class EybondRuntimeLinkManager:
             udp_port=self._udp_port,
             interval=float(self._discovery_interval),
         )
+
+    def _build_transport_pair(
+        self,
+        server_ip: str,
+        port: int,
+    ) -> tuple[SharedEybondTransport, SharedCollectorAtTransport]:
+        payload_transport = SharedEybondTransport(
+            host=server_ip,
+            port=port,
+            request_timeout=DEFAULT_REQUEST_TIMEOUT,
+            heartbeat_interval=float(self._heartbeat_interval),
+            collector_ip=self._collector_ip,
+        )
+        at_transport = SharedCollectorAtTransport(
+            host=server_ip,
+            port=port,
+            request_timeout=DEFAULT_REQUEST_TIMEOUT,
+            collector_ip=self._collector_ip,
+        )
+        return payload_transport, at_transport

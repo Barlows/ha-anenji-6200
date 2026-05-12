@@ -1,45 +1,28 @@
 # Documentation
 
-A guide to the EyeBond Local docs. Pick the path that matches your role.
+This directory is the public documentation set for EyeBond Local.
 
-## I'm a user
+## Start Here
 
-Start with the [main README](../README.md). It covers installation, setup, what the integration exposes, and how to get help.
+- [Main README](../README.md) — installation, setup, user-facing modes, troubleshooting, and support flow
+- [Collector Management](COLLECTOR_MANAGEMENT.md) — collector mode, runtime settings, Wi-Fi change, restart, and proxy capture basics
+- [Collector Proxy Capture](PROXY_CAPTURE.md) — when to use proxy mode, how to start it, how the timer works, and how to restore the original server if needed
+- [Remote / NAT Setup Guide](REMOTE_SETUP.md) — only for collectors that are remote, routed through VPN, or behind port forwarding
+- [SMG Support Matrix](SMG_SUPPORT_MATRIX.md) — deeper SMG-family compatibility notes
 
-Ukrainian readers can use the [Ukrainian README](../README.uk.md).
+Ukrainian readers can also use the [Ukrainian README](../README.uk.md).
 
-If your collector is remote, behind another router, or needs VPN / NAT callback routing, read the [Remote / NAT Setup Guide](REMOTE_SETUP.md).
-
-For deeper hardware compatibility info:
-
-- [SMG Support Matrix](SMG_SUPPORT_MATRIX.md) — verified default SMG 6200 controls plus the current Anenji and read-only fallback runtime paths
-- [Generated SMG Support Matrix](generated/SMG_SUPPORT_MATRIX.generated.md) — auto-refreshed snapshot
-
-## I'm a developer
-
-Start with the [Contributing guide](../CONTRIBUTING.md) for the project philosophy, layering rules, and PR checklist.
-
-Then dive into one of:
-
-- [Adding A New Driver / Profile](ADDING_DRIVERS.md) — fixture-first workflow for extending hardware support
-- [Releasing](RELEASING.md) — changelog-first release flow and GitHub release notes generation
-- [Tools And CLI Scripts](../tools/README.md) — probing, fixtures, validation, doc generation
-
-## I'm reviewing project status
+## Generated Status Docs
 
 Generated reports live under [generated/](generated/) and are refreshed by the quality gate:
 
-- [Support Overview](generated/SUPPORT_OVERVIEW.generated.md) — implementation-level coverage report for the runtime profiles shipped in the repository; do not read it as a commercial device matrix
+- [Support Overview](generated/SUPPORT_OVERVIEW.generated.md) — implementation-level coverage for shipped runtime profiles; not a commercial device matrix
 - [Generated SMG Support Matrix](generated/SMG_SUPPORT_MATRIX.generated.md) — current declarative support snapshot
 
-Local fixture-derived debug reports are intentionally kept out of the public repository. If you maintain a local catalog under `.local/fixtures/catalog/`, generate those reports locally when needed.
+## Public Vs Maintainer-Only Material
 
-## Refreshing generated reports
+The files under `docs/` are the public user and contributor docs.
 
-Run from the repository root:
+Maintainer-only local notes, private utilities, and release scratch material live under `.local/` and are intentionally outside this public docs surface.
 
-```bash
-python3 tools/quality_gate.py --refresh-generated
-```
-
-Public generated outputs land under `docs/generated/`. Fixture-derived debug reports are intentionally local-only and are not checked in.
+If you are extending or maintaining the project, use [../CONTRIBUTING.md](../CONTRIBUTING.md) for the contributor workflow.

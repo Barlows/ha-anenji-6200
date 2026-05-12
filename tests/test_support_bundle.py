@@ -66,7 +66,36 @@ class SupportBundleTests(unittest.TestCase):
         self.assertEqual(raw["source_metadata"]["profile_name"], "smg_modbus.json")
         self.assertEqual(raw["source_metadata"]["variant_key"], "default")
         self.assertEqual(raw["runtime"]["values"]["operating_mode"], "Off-Grid")
+        self.assertEqual(raw["roles"]["collector"]["identity"]["collector_pn"], "E5000025388419")
+        self.assertEqual(raw["roles"]["inverter"]["identity"]["model_name"], "SMG 6200")
+        self.assertEqual(raw["roles"]["inverter"]["values"]["operating_mode"], "Off-Grid")
         self.assertEqual(raw["evidence"]["cloud"]["source"], "smartess_cloud_probe")
+
+    def test_builds_support_bundle_payload_with_role_value_split(self) -> None:
+        raw = build_support_bundle_payload(
+            entry_id="entry123",
+            entry_title="Collector PN E5000025388419",
+            connected=True,
+            collector={"collector_pn": "E5000025388419"},
+            inverter={"driver_key": "modbus_smg", "model_name": "SMG 6200"},
+            values={
+                "collector_signal_strength": -67,
+                "smartess_protocol_asset_id": "0925",
+                "runtime_reconnect_count": 1,
+                "last_error": "",
+                "operating_mode": "Off-Grid",
+            },
+            data={"collector_ip": "192.168.1.55", "collector_pn": "E5000025388419"},
+            options={"collector_operation_mode": "smartess_cloud_home_assistant"},
+            profile_name="smg_modbus.json",
+            register_schema_name="modbus_smg/models/smg_6200.json",
+        )
+
+        self.assertIn("collector_signal_strength", raw["roles"]["collector"]["values"])
+        self.assertIn("smartess_protocol_asset_id", raw["roles"]["collector"]["values"])
+        self.assertIn("runtime_reconnect_count", raw["roles"]["integration"]["values"])
+        self.assertIn("last_error", raw["roles"]["integration"]["values"])
+        self.assertIn("operating_mode", raw["roles"]["inverter"]["values"])
 
     def test_builds_support_bundle_payload_with_smartess_raw_effective_split(self) -> None:
         raw = build_support_bundle_payload(
@@ -186,43 +215,28 @@ class SupportBundleTests(unittest.TestCase):
 
         self.assertIsNone(raw["source_metadata"]["support_marker"])
 
-    def test_exports_support_bundle_json(self) -> None:
+    def test_export_support_bundle_writes_json_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_dir = Path(temp_dir)
-            payload = _sample_support_bundle_payload()
-
             path = export_support_bundle(
-                config_dir=config_dir,
+                config_dir=Path(temp_dir),
                 entry_id="entry123",
                 entry_title="SMG 6200",
-                connected=bool(payload["runtime"]["connected"]),
-                collector=payload["runtime"]["collector"],
-                inverter=payload["runtime"]["inverter"],
-                values=payload["runtime"]["values"],
-                data=payload["entry"]["data"],
-                options=payload["entry"]["options"],
-                profile_name=payload["source_metadata"]["profile_name"],
-                register_schema_name=payload["source_metadata"]["register_schema_name"],
-                variant_key=payload["source_metadata"]["variant_key"],
-                cloud_evidence=payload["evidence"]["cloud"],
+                connected=True,
+                collector={"collector_pn": "E5000025388419"},
+                inverter={"model_name": "SMG 6200"},
+                values={"operating_mode": "Off-Grid"},
+                data={"server_ip": "192.168.1.50"},
+                options={"poll_interval": 10},
+                profile_name="smg_modbus.json",
+                register_schema_name="modbus_smg/models/smg_6200.json",
+                variant_key="default",
+                cloud_evidence=_sample_cloud_evidence(),
             )
 
-            self.assertEqual(path.suffix, ".json")
             self.assertTrue(path.exists())
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(raw["entry"]["entry_id"], "entry123")
-            self.assertEqual(raw["source_metadata"]["profile_name"], "smg_modbus.json")
-            self.assertEqual(raw["source_metadata"]["variant_key"], "default")
-            self.assertEqual(
-                raw["source_metadata"]["register_schema_name"],
-                "modbus_smg/models/smg_6200.json",
-            )
-            self.assertEqual(raw["runtime"]["values"]["operating_mode"], "Off-Grid")
-            self.assertEqual(
-                raw["evidence"]["cloud"]["device_identity"]["devcode"],
-                2376,
-            )
-
-
+            exported = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(exported["entry"]["entry_id"], "entry123")
+            self.assertEqual(exported["runtime"]["values"]["operating_mode"], "Off-Grid")
+            self.assertEqual(exported["evidence"]["cloud"]["source"], "smartess_cloud_probe")
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,7 @@ if str(REPO_ROOT) not in sys.path:
 
 
 from custom_components.eybond_local.connection.models import EybondConnectionSpec
+from custom_components.eybond_local.collector.at import CollectorAtResponse
 from custom_components.eybond_local.models import CollectorInfo, DetectedInverter, ProbeTarget
 from custom_components.eybond_local.payload.modbus import ModbusError
 from custom_components.eybond_local.runtime.hub import EybondHub
@@ -29,6 +30,7 @@ class _FakeLinkManager:
             last_udp_reply_from="192.168.1.14",
         )
         self.transport = object()
+        self.collector_at_transport = None
 
     async def async_try_connect(self, *, timeout: float, require_heartbeat: bool = False) -> bool:
         if require_heartbeat and not self.heartbeat_result:
@@ -51,6 +53,62 @@ class _FakeLinkManager:
     async def async_reset_connection(self, *, reason: str = "") -> None:
         self.reset_calls += 1
         self.connected = False
+
+
+class _StaleHeartbeatThenRecoveredLinkManager(_FakeLinkManager):
+    def __init__(self) -> None:
+        super().__init__()
+        self.heartbeat_attempts = 0
+
+    async def async_try_connect(self, *, timeout: float, require_heartbeat: bool = False) -> bool:
+        if require_heartbeat:
+            self.heartbeat_attempts += 1
+            if self.heartbeat_attempts == 1:
+                self.connected = True
+                return False
+        self.connected = True
+        return True
+
+
+class _ProxyRouteLinkManager(_FakeLinkManager):
+    def __init__(self) -> None:
+        super().__init__()
+        self.reverse_discovery_flags: list[bool] = []
+        self.reverse_discovery_calls: list[dict[str, float | int]] = []
+        self.callback_listener_ports: list[int] = []
+        self.proxy_route_start_calls: list[dict[str, object]] = []
+        self.proxy_route_stop_calls = 0
+        self.proxy_route_running_value = False
+        self.disconnect_reasons: list[str] = []
+
+    def set_reverse_discovery_enabled(self, enabled: bool) -> None:
+        self.reverse_discovery_flags.append(bool(enabled))
+
+    async def async_ensure_callback_listener(self, port: int) -> None:
+        self.callback_listener_ports.append(int(port))
+
+    async def async_trigger_reverse_discovery(
+        self,
+        *,
+        port: int = 0,
+        timeout: float = 0.75,
+    ) -> dict[str, object]:
+        self.reverse_discovery_calls.append({"port": int(port), "timeout": float(timeout)})
+        return {"status": "probe_sent"}
+
+    async def async_start_proxy_capture_route(self, **kwargs) -> None:
+        self.proxy_route_start_calls.append(dict(kwargs))
+        self.proxy_route_running_value = True
+
+    async def async_stop_proxy_capture_route(self) -> None:
+        self.proxy_route_stop_calls += 1
+        self.proxy_route_running_value = False
+
+    def proxy_capture_route_running(self) -> bool:
+        return self.proxy_route_running_value
+
+    async def async_disconnect_collector_connections(self, *, reason: str = "") -> None:
+        self.disconnect_reasons.append(str(reason))
 
 
 class _TimeoutDriver:
@@ -253,6 +311,112 @@ class _WriteConfirmedWhileChargingDriver:
         return value
 
 
+class _CollectorQueryTransport:
+    def __init__(self, responses: dict[tuple[int, bytes], bytes]) -> None:
+        self._responses = dict(responses)
+        self.requests: list[tuple[int, bytes]] = []
+
+    async def async_send_collector(
+        self,
+        *,
+        fcode: int,
+        payload: bytes = b"",
+        devcode: int = 0,
+        collector_addr: int = 1,
+    ):
+        self.requests.append((fcode, payload))
+        return (None, self._responses[(fcode, payload)])
+
+
+class _CollectorManagementTransport:
+    def __init__(self) -> None:
+        self.endpoint = "47.91.67.66,18899,TCP"
+        self.reboot_required = "0"
+        self.requests: list[tuple[int, bytes]] = []
+
+    async def async_send_collector(
+        self,
+        *,
+        fcode: int,
+        payload: bytes = b"",
+        devcode: int = 0,
+        collector_addr: int = 1,
+    ):
+        self.requests.append((fcode, payload))
+        if fcode == 2:
+            parameter = payload[0]
+            if parameter == 21:
+                return (None, bytes((0, 21)) + self.endpoint.encode("ascii"))
+            if parameter == 30:
+                return (None, bytes((0, 30)) + self.reboot_required.encode("ascii"))
+            raise KeyError((fcode, payload))
+        if fcode == 3:
+            parameter = payload[0]
+            value = payload[1:].decode("ascii")
+            if parameter == 21:
+                self.endpoint = value
+                self.reboot_required = "1"
+                return (None, bytes((0, 21)))
+            if parameter == 29:
+                self.reboot_required = "0"
+                return (None, bytes((0, 29)))
+            raise KeyError((fcode, payload))
+        raise KeyError((fcode, payload))
+
+
+class _CollectorAtQueryTransport:
+    def __init__(self, responses: dict[str, str], *, connected: bool = True) -> None:
+        self._responses = dict(responses)
+        self.connected = connected
+        self.queries: list[str] = []
+
+    async def async_query(self, command: str) -> CollectorAtResponse:
+        self.queries.append(command)
+        value = self._responses[command]
+        return CollectorAtResponse(command=command, value=value, raw=f"AT+{command}:{value}")
+
+
+class _CollectorOnlyLinkManager(_FakeLinkManager):
+    def __init__(self, at_transport: _CollectorAtQueryTransport) -> None:
+        super().__init__()
+        self.connected = False
+        self.transport = object()
+        self.collector_at_transport = at_transport
+
+    async def async_try_connect(self, *, timeout: float, require_heartbeat: bool = False) -> bool:
+        return False
+
+
+class _AmbiguousActiveLinkManager(_FakeLinkManager):
+    def __init__(
+        self,
+        transport: _CollectorQueryTransport,
+        at_transport: _CollectorAtQueryTransport,
+    ) -> None:
+        super().__init__()
+        self.connected = False
+        self.transport = transport
+        self.collector_at_transport = at_transport
+        self.active_transport = None
+        self.active_collector_at_transport = None
+
+    async def async_try_connect(self, *, timeout: float, require_heartbeat: bool = False) -> bool:
+        return False
+
+
+class _RuntimeValuesDriver:
+    async def async_read_values(
+        self,
+        transport,
+        inverter,
+        *,
+        runtime_state=None,
+        poll_interval=None,
+        now_monotonic=None,
+    ):
+        return {"output_power": 420}
+
+
 class HubSnapshotTests(unittest.TestCase):
     def test_build_snapshot_includes_effective_profile_and_schema_names(self) -> None:
         hub = EybondHub(
@@ -372,6 +536,31 @@ class HubSnapshotTests(unittest.TestCase):
             "heartbeat_timeout",
         )
 
+    def test_build_snapshot_prefers_more_complete_runtime_collector_pn(self) -> None:
+        hub = EybondHub(
+            connection=EybondConnectionSpec(
+                server_ip="192.168.1.10",
+                collector_ip="192.168.1.14",
+                tcp_port=8899,
+                udp_port=58899,
+                discovery_target="192.168.1.255",
+                discovery_interval=30,
+                heartbeat_interval=60,
+                request_timeout=5.0,
+            ),
+        )
+        hub._link_manager = _FakeLinkManager()
+        hub._link_manager.collector_info.collector_pn = "E5000025388419"
+
+        snapshot = hub._build_snapshot(
+            extra_values={"collector_pn": "E50000253884199645"}
+        )
+
+        self.assertEqual(snapshot.collector.collector_pn, "E50000253884199645")
+        self.assertEqual(snapshot.collector.collector_pn_prefix, "E")
+        self.assertEqual(snapshot.collector.collector_pn_digits, "50000253884199645")
+        self.assertEqual(snapshot.values["collector_pn"], "E50000253884199645")
+
     def test_build_snapshot_recomputes_smg_canonical_battery_power(self) -> None:
         hub = EybondHub(
             connection=EybondConnectionSpec(
@@ -448,6 +637,508 @@ class HubSnapshotTests(unittest.TestCase):
             self.assertGreater(snapshot.values["runtime_backoff_seconds"], 0)
             self.assertEqual(hub._link_manager.reset_calls, 1)
             self.assertEqual(hub._driver.calls, 2)
+
+        asyncio.run(_run())
+
+    def test_async_refresh_merges_safe_collector_runtime_queries(self) -> None:
+        async def _run() -> None:
+            hub = EybondHub(
+                connection=EybondConnectionSpec(
+                    server_ip="192.168.1.10",
+                    collector_ip="192.168.1.14",
+                    tcp_port=8899,
+                    udp_port=58899,
+                    discovery_target="192.168.1.255",
+                    discovery_interval=30,
+                    heartbeat_interval=60,
+                    request_timeout=5.0,
+                ),
+            )
+            link_manager = _FakeLinkManager()
+            link_manager.transport = _CollectorQueryTransport(
+                {
+                    (2, b"\x04"): b"\x00\x041.11",
+                    (2, b"\x05"): b"\x00\x058.50.12.3",
+                    (2, b"\x06"): b"\x00\x061.0",
+                    (2, b"\x0e"): b"\x00\x0e0925#Hybrid",
+                    (2, b"\x10"): b"\x00\x10192.168.1.55",
+                    (2, b"\x15"): b"\x00\x15192.168.1.193,18899,TCP",
+                    (2, b"\x1e"): b"\x00\x1e1",
+                    (2, b"\x20"): b"\x00\x20RTU",
+                    (2, b"\x22"): b"\x00\x229600,8,1,NONE",
+                    (2, b"\x30"): b"\x00\x30STA:-67",
+                    (2, b"\x37"): b"\x00\x37-67",
+                }
+            )
+            hub._link_manager = link_manager
+            hub._driver = _RuntimeValuesDriver()
+            hub._inverter = DetectedInverter(
+                driver_key="modbus_smg",
+                protocol_family="modbus_smg",
+                model_name="SMG 6200",
+                serial_number="INV123",
+                probe_target=ProbeTarget(devcode=1, collector_addr=1, device_addr=1),
+                profile_name="builtin:profiles/modbus_smg/default.json",
+                register_schema_name="builtin:register_schemas/modbus_smg/models/smg_6200.json",
+            )
+
+            snapshot = await hub.async_refresh(poll_interval=3.0)
+
+            self.assertEqual(snapshot.values["smartess_collector_version"], "8.50.12.3")
+            self.assertEqual(snapshot.values["collector_protocol_version"], "1.11")
+            self.assertEqual(snapshot.values["collector_hardware_version"], "1.0")
+            self.assertEqual(snapshot.values["collector_local_ip_address"], "192.168.1.55")
+            self.assertEqual(snapshot.values["collector_server_endpoint"], "192.168.1.193,18899,TCP")
+            self.assertEqual(snapshot.values["collector_reboot_required"], "1")
+            self.assertEqual(snapshot.values["collector_transmission_mode"], "RTU")
+            self.assertEqual(snapshot.values["collector_serial_baudrate"], "9600,8,1,NONE")
+            self.assertEqual(snapshot.values["collector_network_diagnostics"], "STA:-67")
+            self.assertEqual(snapshot.values["collector_signal_strength"], -67)
+            self.assertEqual(snapshot.values["collector_signal_strength_raw"], "-67")
+            self.assertEqual(snapshot.values["collector_signal_strength_source"], "Wi-Fi RSSI")
+            self.assertEqual(snapshot.values["collector_signal_quality"], "excellent")
+            self.assertEqual(snapshot.values["collector_callback_owner"], "Custom endpoint")
+            self.assertEqual(snapshot.values["smartess_protocol_asset_id"], "0925")
+            self.assertEqual(snapshot.values["smartess_protocol_profile_key"], "smartess_0925")
+
+        asyncio.run(_run())
+
+    def test_async_refresh_prefers_at_signal_queries_over_fc_values(self) -> None:
+        async def _run() -> None:
+            hub = EybondHub(
+                connection=EybondConnectionSpec(
+                    server_ip="192.168.1.10",
+                    collector_ip="192.168.1.14",
+                    tcp_port=8899,
+                    udp_port=58899,
+                    discovery_target="192.168.1.255",
+                    discovery_interval=30,
+                    heartbeat_interval=60,
+                    request_timeout=5.0,
+                ),
+            )
+            link_manager = _FakeLinkManager()
+            link_manager.transport = _CollectorQueryTransport(
+                {
+                    (2, b"\x15"): b"\x00\x15fc.example,18899,TCP",
+                    (2, b"\x29"): b"\x00\x29MyWiFi",
+                    (2, b"\x30"): b"\x00\x301",
+                    (2, b"\x37"): b"\x00\x371",
+                }
+            )
+            link_manager.collector_at_transport = _CollectorAtQueryTransport(
+                {
+                    "ATVER": "2.05",
+                    "CLDSRVHOST1": "at.example,18899,TCP",
+                    "DTUPN": "E1234567890",
+                    "DTUTYPE": "Wi-Fi.DTU",
+                    "ENUPMODE": "ON",
+                    "FWVER": "8.50.12.3",
+                    "HTBT": "60",
+                    "INTPARA49": "ssid1,-55;ssid2,-71",
+                    "LINK": "STA,CONNECTED",
+                    "SYST": "20250120120000",
+                    "UART": "9600,8,1,NONE",
+                    "WFSS": "-55",
+                }
+            )
+            hub._link_manager = link_manager
+            hub._driver = _RuntimeValuesDriver()
+            hub._inverter = DetectedInverter(
+                driver_key="modbus_smg",
+                protocol_family="modbus_smg",
+                model_name="SMG 6200",
+                serial_number="INV123",
+                probe_target=ProbeTarget(devcode=1, collector_addr=1, device_addr=1),
+                profile_name="builtin:profiles/modbus_smg/default.json",
+                register_schema_name="builtin:register_schemas/modbus_smg/models/smg_6200.json",
+            )
+
+            snapshot = await hub.async_refresh(poll_interval=3.0)
+
+            self.assertEqual(snapshot.values["collector_server_endpoint"], "at.example,18899,TCP")
+            self.assertEqual(snapshot.values["collector_signal_strength"], -55)
+            self.assertEqual(snapshot.values["collector_signal_strength_raw"], "-55")
+            self.assertEqual(snapshot.values["collector_signal_strength_source"], "Wi-Fi RSSI")
+            self.assertEqual(snapshot.values["collector_signal_quality"], "excellent")
+            self.assertEqual(snapshot.values["collector_type"], "Wi-Fi.DTU")
+            self.assertEqual(snapshot.values["collector_upload_mode"], "ON")
+            self.assertEqual(snapshot.values["collector_system_time"], "20250120120000")
+            self.assertEqual(snapshot.values["collector_cloud_heartbeat_value"], "60")
+            self.assertEqual(snapshot.values["collector_ssid"], "MyWiFi")
+            self.assertEqual(snapshot.values["collector_link_status"], "STA,CONNECTED")
+            self.assertEqual(snapshot.values["collector_wifi_scan_list"], "ssid1,-55;ssid2,-71")
+
+        asyncio.run(_run())
+
+    def test_async_refresh_returns_collector_only_at_snapshot_when_framed_link_is_missing(self) -> None:
+        async def _run() -> None:
+            hub = EybondHub(
+                connection=EybondConnectionSpec(
+                    server_ip="192.168.1.10",
+                    collector_ip="192.168.1.14",
+                    tcp_port=8899,
+                    udp_port=58899,
+                    discovery_target="192.168.1.255",
+                    discovery_interval=30,
+                    heartbeat_interval=60,
+                    request_timeout=5.0,
+                ),
+            )
+            at_transport = _CollectorAtQueryTransport(
+                {
+                    "ATVER": "2.05",
+                    "CLDSRVHOST1": "at.example,18899,TCP",
+                    "DTUPN": "E1234567890",
+                    "DTUTYPE": "Wi-Fi.DTU",
+                    "ENUPMODE": "ON",
+                    "FWVER": "8.50.12.3",
+                    "HTBT": "60",
+                    "INTPARA49": "ssid1,-55;ssid2,-71",
+                    "LINK": "STA,CONNECTED",
+                    "SYST": "20250120120000",
+                    "UART": "9600,8,1,NONE",
+                    "WFSS": "-55",
+                },
+                connected=False,
+            )
+            hub._link_manager = _CollectorOnlyLinkManager(at_transport)
+
+            snapshot = await hub.async_refresh(poll_interval=3.0)
+
+            self.assertFalse(snapshot.connected)
+            self.assertEqual(snapshot.last_error, "waiting_for_collector")
+            self.assertEqual(snapshot.values["collector_protocol_version"], "2.05")
+            self.assertEqual(snapshot.values["collector_server_endpoint"], "at.example,18899,TCP")
+            self.assertEqual(snapshot.values["collector_signal_strength"], -55)
+            self.assertEqual(snapshot.values["collector_signal_quality"], "excellent")
+            self.assertEqual(snapshot.values["collector_type"], "Wi-Fi.DTU")
+            self.assertEqual(snapshot.values["collector_upload_mode"], "ON")
+            self.assertEqual(snapshot.values["collector_cloud_heartbeat_value"], "60")
+            self.assertNotIn("collector_ssid", snapshot.values)
+            self.assertEqual(snapshot.values["collector_link_status"], "STA,CONNECTED")
+            self.assertEqual(snapshot.values["collector_wifi_scan_list"], "ssid1,-55;ssid2,-71")
+
+        asyncio.run(_run())
+
+    def test_async_refresh_skips_runtime_collector_queries_when_active_transports_are_ambiguous(self) -> None:
+        async def _run() -> None:
+            hub = EybondHub(
+                connection=EybondConnectionSpec(
+                    server_ip="192.168.1.10",
+                    collector_ip="",
+                    tcp_port=8899,
+                    udp_port=58899,
+                    discovery_target="192.168.1.255",
+                    discovery_interval=30,
+                    heartbeat_interval=60,
+                    request_timeout=5.0,
+                ),
+            )
+            transport = _CollectorQueryTransport(
+                {
+                    (2, b"\x15"): b"\x00\x15wrong.example,18899,TCP",
+                }
+            )
+            at_transport = _CollectorAtQueryTransport(
+                {
+                    "ATVER": "2.05",
+                }
+            )
+            hub._link_manager = _AmbiguousActiveLinkManager(transport, at_transport)
+
+            snapshot = await hub.async_refresh(poll_interval=3.0)
+
+            self.assertFalse(snapshot.connected)
+            self.assertEqual(snapshot.last_error, "waiting_for_collector")
+            self.assertEqual(transport.requests, [])
+            self.assertEqual(at_transport.queries, [])
+            self.assertNotIn("collector_protocol_version", snapshot.values)
+            self.assertNotIn("collector_server_endpoint", snapshot.values)
+
+        asyncio.run(_run())
+
+    def test_build_snapshot_normalizes_signal_quality_for_gprs_csq(self) -> None:
+        hub = EybondHub(
+            connection=EybondConnectionSpec(
+                server_ip="192.168.1.10",
+                collector_ip="192.168.1.14",
+                tcp_port=8899,
+                udp_port=58899,
+                discovery_target="192.168.1.255",
+                discovery_interval=30,
+                heartbeat_interval=60,
+                request_timeout=5.0,
+            ),
+        )
+        hub._link_manager = _FakeLinkManager()
+
+        snapshot = hub._build_snapshot(
+            extra_values={
+                "collector_signal_strength": -111,
+                "collector_signal_strength_source": "gprs_csq",
+                "collector_signal_strength_raw": "1",
+            }
+        )
+
+        self.assertEqual(snapshot.values["collector_signal_strength"], -111)
+        self.assertEqual(snapshot.values["collector_signal_strength_source"], "GPRS CSQ")
+        self.assertEqual(snapshot.values["collector_signal_quality"], "weak")
+
+    def test_build_snapshot_marks_proxy_callback_on_home_assistant_as_home_assistant(self) -> None:
+        hub = EybondHub(
+            connection=EybondConnectionSpec(
+                server_ip="192.168.1.10",
+                collector_ip="192.168.1.14",
+                tcp_port=8899,
+                udp_port=58899,
+                discovery_target="192.168.1.255",
+                discovery_interval=30,
+                heartbeat_interval=60,
+                request_timeout=5.0,
+            ),
+        )
+        hub._link_manager = _FakeLinkManager()
+
+        snapshot = hub._build_snapshot(
+            extra_values={
+                "collector_server_endpoint": "192.168.1.10,18899,TCP",
+            }
+        )
+
+        self.assertEqual(snapshot.values["collector_callback_owner"], "Home Assistant")
+
+    def test_proxy_capture_route_methods_delegate_to_link_manager(self) -> None:
+        async def _run() -> None:
+            hub = EybondHub(
+                connection=EybondConnectionSpec(
+                    server_ip="192.168.1.10",
+                    collector_ip="192.168.1.14",
+                    tcp_port=8899,
+                    udp_port=58899,
+                    discovery_target="192.168.1.255",
+                    discovery_interval=30,
+                    heartbeat_interval=60,
+                    request_timeout=5.0,
+                ),
+            )
+            link_manager = _ProxyRouteLinkManager()
+            hub._link_manager = link_manager
+
+            hub.set_reverse_discovery_enabled(False)
+            await hub.async_ensure_callback_listener(18899)
+            await hub.async_trigger_reverse_discovery(timeout=1.25)
+            await hub.async_start_proxy_capture_route(
+                collector_ip="192.168.1.14",
+                listen_port=18899,
+                upstream_host="dtu_ess.eybond.com",
+                upstream_port=18899,
+                output_path=Path("/tmp/proxy-capture.jsonl"),
+                masked_endpoint="dtu_ess.eybond.com,18899,TCP",
+                restore_trigger_path=Path("/tmp/proxy-capture.restore"),
+            )
+            await hub.async_disconnect_collector_connections(reason="proxy_capture_start")
+
+            self.assertEqual(link_manager.reverse_discovery_flags, [False])
+            self.assertEqual(link_manager.callback_listener_ports, [18899])
+            self.assertEqual(
+                link_manager.reverse_discovery_calls,
+                [{"port": 0, "timeout": 1.25}],
+            )
+            self.assertTrue(hub.proxy_capture_route_running())
+            self.assertEqual(
+                link_manager.proxy_route_start_calls,
+                [
+                    {
+                        "collector_ip": "192.168.1.14",
+                        "listen_port": 18899,
+                        "upstream_host": "dtu_ess.eybond.com",
+                        "upstream_port": 18899,
+                        "output_path": Path("/tmp/proxy-capture.jsonl"),
+                        "masked_endpoint": "dtu_ess.eybond.com,18899,TCP",
+                        "restore_trigger_path": Path("/tmp/proxy-capture.restore"),
+                    }
+                ],
+            )
+            self.assertEqual(link_manager.disconnect_reasons, ["proxy_capture_start"])
+
+            await hub.async_stop_proxy_capture_route()
+
+            self.assertEqual(link_manager.proxy_route_stop_calls, 1)
+            self.assertFalse(hub.proxy_capture_route_running())
+
+        asyncio.run(_run())
+
+    def test_async_set_collector_server_endpoint_stages_and_applies_parameter_21(self) -> None:
+        async def _run() -> None:
+            hub = EybondHub(
+                connection=EybondConnectionSpec(
+                    server_ip="192.168.1.10",
+                    collector_ip="192.168.1.14",
+                    tcp_port=8899,
+                    udp_port=58899,
+                    discovery_target="192.168.1.255",
+                    discovery_interval=30,
+                    heartbeat_interval=60,
+                    request_timeout=5.0,
+                ),
+            )
+            link_manager = _FakeLinkManager()
+            transport = _CollectorManagementTransport()
+            link_manager.transport = transport
+            hub._link_manager = link_manager
+
+            result = await hub.async_set_collector_server_endpoint(
+                "192.168.1.193,18899,TCP",
+                apply_changes=True,
+            )
+
+            self.assertEqual(result["status"], "applied")
+            self.assertEqual(result["previous_endpoint"], "47.91.67.66,18899,TCP")
+            self.assertEqual(result["requested_endpoint"], "192.168.1.193,18899,TCP")
+            self.assertEqual(result["readback_endpoint"], "192.168.1.193,18899,TCP")
+            self.assertEqual(hub._collector_runtime_values["collector_server_endpoint"], "192.168.1.193,18899,TCP")
+            self.assertEqual(hub._collector_runtime_values["collector_reboot_required"], "1")
+            self.assertEqual(
+                transport.requests,
+                [
+                    (2, b"\x15"),
+                    (3, b"\x15192.168.1.193,18899,TCP"),
+                    (2, b"\x15"),
+                    (2, b"\x1e"),
+                    (3, b"\x1d1"),
+                ],
+            )
+
+        asyncio.run(_run())
+
+    def test_async_apply_collector_changes_triggers_parameter_29_without_endpoint_change(self) -> None:
+        async def _run() -> None:
+            hub = EybondHub(
+                connection=EybondConnectionSpec(
+                    server_ip="192.168.1.10",
+                    collector_ip="192.168.1.14",
+                    tcp_port=8899,
+                    udp_port=58899,
+                    discovery_target="192.168.1.255",
+                    discovery_interval=30,
+                    heartbeat_interval=60,
+                    request_timeout=5.0,
+                ),
+            )
+            link_manager = _FakeLinkManager()
+            transport = _CollectorManagementTransport()
+            transport.reboot_required = "1"
+            link_manager.transport = transport
+            hub._link_manager = link_manager
+
+            result = await hub.async_apply_collector_changes()
+
+            self.assertEqual(result["status"], "applied")
+            self.assertEqual(result["action"], "apply")
+            self.assertEqual(result["current_endpoint"], "47.91.67.66,18899,TCP")
+            self.assertEqual(result["reboot_required_before"], "1")
+            self.assertEqual(hub._collector_runtime_values["collector_reboot_required"], "0")
+            self.assertEqual(
+                transport.requests,
+                [
+                    (2, b"\x15"),
+                    (2, b"\x1e"),
+                    (3, b"\x1d1"),
+                ],
+            )
+
+        asyncio.run(_run())
+
+    def test_async_rollback_collector_server_endpoint_uses_session_cached_previous_value(self) -> None:
+        async def _run() -> None:
+            hub = EybondHub(
+                connection=EybondConnectionSpec(
+                    server_ip="192.168.1.10",
+                    collector_ip="192.168.1.14",
+                    tcp_port=8899,
+                    udp_port=58899,
+                    discovery_target="192.168.1.255",
+                    discovery_interval=30,
+                    heartbeat_interval=60,
+                    request_timeout=5.0,
+                ),
+            )
+            link_manager = _FakeLinkManager()
+            transport = _CollectorManagementTransport()
+            link_manager.transport = transport
+            hub._link_manager = link_manager
+
+            await hub.async_set_collector_server_endpoint(
+                "192.168.1.193,18899,TCP",
+                apply_changes=False,
+            )
+            result = await hub.async_rollback_collector_server_endpoint(apply_changes=False)
+
+            self.assertEqual(result["status"], "rollback_staged")
+            self.assertEqual(result["rollback_source"], "session_cached_previous_endpoint")
+            self.assertEqual(result["rollback_endpoint"], "47.91.67.66,18899,TCP")
+            self.assertEqual(result["readback_endpoint"], "47.91.67.66,18899,TCP")
+            self.assertEqual(hub._collector_runtime_values["collector_server_endpoint"], "47.91.67.66,18899,TCP")
+
+        asyncio.run(_run())
+
+    def test_async_rollback_collector_server_endpoint_preserves_host_only_previous_value(self) -> None:
+        async def _run() -> None:
+            hub = EybondHub(
+                connection=EybondConnectionSpec(
+                    server_ip="192.168.1.10",
+                    collector_ip="192.168.1.14",
+                    tcp_port=8899,
+                    udp_port=58899,
+                    discovery_target="192.168.1.255",
+                    discovery_interval=30,
+                    heartbeat_interval=60,
+                    request_timeout=5.0,
+                ),
+            )
+            link_manager = _FakeLinkManager()
+            transport = _CollectorManagementTransport()
+            transport.endpoint = "ess.eybond.com"
+            link_manager.transport = transport
+            hub._link_manager = link_manager
+
+            await hub.async_set_collector_server_endpoint(
+                "192.168.1.193,18899,TCP",
+                apply_changes=False,
+            )
+            result = await hub.async_rollback_collector_server_endpoint(apply_changes=False)
+
+            self.assertEqual(result["rollback_source"], "session_cached_previous_endpoint")
+            self.assertEqual(result["rollback_endpoint"], "ess.eybond.com")
+            self.assertEqual(result["readback_endpoint"], "ess.eybond.com")
+            self.assertEqual(hub._collector_runtime_values["collector_server_endpoint"], "ess.eybond.com")
+
+        asyncio.run(_run())
+
+    def test_async_rollback_collector_server_endpoint_requires_cached_previous_value(self) -> None:
+        async def _run() -> None:
+            hub = EybondHub(
+                connection=EybondConnectionSpec(
+                    server_ip="192.168.1.10",
+                    collector_ip="192.168.1.14",
+                    tcp_port=8899,
+                    udp_port=58899,
+                    discovery_target="192.168.1.255",
+                    discovery_interval=30,
+                    heartbeat_interval=60,
+                    request_timeout=5.0,
+                ),
+            )
+            link_manager = _FakeLinkManager()
+            transport = _CollectorManagementTransport()
+            transport.server_endpoint = "192.168.1.10,18899,TCP"
+            link_manager.transport = transport
+            hub._link_manager = link_manager
+            hub._collector_runtime_values["collector_server_endpoint"] = "192.168.1.10,18899,TCP"
+
+            with self.assertRaisesRegex(RuntimeError, "collector_rollback_endpoint_unavailable"):
+                await hub.async_rollback_collector_server_endpoint(apply_changes=False)
 
         asyncio.run(_run())
 
@@ -693,6 +1384,43 @@ class HubWriteBlockerTests(unittest.TestCase):
 
             self.assertFalse(snapshot.connected)
             self.assertEqual(snapshot.last_error, "collector_heartbeat_timeout")
+            self.assertEqual(hub._link_manager.reset_calls, 1)
+            self.assertEqual(snapshot.values["runtime_reconnect_count"], 1)
+            self.assertEqual(snapshot.values["runtime_recovery_streak"], 1)
+
+        asyncio.run(_run())
+
+    def test_async_refresh_recovers_after_stale_heartbeat_reset(self) -> None:
+        async def _run() -> None:
+            hub = EybondHub(
+                connection=EybondConnectionSpec(
+                    server_ip="192.168.1.10",
+                    collector_ip="192.168.1.14",
+                    tcp_port=8899,
+                    udp_port=58899,
+                    discovery_target="192.168.1.255",
+                    discovery_interval=30,
+                    heartbeat_interval=60,
+                    request_timeout=5.0,
+                ),
+            )
+            hub._link_manager = _StaleHeartbeatThenRecoveredLinkManager()
+            hub._driver = _RuntimeValuesDriver()
+            hub._inverter = DetectedInverter(
+                driver_key="modbus_smg",
+                protocol_family="modbus_smg",
+                model_name="SMG 6200",
+                serial_number="92632511100118",
+                probe_target=ProbeTarget(devcode=0x0001, collector_addr=0x02, device_addr=0x01),
+            )
+
+            snapshot = await hub.async_refresh(poll_interval=3.0)
+
+            self.assertTrue(snapshot.connected)
+            self.assertIsNone(snapshot.last_error)
+            self.assertEqual(snapshot.values["output_power"], 420)
+            self.assertEqual(snapshot.values["runtime_reconnect_count"], 1)
+            self.assertEqual(snapshot.values["runtime_recovery_streak"], 0)
 
         asyncio.run(_run())
 

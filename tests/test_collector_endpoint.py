@@ -1,0 +1,161 @@
+from __future__ import annotations
+
+from pathlib import Path
+import sys
+import unittest
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+
+from custom_components.eybond_local.collector_endpoint import (  # noqa: E402
+    default_collector_server_port,
+    format_collector_server_endpoint,
+    inspect_collector_server_endpoint,
+    normalize_collector_server_endpoint,
+    parse_collector_server_endpoint,
+    resolve_collector_server_endpoint,
+)
+
+
+class CollectorEndpointTests(unittest.TestCase):
+    def test_format_requires_ipv4_or_hostname_and_tcp(self) -> None:
+        self.assertEqual(
+            format_collector_server_endpoint(
+                server_host="collector.example",
+                server_port=18899,
+                server_protocol="tcp",
+                require_tcp=True,
+            ),
+            "collector.example,18899,TCP",
+        )
+
+        with self.assertRaisesRegex(ValueError, "collector_server_host_invalid"):
+            format_collector_server_endpoint(
+                server_host="http://bad-host",
+                server_port=18899,
+                server_protocol="TCP",
+                require_tcp=True,
+            )
+
+        with self.assertRaisesRegex(ValueError, "collector_server_protocol_tcp_required"):
+            format_collector_server_endpoint(
+                server_host="collector.example",
+                server_port=18899,
+                server_protocol="UDP",
+                require_tcp=True,
+            )
+
+    def test_parse_can_require_explicit_protocol(self) -> None:
+        self.assertEqual(
+            parse_collector_server_endpoint(
+                "10.0.0.25,18899,TCP",
+                require_explicit_port=True,
+                require_explicit_protocol=True,
+                require_tcp=True,
+            ),
+            ("10.0.0.25", 18899, "TCP"),
+        )
+
+        with self.assertRaisesRegex(ValueError, "collector_server_endpoint_invalid"):
+            parse_collector_server_endpoint(
+                "10.0.0.25,18899",
+                require_explicit_port=True,
+                require_explicit_protocol=True,
+                require_tcp=True,
+            )
+
+        self.assertEqual(
+            parse_collector_server_endpoint(
+                "collector-cloud.smartess.example,18899,TCP",
+                require_explicit_port=True,
+                require_explicit_protocol=True,
+                require_tcp=True,
+            ),
+            ("collector-cloud.smartess.example", 18899, "TCP"),
+        )
+
+    def test_parse_can_default_host_only_endpoint_to_legacy_cloud_port(self) -> None:
+        self.assertEqual(
+            parse_collector_server_endpoint(
+                "ess.eybond.com",
+                require_explicit_port=False,
+                require_explicit_protocol=False,
+                require_tcp=True,
+            ),
+            ("ess.eybond.com", 18899, "TCP"),
+        )
+
+        parsed = inspect_collector_server_endpoint(
+            "ess.eybond.com",
+            require_explicit_port=False,
+            require_explicit_protocol=False,
+            require_tcp=True,
+        )
+        self.assertFalse(parsed.has_explicit_port)
+        self.assertFalse(parsed.has_explicit_protocol)
+        self.assertEqual(parsed.render(preserve_shape=True), "ess.eybond.com")
+        self.assertEqual(parsed.render(preserve_shape=False), "ess.eybond.com,18899,TCP")
+
+    def test_resolve_uses_family_default_for_host_only_legacy_endpoint(self) -> None:
+        self.assertEqual(default_collector_server_port(cloud_family="legacy_binary"), 502)
+        self.assertEqual(default_collector_server_port(cloud_family="smartess_at"), 18899)
+        self.assertEqual(
+            resolve_collector_server_endpoint(
+                "ess.eybond.com",
+                require_explicit_port=False,
+                require_explicit_protocol=False,
+                require_tcp=True,
+                cloud_family="legacy_binary",
+            ),
+            ("ess.eybond.com", 502, "TCP"),
+        )
+        self.assertEqual(
+            resolve_collector_server_endpoint(
+                "ess.eybond.com,18899,TCP",
+                require_explicit_port=False,
+                require_explicit_protocol=False,
+                require_tcp=True,
+                cloud_family="legacy_binary",
+            ),
+            ("ess.eybond.com", 18899, "TCP"),
+        )
+
+    def test_normalize_can_preserve_compact_endpoint_shape(self) -> None:
+        self.assertEqual(
+            normalize_collector_server_endpoint(
+                "ess.eybond.com",
+                require_explicit_port=False,
+                require_explicit_protocol=False,
+                require_tcp=True,
+                preserve_shape=True,
+            ),
+            "ess.eybond.com",
+        )
+        self.assertEqual(
+            normalize_collector_server_endpoint(
+                "collector-cloud.smartess.example,18899",
+                require_explicit_port=True,
+                require_explicit_protocol=False,
+                require_tcp=True,
+                preserve_shape=True,
+            ),
+            "collector-cloud.smartess.example,18899",
+        )
+
+    def test_normalize_preserves_existing_non_tcp_runtime_values(self) -> None:
+        self.assertEqual(
+            normalize_collector_server_endpoint(
+                "legacy.example,18899,UDP",
+                require_explicit_port=True,
+                require_explicit_protocol=True,
+                require_tcp=False,
+            ),
+            "legacy.example,18899,UDP",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

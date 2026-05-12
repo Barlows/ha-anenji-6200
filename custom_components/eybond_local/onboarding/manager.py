@@ -21,6 +21,8 @@ class OnboardingManager(Protocol):
         heartbeat_timeout: float = 2.0,
         attempts: int = 3,
         attempt_delay: float = 0.75,
+        enrich_runtime_details: bool = True,
+        total_timeout: float | None = None,
     ) -> tuple[OnboardingResult, ...]:
         ...
 
@@ -36,5 +38,7 @@ class OnboardingManager(Protocol):
         heartbeat_timeout: float = 2.0,
         attempts: int = 3,
         attempt_delay: float = 0.75,
+        enrich_runtime_details: bool = True,
+        total_timeout: float | None = None,
     ) -> tuple[OnboardingResult, ...]:
         ...

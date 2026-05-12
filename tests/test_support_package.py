@@ -106,6 +106,7 @@ class SupportPackageTests(unittest.TestCase):
                 anonymized_fixture = json.loads(
                     archive.read("fixture/anonymized_fixture.json").decode("utf-8")
                 )
+                readme = archive.read("README.txt").decode("utf-8")
 
             self.assertEqual(manifest["entry"]["entry_id"], "entry123")
             self.assertEqual(manifest["archive_version"], 2)
@@ -127,6 +128,7 @@ class SupportPackageTests(unittest.TestCase):
             self.assertNotIn("payload", bundled["evidence"]["cloud"])
             self.assertEqual(raw_capture["capture_kind"], "modbus_register_dump")
             self.assertTrue(anonymized_fixture["anonymized"])
+            self.assertIn("collector, inverter, and integration role sections", readme)
 
     def test_exports_command_based_replay_fixture_archive(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

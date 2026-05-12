@@ -97,6 +97,9 @@ class EybondServer:
             collector_pn_digits=self._collector.collector_pn_digits,
             heartbeat_age_seconds=self._heartbeat_age_seconds(),
             heartbeat_fresh=self._has_fresh_heartbeat(),
+            collector_cloud_family=self._collector.collector_cloud_family,
+            collector_cloud_family_source=self._collector.collector_cloud_family_source,
+            collector_cloud_family_confidence=self._collector.collector_cloud_family_confidence,
         ))
 
     def _heartbeat_age_seconds(self) -> float | None:

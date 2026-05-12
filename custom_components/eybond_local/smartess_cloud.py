@@ -428,6 +428,45 @@ class SmartEssCloudError(RuntimeError):
     """Raised when one SmartESS cloud request fails."""
 
 
+CLOUD_ERROR_AUTH_FAILED = "auth_failed"
+CLOUD_ERROR_RATE_LIMITED = "rate_limited"
+CLOUD_ERROR_UNAVAILABLE = "unavailable"
+CLOUD_ERROR_TIMEOUT = "timeout"
+CLOUD_ERROR_NETWORK = "network"
+CLOUD_ERROR_UNEXPECTED = "unexpected"
+
+
+def classify_smartess_cloud_error(exc: BaseException) -> str:
+    """Map a cloud failure to a stable code suitable for translation lookup.
+
+    The returned value is one of the ``CLOUD_ERROR_*`` constants. Callers can
+    surface a localized message and a field-level error indicator without
+    parsing the raw English message string.
+    """
+
+    if isinstance(exc, TimeoutError):
+        return CLOUD_ERROR_TIMEOUT
+    if isinstance(exc, SmartEssCloudError):
+        message = str(exc)
+        if message.startswith("login_failed"):
+            return CLOUD_ERROR_AUTH_FAILED
+        if message.startswith("http_error:401") or message.startswith("http_error:403"):
+            return CLOUD_ERROR_AUTH_FAILED
+        if message.startswith("http_error:429"):
+            return CLOUD_ERROR_RATE_LIMITED
+        if message.startswith("http_error:5"):
+            return CLOUD_ERROR_UNAVAILABLE
+        if message.startswith("network_error"):
+            lowered = message.lower()
+            if "timed out" in lowered or "timeout" in lowered:
+                return CLOUD_ERROR_TIMEOUT
+            return CLOUD_ERROR_NETWORK
+        if message.startswith("invalid_json") or message.startswith("invalid_envelope"):
+            return CLOUD_ERROR_UNAVAILABLE
+        return CLOUD_ERROR_UNEXPECTED
+    return CLOUD_ERROR_UNEXPECTED
+
+
 @dataclass(frozen=True, slots=True)
 class ApiEnvelope:
     """One parsed SmartESS cloud response envelope."""

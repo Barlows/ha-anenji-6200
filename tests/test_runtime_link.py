@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+import subprocess
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -12,8 +13,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
+from custom_components.eybond_local.collector.discovery import DiscoveryProbeResult
 from custom_components.eybond_local.models import CollectorInfo
-from custom_components.eybond_local.runtime.link import EybondRuntimeLinkManager
+from custom_components.eybond_local.runtime.link import EybondRuntimeLinkManager, resolve_server_ip
 
 
 class _FakeTransport:
@@ -23,20 +25,23 @@ class _FakeTransport:
         connected: bool = False,
         connect_result: bool = True,
         heartbeat_result: bool = True,
+        remote_ip: str = "192.168.1.14",
     ) -> None:
         self.connected = connected
-        self.collector_info = CollectorInfo(remote_ip="192.168.1.14", collector_pn="PN123")
+        self.collector_info = CollectorInfo(remote_ip=remote_ip, collector_pn="PN123")
         self._connect_result = connect_result
         self._heartbeat_result = heartbeat_result
         self.connected_waits: list[float] = []
         self.heartbeat_waits: list[float] = []
         self.disconnect_calls = 0
+        self.start_calls = 0
+        self.stop_calls = 0
 
     async def start(self) -> None:
-        return None
+        self.start_calls += 1
 
     async def stop(self) -> None:
-        return None
+        self.stop_calls += 1
 
     async def wait_until_connected(self, timeout: float) -> bool:
         self.connected_waits.append(timeout)
@@ -46,6 +51,7 @@ class _FakeTransport:
 
     async def wait_until_heartbeat(self, timeout: float) -> bool:
         self.heartbeat_waits.append(timeout)
+        self.collector_info.heartbeat_fresh = self._heartbeat_result
         return self._heartbeat_result
 
     async def disconnect(self) -> None:
@@ -68,14 +74,81 @@ class _FakeAnnouncer:
 
 
 class RuntimeLinkManagerTests(unittest.TestCase):
-    def _build_manager(self) -> EybondRuntimeLinkManager:
+    def test_resolve_server_ip_uses_busybox_ip_o_fallback(self) -> None:
+        side_effects = [
+            subprocess.CalledProcessError(1, ["ip", "-j", "-4", "addr", "show", "up"]),
+            "1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever preferred_lft forever\n"
+            "2: end0    inet 192.168.1.104/24 brd 192.168.1.255 scope global dynamic noprefixroute end0\\       valid_lft 41807sec preferred_lft 41807sec\n"
+            "3: wlan0    inet 192.168.88.92/24 brd 192.168.88.255 scope global dynamic noprefixroute wlan0\\       valid_lft 5809sec preferred_lft 5809sec\n",
+        ]
+
+        with patch(
+            "custom_components.eybond_local.runtime.link.subprocess.check_output",
+            side_effect=side_effects,
+        ), patch(
+            "custom_components.eybond_local.runtime.link._default_local_ip",
+            return_value="192.168.1.104",
+        ):
+            resolved = resolve_server_ip(
+                "192.168.88.91",
+                collector_ip="192.168.88.88",
+            )
+
+        self.assertEqual(resolved, "192.168.88.92")
+
+    def test_resolve_server_ip_prefers_active_ip_on_collector_subnet(self) -> None:
+        with patch(
+            "custom_components.eybond_local.runtime.link._active_ipv4_interfaces",
+            return_value=(("192.168.1.104", 24), ("192.168.88.92", 24)),
+        ), patch(
+            "custom_components.eybond_local.runtime.link._default_local_ip",
+            return_value="192.168.1.104",
+        ):
+            resolved = resolve_server_ip(
+                "192.168.88.91",
+                collector_ip="192.168.88.88",
+            )
+
+        self.assertEqual(resolved, "192.168.88.92")
+
+    def test_resolve_server_ip_keeps_same_subnet_config_for_ap_mode(self) -> None:
+        with patch(
+            "custom_components.eybond_local.runtime.link._active_ipv4_interfaces",
+            return_value=(("192.168.1.104", 24),),
+        ), patch(
+            "custom_components.eybond_local.runtime.link._default_local_ip",
+            return_value="192.168.1.104",
+        ):
+            resolved = resolve_server_ip(
+                "192.168.88.92",
+                collector_ip="192.168.88.88",
+            )
+
+        self.assertEqual(resolved, "192.168.88.92")
+
+    def test_resolve_server_ip_tolerates_blocked_socket_fallback(self) -> None:
+        with patch(
+            "custom_components.eybond_local.runtime.link._active_ipv4_interfaces",
+            return_value=(),
+        ), patch(
+            "custom_components.eybond_local.runtime.link.socket.socket",
+            side_effect=RuntimeError("socket probe blocked"),
+        ):
+            resolved = resolve_server_ip(
+                "192.168.88.95",
+                collector_ip="192.168.88.89",
+            )
+
+        self.assertEqual(resolved, "192.168.88.95")
+
+    def _build_manager(self, *, collector_ip: str = "192.168.1.14") -> EybondRuntimeLinkManager:
         with patch(
             "custom_components.eybond_local.runtime.link.resolve_server_ip",
             return_value="192.168.1.10",
         ):
             return EybondRuntimeLinkManager(
                 server_ip="192.168.1.10",
-                collector_ip="192.168.1.14",
+                collector_ip=collector_ip,
                 tcp_port=8899,
                 udp_port=58899,
                 discovery_target="192.168.1.255",
@@ -95,6 +168,30 @@ class RuntimeLinkManagerTests(unittest.TestCase):
         self.assertEqual(collector.last_udp_reply, "set>server=192.168.1.10:8899;")
         self.assertEqual(collector.last_udp_reply_from, "192.168.1.14:58899")
 
+    def test_collector_info_prefers_more_complete_at_pn(self) -> None:
+        manager = self._build_manager()
+        transport = _FakeTransport(connected=True)
+        transport.collector_info = CollectorInfo(
+            remote_ip="192.168.1.14",
+            collector_pn="E5000025388419",
+            collector_pn_prefix="E",
+            collector_pn_digits="5000025388419",
+        )
+        at_transport = _FakeTransport(connected=True)
+        at_transport.collector_info = CollectorInfo(
+            remote_ip="192.168.1.14",
+            collector_pn="E50000253884199645",
+        )
+        manager._transport = transport  # type: ignore[assignment]
+        manager._at_transport = at_transport  # type: ignore[assignment]
+        manager._announcer = _FakeAnnouncer()  # type: ignore[assignment]
+
+        collector = manager.collector_info
+
+        self.assertEqual(collector.collector_pn, "E50000253884199645")
+        self.assertEqual(collector.collector_pn_prefix, "E")
+        self.assertEqual(collector.collector_pn_digits, "50000253884199645")
+
     def test_async_try_connect_uses_discovery_then_stops_it(self) -> None:
         manager = self._build_manager()
         transport = _FakeTransport(connected=False, connect_result=True)
@@ -109,6 +206,210 @@ class RuntimeLinkManagerTests(unittest.TestCase):
         self.assertEqual(announcer.stop_calls, 1)
         self.assertEqual(transport.connected_waits, [5.0])
         self.assertEqual(transport.heartbeat_waits, [1.5])
+
+    def test_async_try_connect_can_wait_without_reverse_discovery(self) -> None:
+        manager = self._build_manager()
+        transport = _FakeTransport(connected=False, connect_result=True)
+        announcer = _FakeAnnouncer()
+        manager._transport = transport  # type: ignore[assignment]
+        manager._announcer = announcer  # type: ignore[assignment]
+        manager.set_reverse_discovery_enabled(False)
+
+        connected = asyncio.run(manager.async_try_connect(timeout=5.0, require_heartbeat=True))
+
+        self.assertTrue(connected)
+        self.assertEqual(announcer.start_calls, 0)
+        self.assertEqual(announcer.stop_calls, 1)
+        self.assertEqual(transport.connected_waits, [5.0])
+        self.assertEqual(transport.heartbeat_waits, [1.5])
+
+    def test_transport_prefers_connected_auxiliary_listener(self) -> None:
+        manager = self._build_manager()
+        primary_transport = _FakeTransport(connected=False)
+        auxiliary_transport = _FakeTransport(connected=True)
+        manager._transport = primary_transport  # type: ignore[assignment]
+        manager._at_transport = _FakeTransport(connected=False)  # type: ignore[assignment]
+        manager._auxiliary_listener_ports = {502}
+        manager._auxiliary_transports = {502: auxiliary_transport}  # type: ignore[assignment]
+        manager._auxiliary_at_transports = {}  # type: ignore[assignment]
+
+        self.assertIs(manager.transport, auxiliary_transport)
+        self.assertTrue(manager.connected)
+
+    def test_runtime_link_without_collector_ip_accepts_same_collector_across_listener_ports(self) -> None:
+        manager = self._build_manager(collector_ip="")
+        primary_transport = _FakeTransport(connected=True, remote_ip="192.168.1.14")
+        auxiliary_transport = _FakeTransport(connected=True, remote_ip="192.168.1.14")
+        primary_transport.collector_info.heartbeat_fresh = False
+        auxiliary_transport.collector_info.heartbeat_fresh = True
+        primary_at_transport = _FakeTransport(connected=True, remote_ip="192.168.1.14")
+        auxiliary_at_transport = _FakeTransport(connected=True, remote_ip="192.168.1.14")
+        manager._transport = primary_transport  # type: ignore[assignment]
+        manager._at_transport = primary_at_transport  # type: ignore[assignment]
+        manager._auxiliary_listener_ports = {502}
+        manager._auxiliary_transports = {502: auxiliary_transport}  # type: ignore[assignment]
+        manager._auxiliary_at_transports = {502: auxiliary_at_transport}  # type: ignore[assignment]
+
+        self.assertTrue(manager.connected)
+        self.assertIs(manager.active_transport, auxiliary_transport)
+        self.assertIs(manager.active_collector_at_transport, primary_at_transport)
+        self.assertEqual(manager.collector_info.remote_ip, "192.168.1.14")
+
+    def test_runtime_link_without_collector_ip_fails_closed_when_listener_ports_disagree(self) -> None:
+        manager = self._build_manager(collector_ip="")
+        manager._transport = _FakeTransport(connected=True, remote_ip="192.168.1.14")  # type: ignore[assignment]
+        manager._at_transport = _FakeTransport(connected=True, remote_ip="192.168.1.14")  # type: ignore[assignment]
+        manager._auxiliary_listener_ports = {502}
+        manager._auxiliary_transports = {502: _FakeTransport(connected=True, remote_ip="192.168.1.55")}  # type: ignore[assignment]
+        manager._auxiliary_at_transports = {502: _FakeTransport(connected=True, remote_ip="192.168.1.55")}  # type: ignore[assignment]
+
+        self.assertFalse(manager.connected)
+        self.assertIsNone(manager.active_transport)
+        self.assertIsNone(manager.active_collector_at_transport)
+        self.assertEqual(manager.collector_info.remote_ip, "")
+
+    def test_async_try_connect_uses_connected_auxiliary_listener(self) -> None:
+        manager = self._build_manager()
+        primary_transport = _FakeTransport(connected=False, connect_result=False)
+        auxiliary_transport = _FakeTransport(connected=False, connect_result=True)
+        manager._transport = primary_transport  # type: ignore[assignment]
+        manager._at_transport = _FakeTransport(connected=False)  # type: ignore[assignment]
+        manager._auxiliary_listener_ports = {502}
+        manager._auxiliary_transports = {502: auxiliary_transport}  # type: ignore[assignment]
+        manager._auxiliary_at_transports = {}  # type: ignore[assignment]
+        manager._announcer = _FakeAnnouncer()  # type: ignore[assignment]
+
+        connected = asyncio.run(manager.async_try_connect(timeout=5.0, require_heartbeat=True))
+
+        self.assertTrue(connected)
+        self.assertFalse(primary_transport.connected)
+        self.assertTrue(auxiliary_transport.connected)
+        self.assertTrue(auxiliary_transport.connected_waits)
+        self.assertEqual(auxiliary_transport.heartbeat_waits, [1.5])
+
+    def test_async_try_connect_accepts_heartbeat_from_auxiliary_listener(self) -> None:
+        manager = self._build_manager()
+        primary_transport = _FakeTransport(connected=True, heartbeat_result=False)
+        auxiliary_transport = _FakeTransport(connected=True, heartbeat_result=True)
+        manager._transport = primary_transport  # type: ignore[assignment]
+        manager._at_transport = _FakeTransport(connected=False)  # type: ignore[assignment]
+        manager._auxiliary_listener_ports = {502}
+        manager._auxiliary_transports = {502: auxiliary_transport}  # type: ignore[assignment]
+        manager._auxiliary_at_transports = {}  # type: ignore[assignment]
+        manager._announcer = _FakeAnnouncer()  # type: ignore[assignment]
+
+        connected = asyncio.run(manager.async_try_connect(timeout=5.0, require_heartbeat=True))
+
+        self.assertTrue(connected)
+        self.assertTrue(primary_transport.heartbeat_waits)
+        self.assertTrue(auxiliary_transport.heartbeat_waits)
+        self.assertIs(manager.transport, auxiliary_transport)
+
+    def test_async_ensure_callback_listener_starts_auxiliary_listener_pair(self) -> None:
+        manager = self._build_manager()
+        payload_transport = _FakeTransport()
+        at_transport = _FakeTransport()
+        manager._build_transport_pair = lambda server_ip, port: (payload_transport, at_transport)  # type: ignore[method-assign]
+
+        asyncio.run(manager.async_ensure_callback_listener(502))
+
+        self.assertEqual(manager._auxiliary_listener_ports, {502})
+        self.assertEqual(payload_transport.start_calls, 1)
+        self.assertEqual(at_transport.start_calls, 1)
+
+    def test_async_trigger_reverse_discovery_uses_bootstrap_listener_defaults(self) -> None:
+        manager = self._build_manager()
+        manager._announcer = _FakeAnnouncer()  # type: ignore[assignment]
+
+        with patch(
+            "custom_components.eybond_local.runtime.link.async_probe_target",
+            new=AsyncMock(
+                return_value=DiscoveryProbeResult(
+                    target_ip="192.168.1.14",
+                    message="set>server=192.168.1.10:8899;",
+                    local_port=43123,
+                    reply="rsp>server=1;",
+                    reply_from="192.168.1.14:58899",
+                )
+            ),
+        ) as probe_target:
+            result = asyncio.run(manager.async_trigger_reverse_discovery())
+
+        probe_target.assert_awaited_once_with(
+            bind_ip="192.168.1.10",
+            advertised_server_ip="192.168.1.10",
+            advertised_server_port=8899,
+            target_ip="192.168.1.14",
+            udp_port=58899,
+            timeout=0.75,
+        )
+        self.assertEqual(manager._announcer.last_reply, "rsp>server=1;")
+        self.assertEqual(manager._announcer.last_reply_from, "192.168.1.14:58899")
+        self.assertEqual(result["advertised_endpoint"], "192.168.1.10:8899")
+
+    def test_proxy_capture_route_lifecycle_uses_shared_listener(self) -> None:
+        manager = self._build_manager()
+        events: list[tuple[str, object]] = []
+
+        class _Handler:
+            running = False
+
+            def __init__(self, **kwargs) -> None:
+                events.append(("handler_init", kwargs))
+
+            async def start(self) -> None:
+                self.running = True
+                events.append(("handler_start", None))
+
+            async def stop(self) -> None:
+                self.running = False
+                events.append(("handler_stop", None))
+
+            async def handle_client(self, reader, writer) -> None:
+                pass
+
+        class _Route:
+            def __init__(self, **kwargs) -> None:
+                events.append(("route_init", kwargs))
+
+            async def start(self) -> None:
+                events.append(("route_start", None))
+
+            async def stop(self) -> None:
+                events.append(("route_stop", None))
+
+        async def _run() -> None:
+            with patch("custom_components.eybond_local.runtime.link.InProcessProxyCaptureHandler", _Handler), patch(
+                "custom_components.eybond_local.runtime.link.SharedProxyCaptureRoute",
+                _Route,
+            ):
+                await manager.async_start_proxy_capture_route(
+                    collector_ip="192.168.1.14",
+                    listen_port=502,
+                    upstream_host="47.91.67.66",
+                    upstream_port=18899,
+                    output_path=Path("/tmp/proxy.jsonl"),
+                    masked_endpoint="ess.eybond.com",
+                    restore_trigger_path=Path("/tmp/proxy.restore"),
+                )
+                self.assertTrue(manager.proxy_capture_route_running())
+                await manager.async_stop_proxy_capture_route()
+                self.assertFalse(manager.proxy_capture_route_running())
+
+        asyncio.run(_run())
+
+        self.assertEqual([event for event, _ in events], [
+            "handler_init",
+            "handler_start",
+            "route_init",
+            "route_start",
+            "route_stop",
+            "handler_stop",
+        ])
+        route_kwargs = dict(events[2][1])
+        self.assertEqual(route_kwargs["host"], "192.168.1.10")
+        self.assertEqual(route_kwargs["port"], 502)
+        self.assertEqual(route_kwargs["collector_ip"], "192.168.1.14")
 
     def test_async_ensure_connected_raises_when_transport_never_connects(self) -> None:
         manager = self._build_manager()

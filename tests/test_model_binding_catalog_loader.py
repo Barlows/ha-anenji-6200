@@ -21,6 +21,11 @@ from custom_components.eybond_local.metadata.model_binding_catalog_loader import
     load_driver_model_binding_catalog,
     resolve_driver_model_binding,
 )
+from custom_components.eybond_local.metadata.pi_family_catalog_loader import (  # noqa: E402
+    PiFamilyCatalog,
+    PiVariantCatalogEntry,
+    PiVariantMatchRule,
+)
 from custom_components.eybond_local.metadata.smartess_protocol_catalog_loader import (  # noqa: E402
     SmartEssProtocolCatalog,
     SmartEssProtocolCatalogEntry,
@@ -131,6 +136,27 @@ class DriverModelBindingCatalogLoaderTests(unittest.TestCase):
                 )
             }
         )
+        pi_family_catalog = PiFamilyCatalog(
+            protocol_families={"PI30": "pi30"},
+            pi30_variants=(
+                PiVariantCatalogEntry(
+                    key="pi30_max",
+                    rules=(
+                        PiVariantMatchRule(
+                            protocol_ids=("PI30",),
+                            model_candidates=(),
+                            qmod_codes=(),
+                            qflag_contains_any=(),
+                            min_qpiri_fields=28,
+                            min_qpigs_fields=None,
+                            min_qpiws_bits=None,
+                        ),
+                    ),
+                    profile_name="pi30_ascii/models/pi30_max.json",
+                    register_schema_name="pi30_ascii/models/pi30_max.json",
+                ),
+            ),
+        )
 
         with (
             patch("custom_components.eybond_local.drivers.registry.all_measurements"),
@@ -146,6 +172,10 @@ class DriverModelBindingCatalogLoaderTests(unittest.TestCase):
                 "custom_components.eybond_local.drivers.registry.load_smartess_protocol_catalog",
                 return_value=protocol_catalog,
             ),
+            patch(
+                "custom_components.eybond_local.drivers.registry.load_pi_family_catalog",
+                return_value=pi_family_catalog,
+            ),
             patch("custom_components.eybond_local.drivers.registry.load_driver_profile") as load_profile,
             patch("custom_components.eybond_local.drivers.registry.load_register_schema") as load_schema,
         ):
@@ -157,6 +187,7 @@ class DriverModelBindingCatalogLoaderTests(unittest.TestCase):
                 "modbus_smg/models/anenji_anj_11kw_48v_wifi_p.json",
                 "smartess_local/models/0925.json",
                 "pi30_ascii/models/smartess_0925_compat.json",
+                "pi30_ascii/models/pi30_max.json",
             ],
         )
         self.assertEqual(
@@ -165,6 +196,7 @@ class DriverModelBindingCatalogLoaderTests(unittest.TestCase):
                 "modbus_smg/models/anenji_anj_11kw_48v_wifi_p.json",
                 "smartess_local/models/0925.json",
                 "pi30_ascii/models/smartess_0925_compat.json",
+                "pi30_ascii/models/pi30_max.json",
             ],
         )
 

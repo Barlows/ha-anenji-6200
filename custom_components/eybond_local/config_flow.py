@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime
+import importlib
 import ipaddress
 import json
 import logging
@@ -14,7 +16,8 @@ import re
 import socket
 import subprocess
 import time
-from typing import Any
+from typing import Any, Callable
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import voluptuous as vol
 
@@ -34,6 +37,13 @@ from homeassistant.helpers.selector import (
     TextSelectorConfig,
 )
 
+from .collector_endpoint import (
+    DEFAULT_COLLECTOR_SERVER_PORT,
+    DEFAULT_COLLECTOR_SERVER_PROTOCOL,
+    format_collector_server_endpoint,
+    inspect_collector_server_endpoint,
+    resolve_collector_server_endpoint,
+)
 from .connection.branch_registry import get_connection_branch, supported_connection_types
 from .connection.entry import (
     build_detected_entry_settings,
@@ -41,11 +51,13 @@ from .connection.entry import (
     build_runtime_option_settings,
     with_driver_hint,
 )
-from .connection.models import build_connection_spec_from_values
+from .connection.models import build_connection_spec, build_connection_spec_from_values
 from .connection.ui import ConnectionFormField
 from .const import (
     CONF_ADVERTISED_TCP_PORT,
     CONF_COLLECTOR_IP,
+    CONF_COLLECTOR_ORIGINAL_SERVER_ENDPOINT,
+    CONF_COLLECTOR_OPERATION_MODE,
     CONF_COLLECTOR_PN,
     CONF_CONNECTION_TYPE,
     CONF_CONNECTION_MODE,
@@ -60,13 +72,18 @@ from .const import (
     CONTROL_MODE_AUTO,
     CONTROL_MODE_FULL,
     CONTROL_MODE_READ_ONLY,
+    COLLECTOR_OPERATION_HA_ONLY,
+    COLLECTOR_OPERATION_MODES,
+    COLLECTOR_OPERATION_SMARTESS_AND_HA,
     CONNECTION_TYPE_EYBOND,
+    DEFAULT_COLLECTOR_OPERATION_MODE,
     DEFAULT_CONTROL_MODE,
     CONF_DISCOVERY_INTERVAL,
     CONF_DISCOVERY_TARGET,
     CONF_DRIVER_HINT,
     CONF_HEARTBEAT_INTERVAL,
     CONF_POLL_INTERVAL,
+    CONF_PROXY_CAPTURE_DURATION_MINUTES,
     CONF_SERVER_IP,
     CONF_TCP_PORT,
     CONF_UDP_PORT,
@@ -75,13 +92,42 @@ from .const import (
     DEFAULT_DISCOVERY_TARGET,
     DEFAULT_HEARTBEAT_INTERVAL,
     DEFAULT_POLL_INTERVAL,
+    DEFAULT_PROXY_CAPTURE_DURATION_MINUTES,
     DEFAULT_REQUEST_TIMEOUT,
     DEFAULT_TCP_PORT,
     DEFAULT_UDP_PORT,
     DOMAIN,
     DRIVER_HINT_AUTO,
+    MAX_PROXY_CAPTURE_DURATION_MINUTES,
+    MIN_PROXY_CAPTURE_DURATION_MINUTES,
 )
 from .control_policy import control_mode_options
+from .collector.discovery import async_probe_target
+from .collector.smartess_local import (
+    QUERY_NETWORK_DIAGNOSTICS,
+    QUERY_REBOOT_REQUIRED,
+    QUERY_WIFI_SCAN_LIST,
+    SET_REBOOT_OR_APPLY,
+    SET_SERVER_ENDPOINT,
+    SET_TARGET_PASSWORD,
+    SET_TARGET_SSID,
+    SmartEssLocalSession,
+)
+from .collector.smartess_ble import (
+    BleakSmartEssBleScanner,
+    BleakSmartEssBleLink,
+    SmartEssBleCandidate,
+    SmartEssBleError,
+    SmartEssBleHostCapability,
+    SmartEssBleProvisionOutcome,
+    SmartEssBleProvisioner,
+    SmartEssBleSession,
+    SmartEssBleWifiNetwork,
+    async_probe_ble_host_capability,
+    normalize_discovered_candidate,
+    parse_wifi_scan_response,
+)
+from .collector.transport import SharedEybondTransport
 from .drivers.registry import driver_options
 from .metadata.local_metadata import (
     draft_activates_automatically,
@@ -89,6 +135,7 @@ from .metadata.local_metadata import (
     local_register_schema_override_details,
     resolve_local_metadata_rollback_paths,
 )
+from .naming import installation_title
 from .metadata.profile_loader import load_driver_profile
 from .metadata.smartess_draft import resolve_smartess_known_family_draft_plan
 from .models import OnboardingResult
@@ -100,20 +147,62 @@ from .onboarding.presentation import (
     scan_result_sort_key,
     scan_result_status_code,
 )
+from .onboarding.timeouts import (
+    DEFAULT_ONBOARDING_TIMEOUT_POLICY,
+    auto_scan_timeout_seconds as _onboarding_auto_scan_timeout_seconds,
+    deep_scan_timeout_seconds as _onboarding_deep_scan_timeout_seconds,
+    manual_probe_timeout_seconds as _onboarding_manual_probe_timeout_seconds,
+)
+from .smartess_cloud import classify_smartess_cloud_error
 from .support.cloud_evidence import fetch_and_export_smartess_device_bundle_cloud_evidence
 
 CONF_RESULT_KEY = "result_key"
+CONF_COLLECTOR_NETWORK_STATUS = "collector_network_status"
+CONF_CONFIRM_COLLECTOR_ENDPOINT_RISK = "confirm_collector_endpoint_risk"
+CONF_COLLECTOR_WIFI_ACTION = "collector_wifi_action"
+CONF_CONFIRM_COLLECTOR_WIFI_APPLY = "confirm_collector_wifi_apply"
 CONF_SETUP_MODE = "setup_mode"
+CONF_BLE_ADDRESS = "ble_address"
+CONF_BLE_ACTION = "ble_action"
+CONF_WIFI_SSID = "wifi_ssid"
+CONF_WIFI_PASSWORD = "wifi_password"
+BLE_ADDRESS_RESCAN = "__rescan__"
+BLE_ACTION_RESCAN = "rescan"
+BLE_ACTION_REFRESH_WIFI = "refresh_wifi"
+BLE_ACTION_APPLY = "apply"
+COLLECTOR_WIFI_ACTION_REFRESH = "refresh"
+COLLECTOR_WIFI_ACTION_APPLY = "apply"
 CONF_SUPPORT_ARCHIVE_SMARTESS_CLOUD_MODE = "smartess_cloud_mode"
 SETUP_MODE_AUTO = "auto"
+SETUP_MODE_BLUETOOTH = "bluetooth"
 SETUP_MODE_DEEP_SCAN = "deep_scan"
 SETUP_MODE_MANUAL = "manual"
+COLLECTOR_NETWORK_ALREADY_CONNECTED = "already_connected"
+COLLECTOR_NETWORK_NEEDS_BLUETOOTH = "needs_bluetooth"
 MANUAL_CONFIRM_ACTION_PROBE_AGAIN = "manual_probe_again"
 MANUAL_CONFIRM_ACTION_EDIT_SETTINGS = "manual_edit_settings"
 MANUAL_CONFIRM_ACTION_CREATE_PENDING = "manual_create_pending"
+PROXY_CAPTURE_ACTION_RESET_TIMER = "reset_timer"
 SUPPORT_ARCHIVE_SMARTESS_CLOUD_MODE_USE_SAVED = "use_saved"
 SUPPORT_ARCHIVE_SMARTESS_CLOUD_MODE_REFRESH = "refresh"
 SUPPORT_ARCHIVE_SMARTESS_CLOUD_MODE_ARCHIVE_ONLY = "archive_only"
+_LOCAL_METADATA_STATUS_TRANSLATION_KEYS = {
+    "Starting collector proxy capture": "starting_proxy_capture",
+    "Collector proxy capture failed to start": "proxy_capture_failed_to_start",
+    "Collector proxy capture running": "proxy_capture_running",
+    "Stopping collector proxy capture": "stopping_proxy_capture",
+    "Collector proxy capture stopped": "proxy_capture_stopped",
+    "Recovered interrupted collector proxy capture": "recovered_interrupted_proxy_capture",
+    "SmartESS cloud evidence exported": "smartess_cloud_evidence_exported",
+    "Support bundle exported": "support_bundle_exported",
+    "Support archive exported": "support_archive_exported",
+    "Local profile draft created": "local_profile_draft_created",
+    "Local register schema draft created": "local_register_schema_draft_created",
+    "Reloading local metadata": "reloading_local_metadata",
+    "Rolling back local metadata": "rolling_back_local_metadata",
+    "SmartESS local draft created": "smartess_local_draft_created",
+    "SmartESS SMG bridge created": "smartess_smg_bridge_created",
+}
 _INT_FIELDS = {
     CONF_ADVERTISED_TCP_PORT,
     CONF_TCP_PORT,
@@ -125,17 +214,43 @@ _INT_FIELDS = {
 logger = logging.getLogger(__name__)
 _TRANSLATIONS_DIR = Path(__file__).with_name("translations")
 _FLOW_TRANSLATIONS_DIR = Path(__file__).with_name("flow_translations")
-_AUTO_SCAN_TIMEOUT = 45.0
-_DEEP_SCAN_BATCH_TIMEOUT = 0.35
-_DEEP_SCAN_CONCURRENCY = 32
-_DEEP_SCAN_FIXED_OVERHEAD = 6.0
-_DEEP_SCAN_TIMEOUT_BUFFER = 30.0
-_MANUAL_PROBE_TIMEOUT = 20.0
+_ONBOARDING_TIMEOUT_POLICY = DEFAULT_ONBOARDING_TIMEOUT_POLICY
+_AUTO_SCAN_TIMEOUT = _onboarding_auto_scan_timeout_seconds(_ONBOARDING_TIMEOUT_POLICY)
+_BLE_SCAN_TIMEOUT = 5.0
+_BLE_CONNECT_TIMEOUT = 30.0
+_BLE_WIFI_SCAN_TIMEOUT = 30.0
+_BLE_WIFI_SCAN_ATTEMPTS = 3
+_BLE_WIFI_SCAN_RETRY_DELAY = 1.0
+_BLE_PROVISION_TIMEOUT = 45.0
+_MANUAL_PROBE_TIMEOUT = _onboarding_manual_probe_timeout_seconds(_ONBOARDING_TIMEOUT_POLICY)
+_CONFIRM_RUNTIME_DETAILS_TIMEOUT = 8.0
 _SCAN_PROGRESS_BAR_WIDTH = 12
+_INTERNAL_SCAN_INTERFACE_NAMES = frozenset({"docker0", "hassio"})
+_INTERNAL_SCAN_INTERFACE_PREFIXES = (
+    "br-",
+    "cni",
+    "docker",
+    "flannel",
+    "veth",
+    "virbr",
+)
 _IP_ADDR_SHOW_ONELINE = re.compile(
     r"^\d+:\s+(?P<ifname>\S+)\s+inet\s+(?P<ip>\d+\.\d+\.\d+\.\d+)/(?P<prefixlen>\d+)"
     r"(?:\s+brd\s+(?P<broadcast>\d+\.\d+\.\d+\.\d+))?\s+scope\s+(?P<scope>\S+)"
 )
+
+
+def _exception_detail(exc: BaseException) -> str:
+    return str(exc) or type(exc).__name__
+
+
+def _is_user_selectable_scan_interface(ifname: str) -> bool:
+    normalized = str(ifname or "").strip().lower()
+    if not normalized:
+        return True
+    if normalized in _INTERNAL_SCAN_INTERFACE_NAMES:
+        return False
+    return not normalized.startswith(_INTERNAL_SCAN_INTERFACE_PREFIXES)
 
 
 @dataclass(slots=True)
@@ -331,6 +446,19 @@ def _apply_smartess_detection_metadata(
         value = _pick(detail_key, collector_attr)
         if value is not None:
             data[config_key] = value
+
+
+def _smartess_collector_firmware_version_for_result(result: OnboardingResult | None) -> str:
+    if result is None:
+        return ""
+    match_details = result.match.details if result.match is not None else {}
+    value = str(match_details.get("smartess_collector_version") or "").strip()
+    if value:
+        return value
+    collector_info = result.collector.collector if result.collector is not None else None
+    if collector_info is None:
+        return ""
+    return str(collector_info.smartess_collector_version or "").strip()
 
 
 def _apply_smartess_cloud_assist_metadata(
@@ -582,10 +710,51 @@ _POLL_INTERVAL_SELECTOR = NumberSelector(
     )
 )
 
+_PROXY_CAPTURE_DURATION_SELECTOR = NumberSelector(
+    NumberSelectorConfig(
+        min=MIN_PROXY_CAPTURE_DURATION_MINUTES,
+        max=MAX_PROXY_CAPTURE_DURATION_MINUTES,
+        step=1,
+        unit_of_measurement="min",
+        mode=NumberSelectorMode.BOX,
+    )
+)
+
 _IP_TEXT_SELECTOR = TextSelector(TextSelectorConfig())
+_BLE_ADDRESS_TEXT_SELECTOR = TextSelector(TextSelectorConfig())
+
+
+def _build_multiline_log_text_selector() -> TextSelector:
+    try:
+        return TextSelector(TextSelectorConfig(multiline=True, read_only=True))
+    except TypeError:
+        return TextSelector(TextSelectorConfig(multiline=True))
+
+
+_MULTILINE_LOG_TEXT_SELECTOR = _build_multiline_log_text_selector()
 _PASSWORD_TEXT_SELECTOR = TextSelector(TextSelectorConfig(type="password"))
 
 _BOOLEAN_SELECTOR = BooleanSelector()
+
+
+def _smartess_credential_schema_fields(
+    *,
+    required: bool = True,
+    username_default: str = "",
+    password_default: str = "",
+) -> dict:
+    """Return one shared SmartESS-credential schema fragment for cloud-assist forms.
+
+    Centralizes the username + password fields used in the cloud-assist step,
+    the standalone evidence-export form, and the create-support-package form so
+    selector wiring stays consistent across the three call sites.
+    """
+
+    marker = vol.Required if required else vol.Optional
+    return {
+        marker("username", default=username_default): _IP_TEXT_SELECTOR,
+        marker("password", default=password_default): _PASSWORD_TEXT_SELECTOR,
+    }
 
 
 def _driver_selector(bundle: dict[str, Any] | None = None) -> SelectSelector:
@@ -661,8 +830,12 @@ def _result_selector(result_options: dict[str, str]) -> SelectSelector:
     )
 
 
-def _setup_mode_selector(auto_label: str, deep_scan_label: str, manual_label: str) -> SelectSelector:
-    """Return a selector for choosing quick scan, deep scan, or manual setup."""
+def _setup_mode_selector(
+    auto_label: str,
+    deep_scan_label: str,
+    manual_label: str,
+) -> SelectSelector:
+    """Return a selector for choosing scan, deep scan, or manual setup."""
 
     options = [
         SelectOptionDict(value=SETUP_MODE_AUTO, label=auto_label),
@@ -675,6 +848,182 @@ def _setup_mode_selector(auto_label: str, deep_scan_label: str, manual_label: st
             mode=SelectSelectorMode.DROPDOWN,
         )
     )
+
+
+def _collector_network_status_selector(
+    already_connected_label: str,
+    needs_bluetooth_label: str,
+) -> SelectSelector:
+    """Return a selector for choosing the collector network onboarding path."""
+
+    return SelectSelector(
+        SelectSelectorConfig(
+            options=[
+                SelectOptionDict(value=COLLECTOR_NETWORK_ALREADY_CONNECTED, label=already_connected_label),
+                SelectOptionDict(value=COLLECTOR_NETWORK_NEEDS_BLUETOOTH, label=needs_bluetooth_label),
+            ],
+            mode=SelectSelectorMode.DROPDOWN,
+        )
+    )
+
+
+def _collector_operation_mode_selector(
+    smartess_and_ha_label: str,
+    ha_only_label: str,
+) -> SelectSelector:
+    """Return a selector for choosing the collector callback ownership mode."""
+
+    return SelectSelector(
+        SelectSelectorConfig(
+            options=[
+                SelectOptionDict(value=COLLECTOR_OPERATION_SMARTESS_AND_HA, label=smartess_and_ha_label),
+                SelectOptionDict(value=COLLECTOR_OPERATION_HA_ONLY, label=ha_only_label),
+            ],
+            mode=SelectSelectorMode.DROPDOWN,
+        )
+    )
+
+
+def _sort_ble_candidates(
+    candidates: tuple[SmartEssBleCandidate, ...],
+) -> tuple[SmartEssBleCandidate, ...]:
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda candidate: (
+                str(candidate.preferred_name or candidate.local_pn or candidate.address).lower(),
+                str(candidate.address).lower(),
+            ),
+        )
+    )
+
+
+def _ble_candidate_label(
+    candidate: SmartEssBleCandidate,
+    *,
+    already_added_label: str = "",
+) -> str:
+    parts: list[str] = []
+    for part in (
+        str(candidate.preferred_name or "").strip(),
+        str(candidate.local_pn or "").strip(),
+        str(candidate.address or "").strip(),
+    ):
+        if part and part not in parts:
+            parts.append(part)
+    label = " - ".join(parts)
+    if already_added_label:
+        label = f"{label} ({already_added_label})"
+    return label
+
+
+def _ble_candidate_by_address(
+    candidates: tuple[SmartEssBleCandidate, ...],
+    address: str,
+) -> SmartEssBleCandidate | None:
+    normalized_address = str(address or "").strip()
+    return next((candidate for candidate in candidates if candidate.address == normalized_address), None)
+
+
+def _ble_candidate_selector(
+    candidates: tuple[SmartEssBleCandidate, ...],
+    *,
+    already_added_addresses: set[str] | None = None,
+    already_added_label: str = "",
+) -> SelectSelector:
+    already_added_addresses = already_added_addresses or set()
+    options = [
+        *[
+            SelectOptionDict(
+                value=candidate.address,
+                label=_ble_candidate_label(
+                    candidate,
+                    already_added_label=(
+                        already_added_label if candidate.address in already_added_addresses else ""
+                    ),
+                ),
+            )
+            for candidate in _sort_ble_candidates(candidates)
+        ],
+    ]
+    return SelectSelector(
+        SelectSelectorConfig(
+            options=options,
+            mode=SelectSelectorMode.DROPDOWN,
+        )
+    )
+
+
+def _ble_action_selector(
+    *,
+    rescan_label: str,
+    refresh_label: str,
+    apply_label: str,
+) -> SelectSelector:
+    return SelectSelector(
+        SelectSelectorConfig(
+            options=[
+                SelectOptionDict(value=BLE_ACTION_RESCAN, label=rescan_label),
+                SelectOptionDict(value=BLE_ACTION_REFRESH_WIFI, label=refresh_label),
+                SelectOptionDict(value=BLE_ACTION_APPLY, label=apply_label),
+            ],
+            mode=SelectSelectorMode.DROPDOWN,
+        )
+    )
+
+
+def _collector_wifi_action_selector(*, refresh_label: str, apply_label: str) -> SelectSelector:
+    return SelectSelector(
+        SelectSelectorConfig(
+            options=[
+                SelectOptionDict(value=COLLECTOR_WIFI_ACTION_REFRESH, label=refresh_label),
+                SelectOptionDict(value=COLLECTOR_WIFI_ACTION_APPLY, label=apply_label),
+            ],
+            mode=SelectSelectorMode.DROPDOWN,
+        )
+    )
+
+
+def _coerce_proxy_capture_duration_minutes(
+    value: object,
+    *,
+    default: int = DEFAULT_PROXY_CAPTURE_DURATION_MINUTES,
+    minimum: int = MIN_PROXY_CAPTURE_DURATION_MINUTES,
+) -> int:
+    try:
+        minutes = int(round(float(value)))
+    except (TypeError, ValueError):
+        minutes = int(default)
+    return max(minimum, min(MAX_PROXY_CAPTURE_DURATION_MINUTES, minutes))
+def _ble_wifi_network_label(network: SmartEssBleWifiNetwork) -> str:
+    signal_label = f"{network.signal}%" if 0 <= network.signal <= 100 else f"{network.signal} dBm"
+    return f"{network.ssid} ({signal_label})"
+
+
+def _ble_wifi_selector(networks: tuple[SmartEssBleWifiNetwork, ...]) -> SelectSelector:
+    seen_ssids: set[str] = set()
+    options: list[SelectOptionDict] = []
+    for network in networks:
+        ssid = str(network.ssid or "").strip()
+        if not ssid or ssid in seen_ssids:
+            continue
+        seen_ssids.add(ssid)
+        options.append(SelectOptionDict(value=ssid, label=_ble_wifi_network_label(network)))
+    return SelectSelector(
+        SelectSelectorConfig(
+            options=options,
+            custom_value=True,
+            mode=SelectSelectorMode.DROPDOWN,
+        )
+    )
+
+
+def _is_retryable_ble_wifi_scan_error(exc: SmartEssBleError) -> bool:
+    code = str(exc)
+    return code in {
+        "ble_not_connected",
+        "ble_notification_timeout",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -752,6 +1101,8 @@ def _parse_ipv4_interfaces_json(raw: list[dict[str, Any]]) -> list[dict[str, str
     interfaces: list[dict[str, str]] = []
     for item in raw:
         ifname = str(item.get("ifname", "")).strip()
+        if ifname and not _is_user_selectable_scan_interface(ifname):
+            continue
         for addr in item.get("addr_info", []):
             ip = str(addr.get("local", "")).strip()
             if not ip:
@@ -790,6 +1141,9 @@ def _parse_ipv4_interfaces_oneline(output: str) -> list[dict[str, str]]:
         ip = str(match.group("ip") or "").strip()
         if not ip or ip.startswith("127."):
             continue
+        ifname = str(match.group("ifname") or "").strip()
+        if ifname and not _is_user_selectable_scan_interface(ifname):
+            continue
         scope = str(match.group("scope") or "").strip()
         if scope not in {"global", "site"}:
             continue
@@ -799,7 +1153,7 @@ def _parse_ipv4_interfaces_oneline(output: str) -> list[dict[str, str]]:
             prefixlen = None
         interfaces.append(
             _build_interface_entry(
-                ifname=str(match.group("ifname") or "").strip(),
+                ifname=ifname,
                 ip=ip,
                 prefixlen=prefixlen,
                 broadcast=str(match.group("broadcast") or "").strip(),
@@ -892,25 +1246,6 @@ def _network_target_count(network_cidr: str, *, exclude: set[str] | None = None)
     return max(0, total - excluded_count)
 
 
-def _estimate_deep_scan_seconds(target_count: int) -> float:
-    if target_count <= 0:
-        return _DEEP_SCAN_FIXED_OVERHEAD
-    batches = (target_count + _DEEP_SCAN_CONCURRENCY - 1) // _DEEP_SCAN_CONCURRENCY
-    return _DEEP_SCAN_FIXED_OVERHEAD + (batches * _DEEP_SCAN_BATCH_TIMEOUT)
-
-
-def _format_duration(seconds: float) -> str:
-    rounded = max(1, int(round(seconds)))
-    minutes, remaining_seconds = divmod(rounded, 60)
-    if minutes <= 0:
-        return f"{remaining_seconds} seconds"
-    if remaining_seconds == 0:
-        return f"{minutes} minutes"
-    if minutes >= 10:
-        return f"{minutes} minutes"
-    return f"{minutes} minutes {remaining_seconds} seconds"
-
-
 def _is_ipv4(ip: str) -> bool:
     try:
         socket.inet_aton(ip)
@@ -940,6 +1275,7 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
         self._manual_result: OnboardingResult | None = None
         self._autodetect_results: dict[str, OnboardingResult] = {}
         self._selected_result: OnboardingResult | None = None
+        self._selected_result_runtime_details_attempted = False
         self._scan_task: asyncio.Task | None = None
         self._scan_error: bool = False
         self._scan_mode = SETUP_MODE_AUTO
@@ -947,9 +1283,25 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
         self._scan_started_monotonic: float | None = None
         self._scan_progress_stage = "preparing"
         self._scan_progress_visible = False
+        self._ble_last_error = ""
+        self._ble_local_adapter_available = False
+        self._ble_ha_backend_available = False
+        self._ble_selected_address = ""
+        self._ble_wifi_networks_by_address: dict[str, tuple[SmartEssBleWifiNetwork, ...]] = {}
+        self._ble_fw_version_by_address: dict[str, str] = {}
+        self._ble_wifi_scan_attempted_addresses: set[str] = set()
+        self._ble_wifi_scan_failed_addresses: set[str] = set()
+        self._collector_operation_mode = ""
+        self._collector_original_server_endpoint = ""
+        self._collector_current_server_endpoint = ""
+        self._collector_target_server_endpoint = ""
+        self._collector_endpoint_error = ""
+        self._collector_endpoint_bind_applied = False
+        self._pending_confirm_input: dict[str, Any] | None = None
         self._smartess_cloud_assist: _SmartEssCloudAssistState | None = None
         self._smartess_cloud_assist_mode = ""
         self._smartess_cloud_assist_last_error = ""
+        self._smartess_cloud_assist_last_error_code = ""
 
     @staticmethod
     @callback
@@ -975,7 +1327,7 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
             self._auto_config = {CONF_CONNECTION_TYPE: connection_type}
             if len(self._interface_options) == 1:
                 self._auto_config[CONF_SERVER_IP] = self._local_ip
-            return await self.async_step_auto()
+            return await self.async_step_collector_network()
 
         data_schema = vol.Schema(
             {
@@ -989,6 +1341,20 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=data_schema,
             description_placeholders=self._welcome_description_placeholders(),
+        )
+
+    # ---- step: collector_network ----
+
+    @_with_translation_bundle
+    async def async_step_collector_network(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        await self._async_ensure_network_defaults()
+        return self.async_show_menu(
+            step_id="collector_network",
+            menu_options=["auto", "bluetooth_setup"],
+            description_placeholders=self._collector_network_placeholders(),
         )
 
     # ---- step: auto (choose interface → trigger scan) ----
@@ -1010,6 +1376,7 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
             effective = dict(user_input)
             effective.pop(CONF_SETUP_MODE, None)
             effective.setdefault(CONF_SERVER_IP, self._local_ip)
+            self._normalize_current_server_ip(effective)
             input_errors = self._validate_connection_inputs(
                 effective,
                 fields=self._connection_branch().form_layout.auto_fields,
@@ -1020,7 +1387,7 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
                 self._auto_config.update(effective)
                 if setup_mode == SETUP_MODE_MANUAL:
                     self._manual_result = None
-                    self._selected_result = None
+                    self._set_selected_result(None)
                     return await self.async_step_manual()
                 if setup_mode == SETUP_MODE_DEEP_SCAN:
                     self._set_scan_mode(SETUP_MODE_DEEP_SCAN)
@@ -1048,6 +1415,168 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
             data_schema=data_schema,
             errors=errors,
             description_placeholders=self._auto_description_placeholders(len(self._interface_options) == 1),
+        )
+
+    @_with_translation_bundle
+    async def async_step_bluetooth_setup(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        ble_candidates: tuple[SmartEssBleCandidate, ...] = ()
+        wifi_networks: tuple[SmartEssBleWifiNetwork, ...] = ()
+        previous_ble_address = self._ble_selected_address
+        defaults = dict(user_input or {})
+        selected_ble_value = str(defaults.get(CONF_BLE_ADDRESS, "") or "").strip()
+        selected_ble_action = str(
+            defaults.get(CONF_BLE_ACTION, BLE_ACTION_APPLY) or BLE_ACTION_APPLY
+        ).strip()
+        if selected_ble_action not in {BLE_ACTION_RESCAN, BLE_ACTION_REFRESH_WIFI, BLE_ACTION_APPLY}:
+            selected_ble_action = BLE_ACTION_APPLY
+        rescan_requested = user_input is not None and selected_ble_action == BLE_ACTION_RESCAN
+        refresh_requested = user_input is not None and selected_ble_action == BLE_ACTION_REFRESH_WIFI
+        apply_requested = user_input is not None and selected_ble_action == BLE_ACTION_APPLY
+
+        # Refreshing the Wi-Fi list should also clear stale Wi-Fi values and re-run
+        # nearby collector discovery before the selected collector is queried again.
+        if refresh_requested:
+            defaults.pop(CONF_WIFI_SSID, None)
+            defaults.pop(CONF_WIFI_PASSWORD, None)
+
+        submitted_ssid = str(defaults.get(CONF_WIFI_SSID, "") or "").strip()
+        submitted_password = str(defaults.get(CONF_WIFI_PASSWORD, "") or "")
+
+        if refresh_requested or rescan_requested:
+            self._ble_last_error = ""
+            selected_ble_value = selected_ble_value or previous_ble_address
+        if refresh_requested:
+            self._ble_wifi_scan_attempted_addresses.clear()
+            self._ble_wifi_scan_failed_addresses.clear()
+
+        capability = await self._async_probe_ble_setup_capability()
+        if not capability.available:
+            self._ble_last_error = str(capability.detail or capability.reason or "").strip()
+            errors["base"] = "ble_unavailable"
+        else:
+            try:
+                ble_candidates = await self._async_discover_smartess_ble_candidates(
+                    force_active_scan=rescan_requested or refresh_requested,
+                )
+            except SmartEssBleError as exc:
+                errors["base"] = self._ble_flow_error_key(exc)
+
+        default_ble_address = selected_ble_value
+        if ble_candidates:
+            candidate_addresses = {candidate.address for candidate in ble_candidates}
+            if default_ble_address not in candidate_addresses:
+                default_ble_address = ble_candidates[0].address
+            ble_address_selector: SelectSelector | TextSelector = _ble_candidate_selector(
+                ble_candidates,
+                already_added_addresses=self._already_added_ble_candidate_addresses(ble_candidates),
+                already_added_label=self._tr("common.dynamic.status_already_added", "Already added"),
+            )
+            ble_address_marker: vol.Marker = vol.Required(
+                CONF_BLE_ADDRESS,
+                default=default_ble_address,
+            )
+        else:
+            ble_address_selector = _BLE_ADDRESS_TEXT_SELECTOR
+            ble_address_marker = vol.Optional(CONF_BLE_ADDRESS, default=default_ble_address)
+
+        self._ble_selected_address = str(default_ble_address or "").strip()
+        already_added_addresses = self._already_added_ble_candidate_addresses(ble_candidates)
+
+        selected_candidate = _ble_candidate_by_address(ble_candidates, default_ble_address)
+        selected_already_added = default_ble_address in already_added_addresses
+        if selected_already_added and user_input is not None:
+            errors[CONF_BLE_ADDRESS] = "already_added_candidate"
+
+        should_scan_selected_wifi = (
+            default_ble_address
+            and not errors
+            and not selected_already_added
+            and (user_input is None or refresh_requested)
+        )
+        if should_scan_selected_wifi:
+            cached_wifi_networks = self._ble_wifi_networks_by_address.get(default_ble_address, ())
+            try:
+                wifi_networks = await self._async_scan_smartess_ble_wifi_networks(
+                    default_ble_address,
+                    ble_device=selected_candidate.device if selected_candidate is not None else None,
+                )
+                self._ble_wifi_networks_by_address[default_ble_address] = wifi_networks
+                self._ble_wifi_scan_failed_addresses.discard(default_ble_address)
+                self._ble_last_error = ""
+            except SmartEssBleError as exc:
+                self._ble_wifi_scan_failed_addresses.add(default_ble_address)
+                self._ble_last_error = str(exc)
+                if cached_wifi_networks:
+                    wifi_networks = cached_wifi_networks
+                else:
+                    errors["base"] = self._ble_flow_error_key(exc)
+                logger.info(
+                    "SmartESS BLE Wi-Fi scan unavailable address=%s error=%s",
+                    default_ble_address,
+                    exc,
+                )
+            finally:
+                self._ble_wifi_scan_attempted_addresses.add(default_ble_address)
+        elif default_ble_address in self._ble_wifi_networks_by_address:
+            wifi_networks = self._ble_wifi_networks_by_address[default_ble_address]
+
+        if refresh_requested or rescan_requested:
+            selected_ble_action = BLE_ACTION_APPLY
+
+        if user_input is not None and not errors:
+            if apply_requested:
+                if not default_ble_address:
+                    errors[CONF_BLE_ADDRESS] = "ble_address_invalid"
+                if not submitted_ssid:
+                    errors[CONF_WIFI_SSID] = "ble_wifi_ssid_invalid"
+                if not submitted_password:
+                    errors[CONF_WIFI_PASSWORD] = "ble_wifi_password_invalid"
+
+            if apply_requested and not errors:
+                selected_candidate = _ble_candidate_by_address(ble_candidates, default_ble_address)
+                try:
+                    await self._async_run_smartess_ble_bootstrap(
+                        ble_address=default_ble_address,
+                        ssid=submitted_ssid,
+                        password=submitted_password,
+                        ble_device=selected_candidate.device if selected_candidate is not None else None,
+                    )
+                except SmartEssBleError as exc:
+                    self._ble_last_error = str(exc)
+                    errors["base"] = self._ble_flow_error_key(exc)
+                else:
+                    self._ble_last_error = ""
+                    return await self.async_step_auto()
+
+        default_wifi_ssid = submitted_ssid
+        if not default_wifi_ssid and wifi_networks:
+            default_wifi_ssid = wifi_networks[0].ssid
+        wifi_ssid_selector = _ble_wifi_selector(wifi_networks)
+
+        data_schema: dict[vol.Marker, Any] = {
+            ble_address_marker: ble_address_selector,
+            vol.Optional(CONF_WIFI_SSID, default=default_wifi_ssid): wifi_ssid_selector,
+        }
+        data_schema[
+            vol.Optional(CONF_WIFI_PASSWORD, default=str(defaults.get(CONF_WIFI_PASSWORD, "")))
+        ] = _PASSWORD_TEXT_SELECTOR
+        data_schema[
+            vol.Required(CONF_BLE_ACTION, default=selected_ble_action)
+        ] = _ble_action_selector(
+            rescan_label=self._bluetooth_rescan_action_label(),
+            refresh_label=self._bluetooth_refresh_wifi_action_label(),
+            apply_label=self._bluetooth_apply_action_label(),
+        )
+
+        return self.async_show_form(
+            step_id="bluetooth_setup",
+            data_schema=vol.Schema(data_schema),
+            errors=errors,
+            description_placeholders=self._bluetooth_setup_placeholders(),
         )
 
     @_with_translation_bundle
@@ -1126,6 +1655,9 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
         discovery_targets = self._scan_discovery_targets()
         deep_scan_plan = self._deep_scan_plan()
         scan_timeout = self._scan_timeout_seconds
+        detector_timeout = max(5.0, scan_timeout - 5.0)
+        if self._scan_mode != SETUP_MODE_DEEP_SCAN:
+            detector_timeout = min(detector_timeout, 40.0)
         self._scan_progress_stage = "discovering"
         progress_updater = asyncio.create_task(self._async_update_scan_progress_loop())
         detector = create_onboarding_manager(
@@ -1141,10 +1673,15 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
                     results = await detector.async_deep_detect(
                         discovery_targets=discovery_targets,
                         unicast_network_cidr=deep_scan_plan["network_cidr"],
+                        enrich_runtime_details=True,
+                        total_timeout=detector_timeout,
                     )
                 else:
                     results = await detector.async_auto_detect(
                         discovery_targets=discovery_targets,
+                        attempts=1,
+                        enrich_runtime_details=False,
+                        total_timeout=detector_timeout,
                     )
         except TimeoutError:
             logger.warning(
@@ -1190,7 +1727,7 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
         self._scan_progress_stage = "finalizing"
         self.async_update_progress(0.99)
         await asyncio.sleep(0.08)
-        self._selected_result = None
+        self._set_selected_result(None)
 
         if not matched and not connected_collectors:
             best_result = visible_results[0] if visible_results else None
@@ -1210,8 +1747,7 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
         if available_results:
             menu_options.append("choose")
         menu_options.append("refresh_scan")
-        if self._scan_mode != SETUP_MODE_DEEP_SCAN:
-            menu_options.append("deep_scan")
+        menu_options.append("deep_scan")
         if len(self._interface_options) > 1:
             menu_options.append("change_scan_interface")
         menu_options.append("manual")
@@ -1287,7 +1823,7 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
         if not available_results:
             return await self.async_step_scan_results()
         if user_input is None and len(available_results) == 1:
-            self._selected_result = next(iter(available_results.values()))
+            self._set_selected_result(next(iter(available_results.values())))
             return await self.async_step_confirm()
 
         errors: dict[str, str] = {}
@@ -1299,7 +1835,7 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
             elif self._existing_entry_for_result(result) is not None:
                 errors["base"] = "already_added_candidate"
             else:
-                self._selected_result = result
+                self._set_selected_result(result)
                 return await self.async_step_confirm()
 
         options = {
@@ -1316,6 +1852,102 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
             data_schema=data_schema,
             errors=errors,
             description_placeholders=self._choose_placeholders(),
+        )
+
+    # ---- step: collector_operation ----
+
+    @_with_translation_bundle
+    async def async_step_collector_operation(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        if self._selected_result is None:
+            return await self.async_step_auto()
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            mode = str(
+                user_input.get(CONF_COLLECTOR_OPERATION_MODE, DEFAULT_COLLECTOR_OPERATION_MODE)
+                or DEFAULT_COLLECTOR_OPERATION_MODE
+            )
+            if mode == COLLECTOR_OPERATION_SMARTESS_AND_HA:
+                self._collector_operation_mode = mode
+                return await self.async_step_confirm()
+            if mode == COLLECTOR_OPERATION_HA_ONLY:
+                self._collector_operation_mode = mode
+                self._reset_collector_endpoint_binding_state()
+                try:
+                    await self._async_bind_selected_collector_to_home_assistant()
+                except Exception as exc:
+                    self._collector_endpoint_error = _exception_detail(exc)
+                    errors["base"] = "collector_endpoint_write_failed"
+                else:
+                    self._collector_endpoint_bind_applied = True
+                    return await self.async_step_confirm()
+            if mode not in COLLECTOR_OPERATION_MODES:
+                errors[CONF_COLLECTOR_OPERATION_MODE] = "invalid_selection"
+
+        return self.async_show_form(
+            step_id="collector_operation",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_COLLECTOR_OPERATION_MODE,
+                        default=self._collector_operation_mode or DEFAULT_COLLECTOR_OPERATION_MODE,
+                    ): self._collector_operation_mode_selector(),
+                }
+            ),
+            errors=errors,
+            description_placeholders=self._collector_operation_placeholders(),
+        )
+
+    # ---- step: collector_endpoint_confirm ----
+
+    @_with_translation_bundle
+    async def async_step_collector_endpoint_confirm(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        if self._selected_result is None:
+            return await self.async_step_auto()
+
+        errors: dict[str, str] = {}
+        if not self._collector_current_server_endpoint and not self._collector_endpoint_error:
+            try:
+                self._collector_current_server_endpoint = await self._async_read_selected_collector_server_endpoint()
+            except Exception as exc:
+                self._collector_endpoint_error = _exception_detail(exc)
+                errors["base"] = "collector_endpoint_read_failed"
+
+        if user_input is not None and not errors:
+            if not bool(user_input.get(CONF_CONFIRM_COLLECTOR_ENDPOINT_RISK)):
+                errors[CONF_CONFIRM_COLLECTOR_ENDPOINT_RISK] = "collector_endpoint_risk_not_confirmed"
+            else:
+                try:
+                    await self._async_bind_selected_collector_to_home_assistant()
+                except Exception as exc:
+                    self._collector_endpoint_error = _exception_detail(exc)
+                    errors["base"] = "collector_endpoint_write_failed"
+                else:
+                    self._collector_endpoint_bind_applied = True
+                    if self._pending_confirm_input is not None:
+                        pending_confirm_input = self._pending_confirm_input
+                        self._pending_confirm_input = None
+                        return await self._async_create_entry_from_result(pending_confirm_input)
+                    return await self.async_step_confirm()
+
+        return self.async_show_form(
+            step_id="collector_endpoint_confirm",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_CONFIRM_COLLECTOR_ENDPOINT_RISK,
+                        default=False,
+                    ): BooleanSelector(),
+                }
+            ),
+            errors=errors,
+            description_placeholders=self._collector_endpoint_confirm_placeholders(),
         )
 
     # ---- step: confirm ----
@@ -1369,6 +2001,7 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
                 return await self.async_step_manual_confirm()
             return await self.async_step_auto()
 
+        errors: dict[str, str] = {}
         if user_input is not None:
             try:
                 self._smartess_cloud_assist = await self._async_run_smartess_cloud_assist(
@@ -1377,20 +2010,21 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
                     password=str(user_input.get("password") or ""),
                 )
                 self._smartess_cloud_assist_last_error = ""
+                self._smartess_cloud_assist_last_error_code = ""
             except Exception as exc:
                 self._smartess_cloud_assist_last_error = str(exc)
+                self._smartess_cloud_assist_last_error_code = (
+                    classify_smartess_cloud_error(exc)
+                )
+                errors["base"] = "smartess_cloud_assist_failed"
             else:
                 return await self.async_step_smartess_cloud_assist_summary()
 
         return self.async_show_form(
             step_id="smartess_cloud_assist",
-            data_schema=vol.Schema(
-                {
-                    vol.Required("username", default=""): _IP_TEXT_SELECTOR,
-                    vol.Required("password", default=""): _PASSWORD_TEXT_SELECTOR,
-                }
-            ),
+            data_schema=vol.Schema(_smartess_credential_schema_fields()),
             description_placeholders=self._smartess_cloud_assist_placeholders(result),
+            errors=errors or None,
         )
 
     @_with_translation_bundle
@@ -1426,17 +2060,42 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
         if self._selected_result is None:
             return await self.async_step_auto()
 
+        errors: dict[str, str] = {}
         if user_input is not None:
-            return await self._async_create_entry_from_result(user_input)
+            mode = str(
+                user_input.get(CONF_COLLECTOR_OPERATION_MODE, DEFAULT_COLLECTOR_OPERATION_MODE)
+                or DEFAULT_COLLECTOR_OPERATION_MODE
+            )
+            if mode not in COLLECTOR_OPERATION_MODES:
+                errors[CONF_COLLECTOR_OPERATION_MODE] = "invalid_selection"
+            elif mode == COLLECTOR_OPERATION_HA_ONLY and not self._collector_endpoint_bind_applied:
+                self._collector_operation_mode = mode
+                self._reset_collector_endpoint_binding_state()
+                try:
+                    await self._async_bind_selected_collector_to_home_assistant()
+                except Exception as exc:
+                    self._collector_endpoint_error = _exception_detail(exc)
+                    errors["base"] = "collector_endpoint_write_failed"
+                else:
+                    self._collector_endpoint_bind_applied = True
+                    return await self._async_create_entry_from_result(user_input)
+            else:
+                self._collector_operation_mode = mode
+                return await self._async_create_entry_from_result(user_input)
 
-        description_placeholders = self._result_placeholders(self._selected_result)
+        description_placeholders = self._collector_operation_placeholders()
         return self.async_show_form(
             step_id=step_id,
             data_schema=vol.Schema(
                 {
+                    vol.Required(
+                        CONF_COLLECTOR_OPERATION_MODE,
+                        default=self._collector_operation_mode or DEFAULT_COLLECTOR_OPERATION_MODE,
+                    ): self._collector_operation_mode_selector(),
                     vol.Required(CONF_POLL_INTERVAL, default=DEFAULT_POLL_INTERVAL): _POLL_INTERVAL_SELECTOR,
                 }
             ),
+            errors=errors,
             description_placeholders=description_placeholders,
         )
 
@@ -1452,6 +2111,7 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             flat_input = _flatten_sections(user_input)
+            self._normalize_current_server_ip(flat_input)
             errors = self._validate_connection_inputs(
                 flat_input,
                 fields=self._connection_branch().form_layout.manual_fields
@@ -1578,8 +2238,7 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
         if existing_entry is not None:
             return self.async_abort(reason="already_configured")
         collector_ip = result.collector.ip if result.collector is not None else ""
-        collector_info = result.collector.collector if result.collector is not None else None
-        collector_pn = collector_info.collector_pn if collector_info is not None else ""
+        collector_pn = self._collector_pn_for_result(result)
         driver_hint = (
             result.match.driver_key
             if result.match is not None
@@ -1593,12 +2252,11 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
         await self.async_set_unique_id(unique_id)
         self._abort_if_unique_id_configured()
 
-        title = (
-            f"{result.match.model_name} ({result.match.serial_number})"
-            if result.match is not None and result.match.serial_number
-            else result.match.model_name
-            if result.match is not None
-            else f"{self._connection_display().integration_name} ({collector_ip or self._auto_config[CONF_SERVER_IP]})"
+        title = installation_title(
+            collector_pn=collector_pn,
+            collector_ip=collector_ip or self._auto_config.get(CONF_COLLECTOR_IP, ""),
+            detected_model=result.match.model_name if result.match is not None else "",
+            detected_serial=result.match.serial_number if result.match is not None else "",
         )
 
         connection_type = result.connection_type or self._current_connection_type()
@@ -1617,6 +2275,7 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
             **connection_settings,
             CONF_CONNECTION_MODE: "known_ip" if collector_ip else result.connection_mode,
             CONF_CONTROL_MODE: DEFAULT_CONTROL_MODE,
+            CONF_COLLECTOR_OPERATION_MODE: self._collector_operation_mode or DEFAULT_COLLECTOR_OPERATION_MODE,
             CONF_COLLECTOR_PN: collector_pn,
             CONF_DETECTION_CONFIDENCE: result.confidence,
             CONF_DETECTED_MODEL: result.match.model_name if result.match is not None else "",
@@ -1625,10 +2284,22 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
         _apply_smartess_detection_metadata(data, result)
         _apply_smartess_cloud_assist_metadata(data, assist_state)
         poll_interval = int((user_input or {}).get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL))
+        options = {
+            CONF_POLL_INTERVAL: poll_interval,
+            CONF_COLLECTOR_OPERATION_MODE: self._collector_operation_mode or DEFAULT_COLLECTOR_OPERATION_MODE,
+        }
+        remembered_endpoint = str(self._collector_original_server_endpoint or "").strip()
+        target_endpoint = str(self._collector_target_server_endpoint or self._collector_callback_target_endpoint()).strip()
+        if (
+            self._collector_operation_mode == COLLECTOR_OPERATION_HA_ONLY
+            and remembered_endpoint
+            and remembered_endpoint != target_endpoint
+        ):
+            options[CONF_COLLECTOR_ORIGINAL_SERVER_ENDPOINT] = remembered_endpoint
         return self.async_create_entry(
             title=title,
             data=data,
-            options={CONF_POLL_INTERVAL: poll_interval},
+            options=options,
         )
 
     async def _async_create_manual_entry(
@@ -1682,14 +2353,16 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
         await self.async_set_unique_id(unique_id)
         self._abort_if_unique_id_configured()
 
-        if detected_model:
-            title = (
-                f"{detected_model} ({detected_serial})"
-                if detected_serial
-                else detected_model
+        title = (
+            "EyeBond Setup Pending"
+            if not (collector_pn or detected_model or detected_serial)
+            else installation_title(
+                collector_pn=collector_pn,
+                collector_ip=collector_ip,
+                detected_model=detected_model,
+                detected_serial=detected_serial,
             )
-        else:
-            title = self._connection_display().pending_entry_title
+        )
 
         connection_type = result.connection_type if result is not None else self._current_connection_type()
         data = with_driver_hint(
@@ -1697,7 +2370,13 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
             driver_hint=driver_hint,
         )
         data.setdefault(CONF_CONNECTION_TYPE, connection_type)
-        data.setdefault(CONF_CONTROL_MODE, CONTROL_MODE_READ_ONLY)
+        default_control_mode = (
+            DEFAULT_CONTROL_MODE
+            if result is not None and result.confidence == "high"
+            else CONTROL_MODE_READ_ONLY
+        )
+        data.setdefault(CONF_CONTROL_MODE, default_control_mode)
+        data[CONF_COLLECTOR_OPERATION_MODE] = DEFAULT_COLLECTOR_OPERATION_MODE
         data[CONF_COLLECTOR_IP] = collector_ip
         data[CONF_DETECTION_CONFIDENCE] = result.confidence if result is not None else "none"
         data[CONF_CONNECTION_MODE] = connection_mode
@@ -1706,7 +2385,11 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
         data[CONF_DETECTED_SERIAL] = detected_serial
         _apply_smartess_detection_metadata(data, result)
         _apply_smartess_cloud_assist_metadata(data, assist_state)
-        return self.async_create_entry(title=title, data=data)
+        options = {
+            CONF_POLL_INTERVAL: DEFAULT_POLL_INTERVAL,
+            CONF_COLLECTOR_OPERATION_MODE: DEFAULT_COLLECTOR_OPERATION_MODE,
+        }
+        return self.async_create_entry(title=title, data=data, options=options)
 
     # ---- probe ----
 
@@ -1724,7 +2407,7 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
             driver_hint=user_input[CONF_DRIVER_HINT],
         )
         collector_ip = user_input.get(CONF_COLLECTOR_IP, "")
-        discovery_target = user_input.get(CONF_DISCOVERY_TARGET, "")
+        discovery_target = "" if collector_ip else user_input.get(CONF_DISCOVERY_TARGET, "")
         try:
             async with _async_timeout(_MANUAL_PROBE_TIMEOUT):
                 results = await detector.async_auto_detect(
@@ -1733,6 +2416,7 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
                     attempts=1,
                     connect_timeout=3.5,
                     heartbeat_timeout=1.5,
+                    total_timeout=_MANUAL_PROBE_TIMEOUT,
                 )
         except TimeoutError:
             logger.warning(
@@ -1762,23 +2446,174 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
     # ---- network defaults ----
 
     async def _async_ensure_network_defaults(self) -> None:
+        if not self._local_ip or not self._interface_options:
+            self._interface_options = await self.hass.async_add_executor_job(_get_ipv4_interfaces)
+            detected_local_ip = await self.hass.async_add_executor_job(_get_local_ip)
+
+            if self._interface_options:
+                preferred = next(
+                    (
+                        item["ip"]
+                        for item in self._interface_options
+                        if item["ip"] == detected_local_ip
+                    ),
+                    self._interface_options[0]["ip"],
+                )
+                self._local_ip = preferred
+            elif detected_local_ip:
+                self._local_ip = detected_local_ip
+
         if self._local_ip:
-            return
-        self._interface_options = await self.hass.async_add_executor_job(_get_ipv4_interfaces)
-        detected_local_ip = await self.hass.async_add_executor_job(_get_local_ip)
-        if self._interface_options:
-            preferred = next(
-                (
-                    item["ip"]
-                    for item in self._interface_options
-                    if item["ip"] == detected_local_ip
-                ),
-                self._interface_options[0]["ip"],
+            self._default_broadcast = self._selected_interface_broadcast(self._local_ip)
+
+        if not isinstance(self._auto_config, dict):
+            self._auto_config = {}
+
+        interface_ips = {
+            str(item.get("ip") or "").strip()
+            for item in self._interface_options
+            if str(item.get("ip") or "").strip()
+        }
+        configured_server_ip = str(self._auto_config.get(CONF_SERVER_IP, "") or "").strip()
+        if self._local_ip and (not configured_server_ip or configured_server_ip not in interface_ips):
+            self._auto_config[CONF_SERVER_IP] = self._local_ip
+
+    def _home_assistant_bluetooth_module(self) -> object | None:
+        try:
+            return importlib.import_module("homeassistant.components.bluetooth")
+        except Exception:
+            return None
+
+    def _hass_bluetooth_scanner_count(self, bluetooth: object | None = None) -> int:
+        bluetooth = bluetooth or self._home_assistant_bluetooth_module()
+        if bluetooth is None:
+            return 0
+
+        count = 0
+        scanner_count = getattr(bluetooth, "async_scanner_count", None)
+        if callable(scanner_count):
+            for kwargs in ({"connectable": True}, {"connectable": False}, {}):
+                try:
+                    value = scanner_count(self.hass, **kwargs)
+                except TypeError:
+                    if kwargs:
+                        continue
+                    try:
+                        value = scanner_count(self.hass)
+                    except Exception:
+                        continue
+                except Exception:
+                    continue
+                try:
+                    count = max(count, int(value))
+                except (TypeError, ValueError):
+                    continue
+
+        current_scanners = getattr(bluetooth, "async_current_scanners", None)
+        if callable(current_scanners):
+            for kwargs in ({"connectable": True}, {"connectable": False}, {}):
+                try:
+                    value = current_scanners(self.hass, **kwargs)
+                except TypeError:
+                    if kwargs:
+                        continue
+                    try:
+                        value = current_scanners(self.hass)
+                    except Exception:
+                        continue
+                except Exception:
+                    continue
+                if isinstance(value, dict):
+                    count = max(count, len(value))
+                    continue
+                if value is None:
+                    continue
+                try:
+                    count = max(count, len(tuple(value)))
+                except TypeError:
+                    continue
+
+        return count
+
+    def _hass_bluetooth_backend_capability(self) -> SmartEssBleHostCapability | None:
+        bluetooth = self._home_assistant_bluetooth_module()
+        if bluetooth is None:
+            return None
+
+        scanner_count = self._hass_bluetooth_scanner_count(bluetooth)
+        if scanner_count > 0:
+            return SmartEssBleHostCapability(
+                available=True,
+                backend="home_assistant_bluetooth",
+                reason="ha_bluetooth_scanners_available",
+                detail=f"{scanner_count} Home Assistant Bluetooth scanner(s) available",
             )
-            self._local_ip = preferred
-        else:
-            self._local_ip = detected_local_ip
-        self._default_broadcast = self._selected_interface_broadcast(self._local_ip)
+
+        if self._hass_bluetooth_service_infos(bluetooth) or self._hass_bluetooth_devices(bluetooth):
+            return SmartEssBleHostCapability(
+                available=True,
+                backend="home_assistant_bluetooth",
+                reason="ha_bluetooth_cache_available",
+                detail="Home Assistant Bluetooth already has cached devices",
+            )
+
+        return SmartEssBleHostCapability(
+            available=False,
+            backend="home_assistant_bluetooth",
+            reason="ha_bluetooth_unavailable",
+        )
+
+    async def _async_probe_ble_setup_capability(self) -> SmartEssBleHostCapability:
+        local_capability = await async_probe_ble_host_capability()
+        self._ble_local_adapter_available = bool(getattr(local_capability, "available", False))
+
+        ha_capability = self._hass_bluetooth_backend_capability()
+        self._ble_ha_backend_available = bool(ha_capability is not None and ha_capability.available)
+
+        if self._ble_local_adapter_available:
+            if isinstance(local_capability, SmartEssBleHostCapability):
+                return local_capability
+            return SmartEssBleHostCapability(
+                available=True,
+                backend=str(getattr(local_capability, "backend", "bleak") or "bleak"),
+                reason=str(getattr(local_capability, "reason", "backend_available") or "backend_available"),
+                detail=str(getattr(local_capability, "detail", "") or ""),
+            )
+
+        if ha_capability is not None and ha_capability.available:
+            return ha_capability
+
+        if isinstance(local_capability, SmartEssBleHostCapability):
+            return local_capability
+        return SmartEssBleHostCapability(
+            available=False,
+            backend=str(getattr(local_capability, "backend", "bleak") or "bleak"),
+            reason=str(getattr(local_capability, "reason", "ble_unavailable") or "ble_unavailable"),
+            detail=str(getattr(local_capability, "detail", "") or ""),
+        )
+
+    def _hass_bluetooth_device_from_address(self, address: str) -> object | None:
+        bluetooth = self._home_assistant_bluetooth_module()
+        if bluetooth is None:
+            return None
+
+        resolve_device = getattr(bluetooth, "async_ble_device_from_address", None)
+        if not callable(resolve_device):
+            return None
+
+        normalized_address = str(address or "").strip()
+        if not normalized_address:
+            return None
+
+        try:
+            return resolve_device(self.hass, normalized_address, connectable=True)
+        except TypeError:
+            try:
+                return resolve_device(self.hass, normalized_address)
+            except Exception:
+                return None
+        except Exception:
+            return None
 
     def _build_manual_defaults(
         self,
@@ -1802,9 +2637,25 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
             defaults[CONF_SERVER_IP] = self._auto_config.get(CONF_SERVER_IP, defaults[CONF_SERVER_IP])
         if user_input is not None:
             flat = _flatten_sections(user_input)
+            self._normalize_current_server_ip(flat)
             defaults.update(flat)
         self._manual_defaults = defaults
         return defaults
+
+    def _normalize_current_server_ip(self, values: MutableMapping[str, Any]) -> None:
+        if not self._local_ip:
+            return
+        interface_ips = {
+            str(item.get("ip") or "").strip()
+            for item in self._interface_options
+            if str(item.get("ip") or "").strip()
+        }
+        if not interface_ips:
+            return
+        configured_server_ip = str(values.get(CONF_SERVER_IP, "") or "").strip()
+        if configured_server_ip and configured_server_ip in interface_ips:
+            return
+        values[CONF_SERVER_IP] = self._local_ip
 
     # ---- selector helpers ----
 
@@ -1833,7 +2684,7 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
         )
 
     def _setup_mode_selector(self) -> SelectSelector:
-        """Return a selector for starting with quick scan, deep scan, or manual setup."""
+        """Return a selector for starting with scan, deep scan, or manual setup."""
 
         return _setup_mode_selector(
             self._tr(
@@ -1850,6 +2701,30 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
             ),
         )
 
+    def _collector_network_status_selector(self) -> SelectSelector:
+        return _collector_network_status_selector(
+            self._tr(
+                "common.dynamic.collector_network_already_connected",
+                "Yes, the collector is already on this network",
+            ),
+            self._tr(
+                "common.dynamic.collector_network_needs_bluetooth",
+                "No, connect the collector to Wi-Fi using Bluetooth first (test mode, only for collectors with Bluetooth support)",
+            ),
+        )
+
+    def _collector_operation_mode_selector(self) -> SelectSelector:
+        return _collector_operation_mode_selector(
+            self._tr(
+                "common.dynamic.collector_operation_smartess_and_ha",
+                "SmartESS cloud + Home Assistant",
+            ),
+            self._tr(
+                "common.dynamic.collector_operation_ha_only",
+                "Home Assistant only",
+            ),
+        )
+
     def _reset_scan_progress(self) -> None:
         """Reset scan-progress bookkeeping before one new scan attempt starts."""
 
@@ -1857,13 +2732,884 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
         self._scan_started_monotonic = None
         self._scan_progress_stage = "preparing"
         self._scan_progress_visible = False
+        self._ble_last_error = ""
         self._smartess_cloud_assist_mode = ""
         self._smartess_cloud_assist_last_error = ""
+        self._smartess_cloud_assist_last_error_code = ""
+
+    def _set_selected_result(self, result: OnboardingResult | None) -> None:
+        """Persist the selected onboarding result and reset lazy confirm refresh state."""
+
+        self._selected_result = result
+        self._selected_result_runtime_details_attempted = False
+
+    def _selected_collector_ip(self) -> str:
+        result = self._selected_result
+        if result is None or result.collector is None:
+            return ""
+        return str(result.collector.ip or result.collector.target_ip or "").strip()
+
+    def _selected_result_needs_runtime_details(self, result: OnboardingResult) -> bool:
+        """Return whether the selected auto-detected result is still missing confirm-time details."""
+
+        match = result.match
+        if match is None:
+            return False
+
+        details = match.details
+        required_key_groups = (
+            ("collector_signal_strength", "signal_strength_dbm"),
+            ("rated_power", "output_rating_active_power"),
+            ("battery_connected", "battery_connection_state"),
+            ("battery_percent",),
+        )
+        return any(
+            self._onboarding_first_present_value(details, *keys) in (None, "")
+            for keys in required_key_groups
+        )
+
+    def _merge_selected_result_runtime_details(
+        self,
+        current_result: OnboardingResult,
+        refreshed_result: OnboardingResult,
+    ) -> OnboardingResult:
+        """Merge confirm-time runtime details into the currently selected result."""
+
+        current_match = current_result.match
+        refreshed_match = refreshed_result.match
+        if current_match is None or refreshed_match is None:
+            return current_result
+        if refreshed_match.driver_key != current_match.driver_key:
+            return current_result
+        if (
+            current_match.serial_number
+            and refreshed_match.serial_number
+            and refreshed_match.serial_number != current_match.serial_number
+        ):
+            return current_result
+
+        merged_details = dict(current_match.details)
+        merged_details.update(refreshed_match.details)
+        merged_match = replace(current_match, details=merged_details)
+        merged_collector = refreshed_result.collector or current_result.collector
+        return replace(current_result, collector=merged_collector, match=merged_match)
+
+    async def _async_refresh_selected_result_runtime_details(self) -> None:
+        """Fetch missing confirm-time runtime details for the selected auto-detected result."""
+
+        selected_result = self._selected_result
+        if selected_result is None or selected_result.match is None:
+            return
+        if self._selected_result_runtime_details_attempted:
+            return
+        if selected_result not in self._autodetect_results.values():
+            return
+
+        self._selected_result_runtime_details_attempted = True
+        if not self._selected_result_needs_runtime_details(selected_result):
+            return
+
+        collector_ip = self._selected_collector_ip()
+        if not collector_ip:
+            return
+
+        values = dict(self._auto_connection_defaults(), **self._auto_config)
+        spec = build_connection_spec_from_values(self._current_connection_type(), values)
+        detector = create_onboarding_manager(
+            spec,
+            driver_hint=selected_result.match.driver_key or DRIVER_HINT_AUTO,
+        )
+        try:
+            async with _async_timeout(_CONFIRM_RUNTIME_DETAILS_TIMEOUT):
+                refreshed_result = await detector.async_handoff_detect(
+                    collector_ip=collector_ip,
+                    attempts=1,
+                    connect_timeout=3.5,
+                    heartbeat_timeout=1.5,
+                    enrich_runtime_details=True,
+                    cleanup_new_shared_connection=True,
+                )
+        except TimeoutError:
+            logger.debug(
+                "Selected-result runtime detail refresh timed out collector_ip=%s timeout=%.1fs",
+                collector_ip,
+                _CONFIRM_RUNTIME_DETAILS_TIMEOUT,
+            )
+            return
+        except Exception as exc:
+            logger.debug(
+                "Selected-result runtime detail refresh failed collector_ip=%s error=%s",
+                collector_ip,
+                exc,
+            )
+            return
+
+        if refreshed_result is None or refreshed_result.match is None:
+            return
+
+        self._selected_result = self._merge_selected_result_runtime_details(
+            selected_result,
+            refreshed_result,
+        )
+
+    def _collector_callback_target_endpoint(self) -> str:
+        values = dict(self._auto_connection_defaults(), **self._auto_config)
+        spec = build_connection_spec_from_values(self._current_connection_type(), values)
+        template_endpoint = str(
+            self._collector_current_server_endpoint
+            or self._collector_original_server_endpoint
+            or ""
+        ).strip()
+        include_port = True
+        include_protocol = True
+        server_port = DEFAULT_COLLECTOR_SERVER_PORT
+        server_protocol = DEFAULT_COLLECTOR_SERVER_PROTOCOL
+        if template_endpoint:
+            try:
+                parsed = inspect_collector_server_endpoint(
+                    template_endpoint,
+                    require_explicit_port=False,
+                    require_explicit_protocol=False,
+                )
+            except ValueError:
+                pass
+            else:
+                include_port = parsed.has_explicit_port
+                include_protocol = parsed.has_explicit_protocol
+                _host, server_port, server_protocol = resolve_collector_server_endpoint(
+                    template_endpoint,
+                    require_explicit_port=False,
+                    require_explicit_protocol=False,
+                )
+        return format_collector_server_endpoint(
+            server_host=spec.effective_advertised_server_ip,
+            server_port=server_port,
+            server_protocol=server_protocol,
+            include_port=include_port,
+            include_protocol=include_protocol,
+            require_tcp=True,
+        )
+
+    async def _async_with_selected_collector_session(self):
+        collector_ip = self._selected_collector_ip()
+        if not collector_ip:
+            raise RuntimeError("collector_ip_unavailable")
+
+        values = dict(self._auto_connection_defaults(), **self._auto_config)
+        spec = build_connection_spec_from_values(self._current_connection_type(), values)
+        transport = SharedEybondTransport(
+            host=spec.server_ip,
+            port=spec.tcp_port,
+            request_timeout=DEFAULT_REQUEST_TIMEOUT,
+            heartbeat_interval=float(spec.heartbeat_interval),
+            collector_ip=collector_ip,
+        )
+        await transport.start()
+        try:
+            with suppress(Exception):
+                await async_probe_target(
+                    bind_ip=spec.server_ip,
+                    advertised_server_ip=spec.effective_advertised_server_ip,
+                    advertised_server_port=spec.effective_advertised_tcp_port,
+                    target_ip=collector_ip,
+                    udp_port=spec.udp_port,
+                    timeout=1.0,
+                )
+            connected = await transport.wait_until_connected(timeout=5.0)
+            if not connected:
+                raise ConnectionError("collector_not_connected")
+            await transport.wait_until_heartbeat(timeout=1.5)
+            return transport, SmartEssLocalSession(transport)
+        except Exception:
+            await transport.stop()
+            raise
+
+    async def _async_query_selected_collector_text(self, parameter: int) -> str:
+        transport, session = await self._async_with_selected_collector_session()
+        try:
+            response = await session.query_collector(parameter)
+            if response.code != 0:
+                raise RuntimeError(f"collector_query_failed:parameter={parameter}:code={response.code}")
+            return str(response.text or "").strip().strip("\x00")
+        finally:
+            await transport.stop()
+
+    async def _async_read_selected_collector_server_endpoint(self) -> str:
+        endpoint = await self._async_query_selected_collector_text(SET_SERVER_ENDPOINT)
+        self._collector_current_server_endpoint = endpoint
+        if endpoint and not self._collector_original_server_endpoint:
+            self._collector_original_server_endpoint = endpoint
+        self._collector_target_server_endpoint = self._collector_callback_target_endpoint()
+        return endpoint
+
+    async def _async_bind_selected_collector_to_home_assistant(self) -> None:
+        target_endpoint = self._collector_callback_target_endpoint()
+        current_endpoint = self._collector_current_server_endpoint or await self._async_read_selected_collector_server_endpoint()
+        self._collector_target_server_endpoint = target_endpoint
+        if current_endpoint == target_endpoint:
+            return
+
+        transport, session = await self._async_with_selected_collector_session()
+        try:
+            set_response = await session.set_collector(SET_SERVER_ENDPOINT, target_endpoint)
+            if set_response.status != 0 or set_response.parameter != SET_SERVER_ENDPOINT:
+                raise RuntimeError(
+                    f"collector_set_failed:parameter={SET_SERVER_ENDPOINT}:status={set_response.status}"
+                )
+            readback = await session.query_collector(SET_SERVER_ENDPOINT)
+            if readback.code == 0 and str(readback.text or "").strip().strip("\x00"):
+                self._collector_current_server_endpoint = str(readback.text or "").strip().strip("\x00")
+            with suppress(Exception):
+                await session.query_collector(QUERY_REBOOT_REQUIRED)
+            apply_response = await session.set_collector(SET_REBOOT_OR_APPLY, "1")
+            if apply_response.status != 0 or apply_response.parameter != SET_REBOOT_OR_APPLY:
+                raise RuntimeError(
+                    f"collector_set_failed:parameter={SET_REBOOT_OR_APPLY}:status={apply_response.status}"
+                )
+        finally:
+            await transport.stop()
+
+    def _reset_collector_endpoint_binding_state(self) -> None:
+        self._collector_original_server_endpoint = ""
+        self._collector_current_server_endpoint = ""
+        self._collector_endpoint_error = ""
+        self._collector_endpoint_bind_applied = False
+        self._pending_confirm_input = None
+
+    def _bluetooth_setup_placeholders(self) -> dict[str, str]:
+        return {
+            "selected_scan_interface": self._selected_interface_label(
+                self._auto_config.get(CONF_SERVER_IP, self._local_ip)
+            ),
+            "ble_last_error": self._ble_last_error or self._tr("common.dynamic.none", "None"),
+        }
+
+    def _bluetooth_rescan_action_label(self) -> str:
+        return self._tr(
+            "common.dynamic.bluetooth_action_rescan",
+            "Refresh collector list",
+        )
+
+    def _bluetooth_refresh_wifi_action_label(self) -> str:
+        return self._tr(
+            "common.dynamic.bluetooth_action_refresh_wifi",
+            "Refresh Wi-Fi list for current collector",
+        )
+
+    def _bluetooth_apply_action_label(self) -> str:
+        return self._tr(
+            "common.dynamic.bluetooth_action_apply",
+            "Apply settings to current collector",
+        )
+
+    @staticmethod
+    def _ble_device_name(device: object | None) -> str:
+        return str(getattr(device, "name", None) or "").strip()
+
+    @staticmethod
+    def _ble_log_value(value: object, *, limit: int = 140) -> str:
+        try:
+            text = str(value)
+        except Exception:
+            text = f"<{type(value).__name__}>"
+        text = " ".join(text.split())
+        if len(text) <= limit:
+            return text
+        return text[: limit - 3] + "..."
+
+    @classmethod
+    def _ble_device_log_summary(cls, device: object | None) -> str:
+        if device is None:
+            return "none"
+
+        parts = [f"type={type(device).__name__}"]
+        for attribute in ("address", "name", "rssi"):
+            value = getattr(device, attribute, None)
+            if value not in (None, ""):
+                parts.append(f"{attribute}={cls._ble_log_value(value)}")
+
+        details = getattr(device, "details", None)
+        if details is not None:
+            parts.append(f"details_type={type(details).__name__}")
+            if isinstance(details, dict):
+                keys = ",".join(sorted(str(key) for key in details)[:8])
+                if keys:
+                    parts.append(f"details_keys={keys}")
+
+        metadata = getattr(device, "metadata", None)
+        if isinstance(metadata, dict):
+            keys = ",".join(sorted(str(key) for key in metadata)[:8])
+            if keys:
+                parts.append(f"metadata_keys={keys}")
+            service_uuids = metadata.get("uuids") or metadata.get("service_uuids")
+            if service_uuids:
+                rendered = ",".join(str(value) for value in list(service_uuids)[:6])
+                parts.append(f"metadata_uuids={cls._ble_log_value(rendered)}")
+            manufacturer_data = metadata.get("manufacturer_data")
+            if isinstance(manufacturer_data, dict):
+                ids = ",".join(str(key) for key in sorted(manufacturer_data)[:8])
+                if ids:
+                    parts.append(f"manufacturer_ids={ids}")
+
+        return " ".join(parts)
+
+    def _resolve_ble_connect_device(self, address: str, ble_device: object | None = None) -> object | None:
+        resolved_device = self._hass_bluetooth_device_from_address(address)
+        if resolved_device is not None:
+            if not self._ble_device_name(resolved_device):
+                logger.info(
+                    "SmartESS BLE Home Assistant connectable device lacks a usable name for address=%s; "
+                    "still preferring it over the current discovery candidate ha_device=%s candidate_device=%s",
+                    address,
+                    self._ble_device_log_summary(resolved_device),
+                    self._ble_device_log_summary(ble_device),
+                )
+            logger.info(
+                "SmartESS BLE using Home Assistant connectable device address=%s selected_device=%s "
+                "candidate_device=%s",
+                address,
+                self._ble_device_log_summary(resolved_device),
+                self._ble_device_log_summary(ble_device),
+            )
+            return resolved_device
+        bluetooth = self._home_assistant_bluetooth_module()
+        if bluetooth is not None and callable(getattr(bluetooth, "async_ble_device_from_address", None)):
+            logger.warning(
+                "SmartESS BLE found no Home Assistant connectable device for address=%s; "
+                "falling back to address-only connection candidate_device=%s",
+                address,
+                self._ble_device_log_summary(ble_device),
+            )
+            return None
+        logger.info(
+            "SmartESS BLE using discovery candidate without Home Assistant lookup address=%s candidate_device=%s",
+            address,
+            self._ble_device_log_summary(ble_device),
+        )
+        return ble_device
+
+    @staticmethod
+    def _ble_flow_error_key(exc: SmartEssBleError) -> str:
+        code = str(exc)
+        if code in {
+            "adapter_not_found",
+            "backend_missing",
+            "backend_not_supported",
+            "ble_backend_missing",
+            "host_unavailable",
+            "permission_denied",
+            "probe_failed",
+        }:
+            return "ble_unavailable"
+        if code == "ble_address_invalid":
+            return "ble_address_invalid"
+        if code == "ble_wifi_ssid_invalid":
+            return "ble_wifi_ssid_invalid"
+        if code == "ble_wifi_password_invalid":
+            return "ble_wifi_password_invalid"
+        if code == "ble_scan_failed" or code.startswith("ble_scan_failed:"):
+            return "ble_scan_failed"
+        if code == "ble_wifi_scan_failed" or code.startswith("ble_wifi_scan_failed:"):
+            return "ble_wifi_scan_failed"
+        if code == "ble_provision_failed" or code.startswith("ble_provision_failed:"):
+            return "ble_provision_failed"
+        return "ble_provision_failed"
+
+    async def _async_discover_smartess_ble_candidates(
+        self,
+        *,
+        force_active_scan: bool = False,
+    ) -> tuple[SmartEssBleCandidate, ...]:
+        if force_active_scan:
+            ha_candidates = await self._async_discover_smartess_ble_candidates_from_hass_advertisements(
+                timeout=_BLE_SCAN_TIMEOUT
+            )
+            if not ha_candidates:
+                ha_candidates = self._async_discovered_smartess_ble_candidates_from_hass()
+        else:
+            ha_candidates = self._async_discovered_smartess_ble_candidates_from_hass()
+            if not ha_candidates:
+                ha_candidates = await self._async_discover_smartess_ble_candidates_from_hass_advertisements(
+                    timeout=_BLE_SCAN_TIMEOUT
+                )
+            if not ha_candidates:
+                ha_candidates = self._async_discovered_smartess_ble_candidates_from_hass()
+        if ha_candidates:
+            self._ble_last_error = ""
+            return _sort_ble_candidates(ha_candidates)
+
+        if self._ble_ha_backend_available and not self._ble_local_adapter_available:
+            logger.info(
+                "SmartESS BLE scan found no collector candidates in Home Assistant Bluetooth data; "
+                "skipping raw Bleak fallback because no local adapter is available"
+            )
+            return ()
+
+        scanner = BleakSmartEssBleScanner()
+        try:
+            candidates = _sort_ble_candidates(await scanner.discover_candidates(timeout=_BLE_SCAN_TIMEOUT))
+            if candidates:
+                self._ble_last_error = ""
+            else:
+                logger.info(
+                    "SmartESS BLE scan found no collector candidates after %.1fs",
+                    _BLE_SCAN_TIMEOUT,
+                )
+            return candidates
+        except SmartEssBleError:
+            raise
+        except PermissionError as exc:
+            raise SmartEssBleError("permission_denied") from exc
+        except FileNotFoundError as exc:
+            raise SmartEssBleError("adapter_not_found") from exc
+        except NotImplementedError as exc:
+            raise SmartEssBleError("backend_not_supported") from exc
+        except OSError as exc:
+            raise SmartEssBleError("host_unavailable") from exc
+        except Exception as exc:
+            detail = _exception_detail(exc)
+            logger.warning("SmartESS BLE scan failed error=%s", detail)
+            raise SmartEssBleError(f"ble_scan_failed:{detail}") from exc
+
+    async def _async_refresh_ble_device_before_wifi_scan_retry(
+        self,
+        ble_address: str,
+        *,
+        attempt: int,
+        error: str,
+    ) -> object | None:
+        try:
+            candidates = await self._async_discover_smartess_ble_candidates(force_active_scan=True)
+        except SmartEssBleError as exc:
+            logger.info(
+                "SmartESS BLE Wi-Fi scan active rediscovery failed before retry address=%s attempt=%d error=%s refresh_error=%s",
+                ble_address,
+                attempt,
+                error,
+                exc,
+            )
+            return None
+
+        candidate = _ble_candidate_by_address(candidates, ble_address)
+        if candidate is None:
+            logger.info(
+                "SmartESS BLE Wi-Fi scan active rediscovery did not find selected collector before retry address=%s attempt=%d error=%s",
+                ble_address,
+                attempt,
+                error,
+            )
+            return None
+
+        logger.info(
+            "SmartESS BLE Wi-Fi scan refreshed selected collector before retry address=%s attempt=%d error=%s device=%s",
+            ble_address,
+            attempt,
+            error,
+            self._ble_device_log_summary(candidate.device),
+        )
+        return candidate.device
+
+    async def _async_discover_smartess_ble_candidates_from_hass_advertisements(
+        self,
+        *,
+        timeout: float,
+    ) -> tuple[SmartEssBleCandidate, ...]:
+        try:
+            bluetooth = importlib.import_module("homeassistant.components.bluetooth")
+        except Exception:
+            return ()
+
+        register_callback = getattr(bluetooth, "async_register_callback", None)
+        scanning_mode = getattr(bluetooth, "BluetoothScanningMode", None)
+        if not callable(register_callback) or scanning_mode is None:
+            return ()
+
+        active_mode = getattr(scanning_mode, "ACTIVE", None)
+        if active_mode is None:
+            return ()
+
+        deduped: dict[str, SmartEssBleCandidate] = {}
+        advertisement_count = 0
+        registration_errors: list[str] = []
+        advertisement_samples: list[str] = []
+        advertisement_sample_keys: set[str] = set()
+
+        def _handle_advertisement(service_info: object, _change: object) -> None:
+            nonlocal advertisement_count
+            advertisement_count += 1
+            if len(advertisement_samples) < 12:
+                sample = self._hass_bluetooth_service_info_summary(service_info)
+                if sample and sample not in advertisement_sample_keys:
+                    advertisement_sample_keys.add(sample)
+                    advertisement_samples.append(sample)
+            candidate = self._smartess_ble_candidate_from_hass_service_info(service_info)
+            if candidate is not None:
+                deduped[candidate.address] = candidate
+
+        unload_callbacks: list[Callable[[], None]] = []
+        for matcher in (
+            {"manufacturer_id": 0x3545, "connectable": False},
+            {"manufacturer_id": 0x3545, "connectable": True},
+            {"local_name": "E50*", "connectable": False},
+            {"local_name": "E50*", "connectable": True},
+            {"connectable": False},
+            {"connectable": True},
+        ):
+            try:
+                unload = register_callback(self.hass, _handle_advertisement, matcher, active_mode)
+            except Exception as exc:
+                registration_errors.append(f"{matcher}: {exc}")
+                logger.debug("SmartESS BLE HA callback registration failed matcher=%s error=%s", matcher, exc)
+                continue
+            if callable(unload):
+                unload_callbacks.append(unload)
+
+        if not unload_callbacks:
+            return ()
+
+        try:
+            await asyncio.sleep(float(timeout))
+        finally:
+            for unload in unload_callbacks:
+                try:
+                    unload()
+                except Exception as exc:
+                    logger.debug("SmartESS BLE HA callback cleanup failed error=%s", exc)
+
+        if not deduped:
+            logger.warning(
+                "SmartESS BLE HA advertisement scan found no collector candidates after %.1fs "
+                "registered_callbacks=%d advertisements=%d registration_errors=%s samples=%s",
+                timeout,
+                len(unload_callbacks),
+                advertisement_count,
+                registration_errors or "none",
+                advertisement_samples or "none",
+            )
+
+        return tuple(deduped.values())
+
+    def _async_discovered_smartess_ble_candidates_from_hass(self) -> tuple[SmartEssBleCandidate, ...]:
+        try:
+            bluetooth = importlib.import_module("homeassistant.components.bluetooth")
+        except Exception:
+            return ()
+
+        service_infos = self._hass_bluetooth_service_infos(bluetooth)
+        devices = self._hass_bluetooth_devices(bluetooth)
+
+        if not service_infos and not devices:
+            return ()
+
+        deduped: dict[str, SmartEssBleCandidate] = {}
+        for service_info in service_infos or ():
+            candidate = self._smartess_ble_candidate_from_hass_service_info(service_info)
+            if candidate is not None:
+                deduped[candidate.address] = candidate
+        for device in devices:
+            candidate = self._smartess_ble_candidate_from_hass_device(device)
+            if candidate is not None and candidate.address not in deduped:
+                deduped[candidate.address] = candidate
+        return tuple(deduped.values())
+
+    def _hass_bluetooth_service_infos(self, bluetooth: object) -> tuple[object, ...]:
+        discovered_service_info = getattr(bluetooth, "async_discovered_service_info", None)
+        if not callable(discovered_service_info):
+            return ()
+
+        service_infos: list[object] = []
+        seen_keys: set[tuple[str, str]] = set()
+        call_variants = (
+            {"connectable": True},
+            {"connectable": False},
+            {},
+        )
+        for kwargs in call_variants:
+            try:
+                result = discovered_service_info(self.hass, **kwargs)
+            except TypeError:
+                if kwargs:
+                    continue
+                try:
+                    result = discovered_service_info(self.hass)
+                except Exception:
+                    continue
+            except Exception:
+                continue
+            for service_info in result or ():
+                key = (
+                    str(getattr(service_info, "address", "") or ""),
+                    str(getattr(service_info, "name", "") or ""),
+                )
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                service_infos.append(service_info)
+        return tuple(service_infos)
+
+    def _hass_bluetooth_devices(self, bluetooth: object) -> tuple[object, ...]:
+        devices: list[object] = []
+        seen_addresses: set[str] = set()
+        for attr in ("async_scanner_devices", "async_scanner_devices_by_address"):
+            provider = getattr(bluetooth, attr, None)
+            if not callable(provider):
+                continue
+            for kwargs in ({"connectable": True}, {"connectable": False}, {}):
+                try:
+                    result = provider(self.hass, **kwargs)
+                except TypeError:
+                    if kwargs:
+                        continue
+                    try:
+                        result = provider(self.hass)
+                    except Exception:
+                        continue
+                except Exception:
+                    continue
+                values = result.values() if isinstance(result, dict) else result or ()
+                for device in values:
+                    address = str(getattr(device, "address", "") or "").strip()
+                    if not address or address in seen_addresses:
+                        continue
+                    seen_addresses.add(address)
+                    devices.append(device)
+        return tuple(devices)
+
+    @staticmethod
+    def _smartess_ble_candidate_from_hass_service_info(service_info: object) -> SmartEssBleCandidate | None:
+        advertisement = getattr(service_info, "advertisement", None)
+        device = getattr(service_info, "device", None)
+        service_name = str(getattr(service_info, "name", "") or "").strip()
+        return normalize_discovered_candidate(
+            address=str(getattr(service_info, "address", "") or "").strip(),
+            device_name=str(getattr(device, "name", "") or service_name).strip(),
+            advertisement_local_name=str(getattr(advertisement, "local_name", "") or service_name).strip(),
+            manufacturer_data=getattr(service_info, "manufacturer_data", None)
+            or getattr(advertisement, "manufacturer_data", None),
+            service_uuids=getattr(service_info, "service_uuids", None)
+            or getattr(advertisement, "service_uuids", None)
+            or (),
+            device=device,
+        )
+
+    @staticmethod
+    def _hass_bluetooth_service_info_summary(service_info: object) -> str:
+        advertisement = getattr(service_info, "advertisement", None)
+        device = getattr(service_info, "device", None)
+        manufacturer_data = (
+            getattr(service_info, "manufacturer_data", None)
+            or getattr(advertisement, "manufacturer_data", None)
+            or {}
+        )
+        manufacturer_summary: list[str] = []
+        if isinstance(manufacturer_data, dict):
+            for key, value in list(manufacturer_data.items())[:4]:
+                data = bytes(value or b"")
+                ascii_preview = data.decode("ascii", errors="ignore")[:24]
+                manufacturer_summary.append(
+                    f"0x{int(key):04x}:{data[:12].hex()}:{ascii_preview}"
+                )
+        service_uuids = (
+            getattr(service_info, "service_uuids", None)
+            or getattr(advertisement, "service_uuids", None)
+            or ()
+        )
+        uuid_summary = ",".join(str(value) for value in tuple(service_uuids)[:4])
+        return (
+            f"address={str(getattr(service_info, 'address', '') or '').strip()} "
+            f"name={str(getattr(service_info, 'name', '') or '').strip()} "
+            f"local_name={str(getattr(advertisement, 'local_name', '') or '').strip()} "
+            f"device_name={str(getattr(device, 'name', '') or '').strip()} "
+            f"rssi={str(getattr(service_info, 'rssi', '') or '').strip()} "
+            f"source={str(getattr(service_info, 'source', '') or '').strip()} "
+            f"connectable={str(getattr(service_info, 'connectable', '') or '').strip()} "
+            f"manufacturer={manufacturer_summary or 'none'} "
+            f"service_uuids={uuid_summary or 'none'}"
+        )
+
+    @staticmethod
+    def _smartess_ble_candidate_from_hass_device(device: object) -> SmartEssBleCandidate | None:
+        address = str(getattr(device, "address", "") or "").strip()
+        if not address:
+            return None
+        device_name = str(getattr(device, "name", "") or "").strip()
+        metadata = getattr(device, "metadata", None)
+        if not isinstance(metadata, dict):
+            metadata = {}
+        return normalize_discovered_candidate(
+            address=address,
+            device_name=device_name,
+            advertisement_local_name=str(metadata.get("local_name") or device_name).strip(),
+            manufacturer_data=metadata.get("manufacturer_data"),
+            service_uuids=metadata.get("uuids") or (),
+            device=device,
+        )
+
+    async def _async_scan_smartess_ble_wifi_networks(
+        self,
+        ble_address: str,
+        ble_device: object | None = None,
+    ) -> tuple[SmartEssBleWifiNetwork, ...]:
+        if not ble_address:
+            return ()
+
+        current_ble_device = ble_device
+        for attempt in range(1, _BLE_WIFI_SCAN_ATTEMPTS + 1):
+            resolved_device = self._resolve_ble_connect_device(ble_address, current_ble_device)
+            session = SmartEssBleSession(BleakSmartEssBleLink(ble_address, device=resolved_device))
+            try:
+                async with _async_timeout(_BLE_CONNECT_TIMEOUT):
+                    await session.connect()
+                provisioner = SmartEssBleProvisioner(session)
+                async with _async_timeout(_BLE_WIFI_SCAN_TIMEOUT):
+                    networks = tuple(await provisioner.scan_wifi_networks())
+                if provisioner.last_firmware_version:
+                    self._ble_fw_version_by_address[ble_address] = provisioner.last_firmware_version
+                return networks
+            except TimeoutError as exc:
+                timeout = _BLE_WIFI_SCAN_TIMEOUT if session.connected else _BLE_CONNECT_TIMEOUT
+                logger.warning(
+                    "SmartESS BLE Wi-Fi scan timed out address=%s timeout=%.1fs",
+                    ble_address,
+                    timeout,
+                )
+                raise SmartEssBleError("ble_wifi_scan_failed:timeout") from exc
+            except SmartEssBleError as exc:
+                if attempt < _BLE_WIFI_SCAN_ATTEMPTS and _is_retryable_ble_wifi_scan_error(exc):
+                    logger.info(
+                        "SmartESS BLE Wi-Fi scan retrying after BLE session error address=%s attempt=%d/%d error=%s",
+                        ble_address,
+                        attempt,
+                        _BLE_WIFI_SCAN_ATTEMPTS,
+                        exc,
+                    )
+                    current_ble_device = await self._async_refresh_ble_device_before_wifi_scan_retry(
+                        ble_address,
+                        attempt=attempt,
+                        error=str(exc),
+                    )
+                    await asyncio.sleep(_BLE_WIFI_SCAN_RETRY_DELAY * attempt)
+                    continue
+                if str(exc) == "ble_notification_timeout":
+                    raise SmartEssBleError("ble_wifi_scan_failed:notification_timeout") from exc
+                raise
+            except PermissionError as exc:
+                raise SmartEssBleError("ble_unavailable") from exc
+            except Exception as exc:
+                detail = _exception_detail(exc)
+                if attempt < _BLE_WIFI_SCAN_ATTEMPTS:
+                    logger.info(
+                        "SmartESS BLE Wi-Fi scan retrying address=%s attempt=%d/%d error=%s",
+                        ble_address,
+                        attempt,
+                        _BLE_WIFI_SCAN_ATTEMPTS,
+                        detail,
+                    )
+                    current_ble_device = await self._async_refresh_ble_device_before_wifi_scan_retry(
+                        ble_address,
+                        attempt=attempt,
+                        error=detail,
+                    )
+                    await asyncio.sleep(_BLE_WIFI_SCAN_RETRY_DELAY * attempt)
+                    continue
+                logger.info("SmartESS BLE Wi-Fi scan failed address=%s error=%s", ble_address, detail)
+                raise SmartEssBleError(f"ble_wifi_scan_failed:{detail}") from exc
+            finally:
+                with suppress(Exception):
+                    await session.disconnect()
+
+        raise SmartEssBleError("ble_wifi_scan_failed:retry_exhausted")
+
+    async def _async_run_smartess_ble_bootstrap(
+        self,
+        *,
+        ble_address: str,
+        ssid: str,
+        password: str,
+        ble_device: object | None = None,
+    ) -> None:
+        if not ble_address:
+            raise SmartEssBleError("ble_address_invalid")
+
+        resolved_device = self._resolve_ble_connect_device(ble_address, ble_device)
+        session = SmartEssBleSession(BleakSmartEssBleLink(ble_address, device=resolved_device))
+        try:
+            async with _async_timeout(_BLE_PROVISION_TIMEOUT):
+                await session.connect()
+                provisioner = SmartEssBleProvisioner(session)
+                resolved_info = None
+                cached_fw_version = self._known_smartess_ble_firmware_version(ble_address)
+                if cached_fw_version:
+                    resolved_info = await provisioner.query_device_info(known_fw_version=cached_fw_version)
+                result = await provisioner.provision_wifi(
+                    ssid=ssid,
+                    password=password,
+                    info=resolved_info,
+                )
+                if provisioner.last_firmware_version:
+                    self._ble_fw_version_by_address[ble_address] = provisioner.last_firmware_version
+        except TimeoutError as exc:
+            logger.warning(
+                "SmartESS BLE provisioning timed out address=%s timeout=%.1fs",
+                ble_address,
+                _BLE_PROVISION_TIMEOUT,
+            )
+            raise SmartEssBleError("ble_provision_failed:timeout") from exc
+        except SmartEssBleError as exc:
+            if str(exc) == "ble_notification_timeout":
+                raise SmartEssBleError("ble_provision_failed:notification_timeout") from exc
+            raise
+        except PermissionError as exc:
+            raise SmartEssBleError("ble_unavailable") from exc
+        except Exception as exc:
+            detail = _exception_detail(exc)
+            logger.warning("SmartESS BLE provisioning failed address=%s error=%s", ble_address, detail)
+            raise SmartEssBleError(f"ble_provision_failed:{detail}") from exc
+        finally:
+            with suppress(Exception):
+                await session.disconnect()
+
+        logger.info(
+            "SmartESS BLE provisioning result address=%s branch=%s outcome=%s status=%s details=%s",
+            ble_address,
+            result.branch.value,
+            result.outcome.value,
+            result.status_code,
+            result.details,
+        )
+
+        if result.outcome == SmartEssBleProvisionOutcome.FAILURE:
+            detail = f"{result.branch.value}:{result.status_code}"
+            if result.details is not None:
+                detail = f"{detail}:{','.join(result.details)}"
+            raise SmartEssBleError(f"ble_provision_failed:{detail}")
 
     def _collector_pn_for_result(self, result: OnboardingResult | None) -> str:
-        if result is None or result.collector is None or result.collector.collector is None:
+        if result is None:
             return ""
-        return str(result.collector.collector.collector_pn or "").strip()
+
+        collector_info = result.collector.collector if result.collector is not None else None
+        if collector_info is not None:
+            collector_pn = str(collector_info.collector_pn or "").strip()
+            if collector_pn:
+                return collector_pn
+
+        match_details = result.match.details if result.match is not None else {}
+        return str(match_details.get("collector_pn") or "").strip()
+
+    def _known_smartess_ble_firmware_version(self, ble_address: str) -> str:
+        cached_fw_version = str(self._ble_fw_version_by_address.get(ble_address, "") or "").strip()
+        if cached_fw_version:
+            return cached_fw_version
+        for result in (self._selected_result, self._manual_result):
+            fw_version = _smartess_collector_firmware_version_for_result(result)
+            if fw_version:
+                return fw_version
+        return str(
+            self._auto_config.get(CONF_SMARTESS_COLLECTOR_VERSION)
+            or self._manual_config.get(CONF_SMARTESS_COLLECTOR_VERSION)
+            or ""
+        ).strip()
 
     def _smartess_detected_hint_values(self, result: OnboardingResult | None) -> tuple[str, str]:
         if result is None:
@@ -1900,15 +3646,7 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
         return self._smartess_cloud_assist
 
     def _can_offer_smartess_cloud_assist(self, result: OnboardingResult | None) -> bool:
-        if result is None or result.collector is None:
-            return False
-        if not result.collector.connected:
-            return False
-        if result.confidence == "high":
-            return False
-        if not self._collector_pn_for_result(result):
-            return False
-        return self._smartess_cloud_assist_state_for_result(result) is None
+        return False
 
     def _smartess_cloud_summary(self, result: OnboardingResult | None) -> str:
         state = self._smartess_cloud_assist_state_for_result(result)
@@ -2113,9 +3851,12 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
                 {"path": state.evidence_path},
             )
         if self._smartess_cloud_assist_last_error:
+            error_code = getattr(self, "_smartess_cloud_assist_last_error_code", "") or "unexpected"
+            translation_key = f"common.dynamic.smartess_cloud_status_failed_{error_code}"
+            fallback = "Last SmartESS cloud assist attempt failed: {error}"
             return self._tr(
-                "common.dynamic.smartess_cloud_status_failed",
-                "Last SmartESS cloud assist attempt failed: {error}",
+                translation_key,
+                fallback,
                 {"error": self._smartess_cloud_assist_last_error},
             )
         return ""
@@ -2283,13 +4024,14 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
         network_cidr = self._selected_interface_network()
         server_ip = str(self._auto_config.get(CONF_SERVER_IP, self._local_ip) or self._local_ip)
         target_count = _network_target_count(network_cidr, exclude={server_ip}) if network_cidr else 0
-        estimated_seconds = _estimate_deep_scan_seconds(target_count)
         return {
             "network_cidr": network_cidr,
             "target_count": target_count,
-            "estimated_seconds": estimated_seconds,
-            "estimated_duration": _format_duration(estimated_seconds),
-            "timeout_seconds": max(_AUTO_SCAN_TIMEOUT, estimated_seconds + _DEEP_SCAN_TIMEOUT_BUFFER),
+            "large_subnet": target_count > 253,
+            "timeout_seconds": _onboarding_deep_scan_timeout_seconds(
+                target_count,
+                policy=_ONBOARDING_TIMEOUT_POLICY,
+            ),
         }
 
     def _set_scan_mode(self, mode: str) -> None:
@@ -2353,7 +4095,6 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
         scan_timeout = self._scan_timeout_seconds if self._scan_timeout_seconds > 0 else _AUTO_SCAN_TIMEOUT
         bounded_elapsed = min(elapsed_seconds_float, scan_timeout)
         elapsed_seconds = int(round(bounded_elapsed))
-        remaining_seconds = max(0, int(round(scan_timeout - bounded_elapsed)))
         progress_fraction = self._scan_progress_fraction(elapsed_seconds_float)
         percent = max(0, min(99, int(round(progress_fraction * 100))))
         filled = max(0, min(_SCAN_PROGRESS_BAR_WIDTH, int(round(progress_fraction * _SCAN_PROGRESS_BAR_WIDTH))))
@@ -2373,10 +4114,9 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
             "scan_progress_bar": progress_bar,
             "scan_progress_detail": self._tr(
                 "common.dynamic.scan_progress_detail",
-                "{elapsed_seconds}s elapsed, about {remaining_seconds}s remaining.",
+                "{elapsed_seconds}s elapsed.",
                 {
                     "elapsed_seconds": elapsed_seconds,
-                    "remaining_seconds": remaining_seconds,
                 },
             ),
             "scan_progress_hint": self._tr(
@@ -2386,9 +4126,9 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
                     else "common.dynamic.scan_progress_hint"
                 ),
                 (
-                    "Deep scans keep the same discovery flow but also probe the rest of the selected IPv4 network. Large subnets can take several minutes."
+                    "Deep scan keeps the same discovery flow and also probes the rest of the selected IPv4 network directly. If the subnet is larger than /24, this can take a while."
                     if self._scan_mode == SETUP_MODE_DEEP_SCAN
-                    else "Most scans finish in 5-15 seconds. This progress bar is estimated from the current phase and timeout."
+                    else "Quick scan sends the initial discovery probe and waits for collectors on the selected local network to answer."
                 ),
             ),
         }
@@ -2448,6 +4188,58 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
 
     # ---- description placeholders ----
 
+    def _collector_network_placeholders(self) -> dict[str, str]:
+        return {
+            "selected_scan_interface": self._selected_interface_label(),
+            "peer_label": self._peer_label(),
+        }
+
+    def _collector_operation_placeholders(self) -> dict[str, str]:
+        if self._selected_result is None:
+            return {}
+        placeholders = self._result_placeholders(self._selected_result)
+        placeholders.update(
+            {
+                "collector_callback_target_endpoint": self._collector_callback_target_endpoint(),
+            }
+        )
+        return placeholders
+
+    def _endpoint_originality_hint(self, endpoint: str) -> str:
+        normalized = str(endpoint or "").strip().lower()
+        if not normalized:
+            return self._tr(
+                "common.dynamic.collector_endpoint_unknown_hint",
+                "The current collector callback endpoint could not be read yet.",
+            )
+        host = normalized.split(",", 1)[0]
+        if "eybond" in host or "smartess" in host:
+            return self._tr(
+                "common.dynamic.collector_endpoint_original_hint",
+                "This looks like the original SmartESS endpoint. Write it down before continuing; the integration will remember it, but keeping your own copy is safer.",
+            )
+        return self._tr(
+            "common.dynamic.collector_endpoint_custom_hint",
+            "This endpoint does not look like the stock SmartESS address. Make sure you know how to restore it before continuing.",
+        )
+
+    def _collector_endpoint_confirm_placeholders(self) -> dict[str, str]:
+        current_endpoint = self._collector_current_server_endpoint or self._tr(
+            "common.dynamic.unknown",
+            "Unknown",
+        )
+        target_endpoint = self._collector_target_server_endpoint or self._collector_callback_target_endpoint()
+        return {
+            **self._collector_operation_placeholders(),
+            "current_collector_server_endpoint": current_endpoint,
+            "target_collector_server_endpoint": target_endpoint,
+            "collector_endpoint_originality_hint": self._endpoint_originality_hint(
+                self._collector_current_server_endpoint
+            ),
+            "collector_endpoint_last_error": self._collector_endpoint_error
+            or self._tr("common.dynamic.none", "None"),
+        }
+
     def _auto_description_placeholders(self, single_interface: bool) -> dict[str, str]:
         if single_interface and self._interface_options:
             item = self._interface_options[0]
@@ -2480,14 +4272,10 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
                 "common.dynamic.deep_scan_warning_empty_network",
                 "The selected interface does not expose any additional IPv4 addresses to probe beyond Home Assistant itself.",
             )
-        elif plan["estimated_seconds"] >= 60.0:
+        elif plan["large_subnet"]:
             warning = self._tr(
                 "common.dynamic.deep_scan_warning_long",
-                "This network contains about {target_count} candidate addresses. The deep scan can take around {estimated_duration} before the results screen appears.",
-                {
-                    "target_count": target_count,
-                    "estimated_duration": plan["estimated_duration"],
-                },
+                "Deep scan keeps the initial broadcast probe, then checks the remaining addresses directly. If the selected subnet is larger than /24, this can take a while.",
             )
         else:
             warning = self._tr(
@@ -2498,7 +4286,6 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
             "selected_scan_interface": self._selected_interface_label(),
             "deep_scan_network": network_cidr or self._tr("common.dynamic.unknown", "Unknown"),
             "deep_scan_target_count": str(target_count),
-            "deep_scan_duration": plan["estimated_duration"],
             "deep_scan_warning": warning,
         }
 
@@ -2508,32 +4295,18 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
             return {
                 "welcome_hint": self._tr(
                     "common.dynamic.welcome_connection_type_multi",
-                    "Choose the connection type first. On the next step you will choose which Home Assistant network interface to use, then you can start a quick scan, a deep scan, or switch to manual setup.",
+                    "Choose the connection type first. The wizard will then continue with collector network setup and the next onboarding steps.",
                     {
                         "integration_name": display.integration_name,
                     },
                 ),
             }
-        selected_ip = self._local_ip
-        selected_label = next(
-            (
-                item["label"]
-                for item in self._interface_options
-                if item["ip"] == selected_ip
-            ),
-            selected_ip
-            or self._tr(
-                "common.dynamic.default_home_assistant_interface",
-                "the default Home Assistant interface",
-            ),
-        )
         return {
             "welcome_hint": self._tr(
                 "common.dynamic.welcome_connection_type_single",
-                "Choose the connection type first. On the next step you can start a quick scan using **{selected_interface}**, run a deep scan, or switch to manual setup.",
+                "Choose the connection type first. The wizard will then continue with collector network setup and the next onboarding steps.",
                 {
                     "integration_name": display.integration_name,
-                    "selected_interface": selected_label,
                 },
             ),
         }
@@ -2554,9 +4327,9 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
             collector_ip = result.collector.ip
             collector = result.collector.collector
             if collector is not None:
-                collector_pn = collector.collector_pn or ""
                 smartess_collector_version = collector.smartess_collector_version or ""
                 smartess_protocol_asset_id = collector.smartess_protocol_asset_id or ""
+        collector_pn = self._collector_pn_for_result(result)
         if not collector_ip:
             collector_ip = manual_config.get(CONF_COLLECTOR_IP) or manual_config.get(CONF_DISCOVERY_TARGET, "")
 
@@ -2710,24 +4483,165 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
             },
         )
 
+    @staticmethod
+    def _escape_markdown_table_cell(value: object) -> str:
+        return str(value).replace("|", "\\|").replace("\n", " ")
+
+    @staticmethod
+    def _onboarding_first_present_value(details: dict[str, Any], *keys: str) -> object | None:
+        for key in keys:
+            value = details.get(key)
+            if value not in (None, ""):
+                return value
+        return None
+
+    def _onboarding_confirm_table(
+        self,
+        heading_key: str,
+        heading_fallback: str,
+        rows: list[tuple[str, str, str]],
+    ) -> str:
+        lines = [
+            self._tr(heading_key, heading_fallback),
+            "",
+            f"| {self._tr('common.dynamic.onboarding_confirm_table_label', 'Detail')} | {self._tr('common.dynamic.onboarding_confirm_table_value', 'Value')} |",
+            "|---|---|",
+        ]
+        for label_key, label_fallback, value in rows:
+            lines.append(
+                f"| {self._tr(label_key, label_fallback)} | {self._escape_markdown_table_cell(value)} |"
+            )
+        return "\n".join(lines)
+
+    def _onboarding_confirm_measurement(
+        self,
+        value: object,
+        *,
+        unit_key: str,
+        unit_fallback: str,
+    ) -> str:
+        if value in (None, ""):
+            return self._tr("common.dynamic.not_available_yet", "Not available yet")
+        if isinstance(value, bool):
+            return str(value)
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+        if isinstance(value, (int, float)):
+            return self._tr(unit_key, unit_fallback, {"value": value})
+        return str(value)
+
+    def _onboarding_confirm_battery_connection(self, value: object) -> str:
+        if value in (None, ""):
+            return self._tr("common.dynamic.not_available_yet", "Not available yet")
+        if isinstance(value, bool):
+            return self._tr(
+                "common.dynamic.onboarding_confirm_battery_connected"
+                if value
+                else "common.dynamic.onboarding_confirm_battery_disconnected",
+                "Connected" if value else "Not connected",
+            )
+        if isinstance(value, (int, float)) and value in (0, 1):
+            return self._tr(
+                "common.dynamic.onboarding_confirm_battery_connected"
+                if int(value) == 1
+                else "common.dynamic.onboarding_confirm_battery_disconnected",
+                "Connected" if int(value) == 1 else "Not connected",
+            )
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "connected", "present"}:
+                return self._tr(
+                    "common.dynamic.onboarding_confirm_battery_connected",
+                    "Connected",
+                )
+            if normalized in {"0", "false", "no", "not connected", "disconnected", "absent"}:
+                return self._tr(
+                    "common.dynamic.onboarding_confirm_battery_disconnected",
+                    "Not connected",
+                )
+        return str(value)
+
     def _result_placeholders(self, result: OnboardingResult) -> dict[str, str]:
         collector = result.collector
         match = result.match
         assist_state = self._smartess_cloud_assist_state_for_result(result)
-        collector_ip = collector.ip if collector is not None else self._tr("common.dynamic.unknown", "Unknown")
-        collector_pn = ""
-        if collector is not None and collector.collector is not None:
-            collector_pn = collector.collector.collector_pn or ""
+        collector_ip = (
+            collector.ip if collector is not None and collector.ip else ""
+        ) or (
+            collector.target_ip if collector is not None and collector.target_ip else ""
+        ) or self._tr("common.dynamic.unknown", "Unknown")
+        not_available_yet = self._tr("common.dynamic.not_available_yet", "Not available yet")
+        collector_pn = self._collector_pn_for_result(result)
+        collector_info = collector.collector if collector is not None else None
         driver_key = match.driver_key if match is not None else DRIVER_HINT_AUTO
         if match is None and assist_state is not None and assist_state.inferred_driver_key:
             driver_key = f"{assist_state.inferred_driver_key} (cloud-assisted)"
+        match_details = match.details if match is not None else {}
+        rated_power = self._onboarding_confirm_measurement(
+            self._onboarding_first_present_value(
+                match_details,
+                "rated_power",
+                "output_rating_active_power",
+            ),
+            unit_key="common.dynamic.onboarding_confirm_power_value",
+            unit_fallback="{value} W",
+        )
+        collector_confirm_table = self._onboarding_confirm_table(
+            "common.dynamic.onboarding_confirm_collector_heading",
+            "**Collector**",
+            [
+                (
+                    "common.dynamic.onboarding_confirm_collector_pn_label",
+                    "Collector PN",
+                    collector_pn or not_available_yet,
+                ),
+                (
+                    "common.dynamic.onboarding_confirm_collector_ip_label",
+                    "Collector IP",
+                    collector_ip,
+                ),
+            ],
+        )
+        inverter_confirm_table = self._onboarding_confirm_table(
+            "common.dynamic.onboarding_confirm_inverter_heading",
+            "**Inverter**",
+            [
+                (
+                    "common.dynamic.onboarding_confirm_model_label",
+                    "Model",
+                    match.model_name if match is not None else self._unconfirmed_inverter_label(),
+                ),
+                (
+                    "common.dynamic.onboarding_confirm_rated_power_label",
+                    "Rated Power",
+                    rated_power,
+                ),
+                (
+                    "common.dynamic.onboarding_confirm_serial_number_label",
+                    "Serial Number",
+                    match.serial_number if match is not None else not_available_yet,
+                ),
+                (
+                    "common.dynamic.onboarding_confirm_detection_confidence_label",
+                    "Detection Confidence",
+                    self._confidence_label(result.confidence),
+                ),
+                (
+                    "common.dynamic.onboarding_confirm_protocol_family_label",
+                    "Protocol Family",
+                    match.protocol_family if match is not None and match.protocol_family else not_available_yet,
+                ),
+            ],
+        )
         return {
             "model_name": match.model_name if match is not None else self._unconfirmed_inverter_label(),
-            "serial_number": match.serial_number if match is not None else self._tr("common.dynamic.not_available_yet", "Not available yet"),
+            "serial_number": match.serial_number if match is not None else not_available_yet,
             "driver_key": driver_key,
             "collector_ip": collector_ip,
             "collector_pn": collector_pn or self._tr("common.dynamic.unknown", "Unknown"),
             "confidence": self._confidence_label(result.confidence),
+            "collector_confirm_table": collector_confirm_table,
+            "inverter_confirm_table": inverter_confirm_table,
             "smartess_cloud_summary": self._smartess_cloud_summary(result),
             "control_summary": self._default_control_summary(result.confidence),
         }
@@ -2753,8 +4667,7 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
 
     def _result_unique_id(self, result: OnboardingResult) -> str:
         collector_ip = result.collector.ip if result.collector is not None else ""
-        collector_info = result.collector.collector if result.collector is not None else None
-        collector_pn = collector_info.collector_pn if collector_info is not None else ""
+        collector_pn = self._collector_pn_for_result(result)
         server_ip = self._auto_config.get(CONF_SERVER_IP, self._local_ip)
         return (
             f"collector:{collector_pn}"
@@ -2768,8 +4681,7 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
 
     def _existing_entry_for_result(self, result: OnboardingResult):
         collector = result.collector
-        collector_info = collector.collector if collector is not None else None
-        collector_pn = collector_info.collector_pn if collector_info is not None else ""
+        collector_pn = self._collector_pn_for_result(result)
         collector_ip = collector.ip if collector is not None else ""
         serial_number = result.match.serial_number if result.match is not None else ""
         candidate_unique_id = self._result_unique_id(result)
@@ -2790,6 +4702,28 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
                 return entry
         return None
 
+    def _already_added_ble_candidate_addresses(
+        self,
+        candidates: tuple[SmartEssBleCandidate, ...],
+    ) -> set[str]:
+        if not candidates:
+            return set()
+
+        existing_pns: set[str] = set()
+        for entry in self.hass.config_entries.async_entries(DOMAIN):
+            entry_collector_pn = str(entry.data.get(CONF_COLLECTOR_PN, "") or "").strip()
+            if entry_collector_pn:
+                existing_pns.add(entry_collector_pn)
+            entry_unique_id = str(getattr(entry, "unique_id", "") or "").strip()
+            if entry_unique_id.startswith("collector:"):
+                existing_pns.add(entry_unique_id.split(":", 1)[1])
+
+        return {
+            candidate.address
+            for candidate in candidates
+            if str(candidate.local_pn or "").strip() in existing_pns
+        }
+
     @staticmethod
     def _is_visible_scan_result(result: OnboardingResult) -> bool:
         collector = result.collector
@@ -2802,7 +4736,13 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
     @staticmethod
     def _is_addable_scan_result(result: OnboardingResult) -> bool:
         collector = result.collector
-        return bool(result.match is not None or (collector is not None and collector.connected))
+        return bool(
+            result.match is not None
+            or (
+                collector is not None
+                and (collector.connected or bool(collector.udp_reply))
+            )
+        )
 
     def _available_autodetect_results(self) -> dict[str, OnboardingResult]:
         return {
@@ -2812,11 +4752,9 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
             if self._existing_entry_for_result(result) is None
         }
 
-    @staticmethod
-    def _scan_result_key(result: OnboardingResult) -> str:
+    def _scan_result_key(self, result: OnboardingResult) -> str:
         collector = result.collector
-        collector_info = collector.collector if collector is not None else None
-        collector_pn = collector_info.collector_pn if collector_info is not None else ""
+        collector_pn = self._collector_pn_for_result(result)
         if collector_pn:
             return f"collector:{collector_pn}"
         if collector is not None and collector.ip:
@@ -2889,7 +4827,7 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
         deep_scan_action_label = self._scan_action_label("deep_scan", "Run deep scan")
         manual_action_label = self._scan_action_label("manual", "Manual setup")
         selected_label = self._selected_interface_label(selected_ip)
-        deep_scan_available = self._scan_mode != SETUP_MODE_DEEP_SCAN
+        deep_scan_available = True
         for _, result in results:
             existing_entry = self._existing_entry_for_result(result)
             if existing_entry is not None:
@@ -3041,10 +4979,9 @@ class EybondLocalConfigFlow(_TranslationBundleMixin, ConfigFlow, domain=DOMAIN):
 
     def _scan_result_line(self, index: int, result: OnboardingResult) -> str:
         collector = result.collector
-        collector_info = collector.collector if collector is not None else None
         collector_ip = collector.ip if collector is not None else self._tr("common.dynamic.unknown", "Unknown")
         existing_entry = self._existing_entry_for_result(result)
-        collector_pn = collector_info.collector_pn if collector_info is not None else ""
+        collector_pn = self._collector_pn_for_result(result)
         status_label = self._result_status_label(result, existing_entry is not None)
 
         if result.match is not None:
@@ -3127,6 +5064,11 @@ class EybondLocalOptionsFlow(_TranslationBundleMixin, OptionsFlow):
         self._translation_bundle_language = ""
         self._interface_options: list[dict[str, str]] = []
         self._diagnostics_result: dict[str, str] = {}
+        self._collector_wifi_current_ssid = ""
+        self._collector_wifi_network_diagnostics = ""
+        self._collector_wifi_last_error = ""
+        self._collector_wifi_last_result = ""
+        self._collector_wifi_networks: tuple[SmartEssBleWifiNetwork, ...] = ()
 
     def _server_ip_field(self) -> SelectSelector | TextSelector:
         """Return the user-friendly selector for one local server IP."""
@@ -3162,7 +5104,91 @@ class EybondLocalOptionsFlow(_TranslationBundleMixin, OptionsFlow):
     ) -> ConfigFlowResult:
         return self.async_show_menu(
             step_id="init",
-            menu_options=["runtime", "diagnostics"],
+            menu_options=["runtime", "collector_wifi", "diagnostics"],
+        )
+
+    @_with_translation_bundle
+    async def async_step_collector_wifi(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        defaults = dict(user_input or {})
+        selected_action = str(
+            defaults.get(CONF_COLLECTOR_WIFI_ACTION, COLLECTOR_WIFI_ACTION_APPLY)
+            or COLLECTOR_WIFI_ACTION_APPLY
+        ).strip()
+        if selected_action not in {COLLECTOR_WIFI_ACTION_REFRESH, COLLECTOR_WIFI_ACTION_APPLY}:
+            selected_action = COLLECTOR_WIFI_ACTION_APPLY
+
+        refresh_requested = user_input is not None and selected_action == COLLECTOR_WIFI_ACTION_REFRESH
+        apply_requested = user_input is not None and selected_action == COLLECTOR_WIFI_ACTION_APPLY
+        submitted_ssid = str(defaults.get(CONF_WIFI_SSID, "") or "").strip()
+        submitted_password = str(defaults.get(CONF_WIFI_PASSWORD, "") or "")
+
+        if user_input is None or refresh_requested:
+            try:
+                await self._async_refresh_collector_wifi_status()
+            except Exception as exc:
+                self._collector_wifi_last_error = _exception_detail(exc)
+                errors["base"] = "collector_wifi_read_failed"
+            else:
+                self._collector_wifi_last_error = ""
+                if refresh_requested:
+                    self._collector_wifi_last_result = self._tr(
+                        "common.dynamic.collector_wifi_refresh_done",
+                        "Wi-Fi status refreshed.",
+                    )
+                    selected_action = COLLECTOR_WIFI_ACTION_APPLY
+
+        if apply_requested:
+            if not submitted_ssid:
+                errors[CONF_WIFI_SSID] = "collector_wifi_ssid_required"
+            elif not submitted_ssid.isascii():
+                errors[CONF_WIFI_SSID] = "collector_wifi_ssid_not_ascii"
+            if not submitted_password:
+                errors[CONF_WIFI_PASSWORD] = "collector_wifi_password_required"
+            elif not submitted_password.isascii():
+                errors[CONF_WIFI_PASSWORD] = "collector_wifi_password_not_ascii"
+            if not bool(defaults.get(CONF_CONFIRM_COLLECTOR_WIFI_APPLY)):
+                errors[CONF_CONFIRM_COLLECTOR_WIFI_APPLY] = "collector_wifi_apply_not_confirmed"
+
+            if not errors:
+                try:
+                    await self._async_apply_collector_wifi_settings(
+                        ssid=submitted_ssid,
+                        password=submitted_password,
+                    )
+                except Exception as exc:
+                    self._collector_wifi_last_error = _exception_detail(exc)
+                    errors["base"] = "collector_wifi_write_failed"
+                else:
+                    self._collector_wifi_last_error = ""
+                    self._collector_wifi_last_result = self._tr(
+                        "common.dynamic.collector_wifi_apply_done",
+                        "Wi-Fi settings were accepted by the collector.",
+                    )
+                    return self.async_create_entry(data=dict(self._config_entry.options))
+
+        default_wifi_ssid = submitted_ssid or self._collector_wifi_current_ssid
+        password_default = submitted_password if errors and apply_requested else ""
+        return self.async_show_form(
+            step_id="collector_wifi",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(CONF_WIFI_SSID, default=default_wifi_ssid): _ble_wifi_selector(
+                        self._collector_wifi_networks,
+                    ),
+                    vol.Optional(CONF_WIFI_PASSWORD, default=password_default): _PASSWORD_TEXT_SELECTOR,
+                    vol.Required(CONF_COLLECTOR_WIFI_ACTION, default=selected_action): _collector_wifi_action_selector(
+                        refresh_label=self._collector_wifi_refresh_action_label(),
+                        apply_label=self._collector_wifi_apply_action_label(),
+                    ),
+                    vol.Required(CONF_CONFIRM_COLLECTOR_WIFI_APPLY, default=False): BooleanSelector(),
+                }
+            ),
+            errors=errors,
+            description_placeholders=self._collector_wifi_placeholders(),
         )
 
     @_with_translation_bundle
@@ -3175,16 +5201,35 @@ class EybondLocalOptionsFlow(_TranslationBundleMixin, OptionsFlow):
         errors: dict[str, str] = {}
         if user_input is not None:
             flat_input = _flatten_sections(user_input)
+            flat_input.setdefault(
+                CONF_COLLECTOR_OPERATION_MODE,
+                self._config_entry.options.get(
+                    CONF_COLLECTOR_OPERATION_MODE,
+                    self._config_entry.data.get(
+                        CONF_COLLECTOR_OPERATION_MODE,
+                        DEFAULT_COLLECTOR_OPERATION_MODE,
+                    ),
+                ),
+            )
             connection_type = self._config_entry.data.get(CONF_CONNECTION_TYPE, CONNECTION_TYPE_EYBOND)
             branch = get_connection_branch(connection_type)
             errors = EybondLocalConfigFlow._validate_connection_inputs(
                 flat_input,
                 fields=branch.form_layout.runtime_fields,
             )
+            if flat_input.get(CONF_COLLECTOR_OPERATION_MODE) not in COLLECTOR_OPERATION_MODES:
+                errors[CONF_COLLECTOR_OPERATION_MODE] = "invalid_selection"
             if not errors:
                 persisted_options = build_runtime_option_settings(connection_type, flat_input)
                 persisted_options[CONF_POLL_INTERVAL] = flat_input[CONF_POLL_INTERVAL]
                 persisted_options[CONF_CONTROL_MODE] = flat_input[CONF_CONTROL_MODE]
+                persisted_options[CONF_COLLECTOR_OPERATION_MODE] = flat_input[
+                    CONF_COLLECTOR_OPERATION_MODE
+                ]
+                if CONF_COLLECTOR_ORIGINAL_SERVER_ENDPOINT in self._config_entry.options:
+                    persisted_options[CONF_COLLECTOR_ORIGINAL_SERVER_ENDPOINT] = self._config_entry.options[
+                        CONF_COLLECTOR_ORIGINAL_SERVER_ENDPOINT
+                    ]
                 return self.async_create_entry(data=persisted_options)
 
         connection_type = self._config_entry.data.get(CONF_CONNECTION_TYPE, CONNECTION_TYPE_EYBOND)
@@ -3200,12 +5245,34 @@ class EybondLocalOptionsFlow(_TranslationBundleMixin, OptionsFlow):
             CONF_CONTROL_MODE,
             self._config_entry.data.get(CONF_CONTROL_MODE, DEFAULT_CONTROL_MODE),
         )
+        collector_operation_mode = self._config_entry.options.get(
+            CONF_COLLECTOR_OPERATION_MODE,
+            self._config_entry.data.get(
+                CONF_COLLECTOR_OPERATION_MODE,
+                DEFAULT_COLLECTOR_OPERATION_MODE,
+            ),
+        )
+        if collector_operation_mode not in COLLECTOR_OPERATION_MODES:
+            collector_operation_mode = DEFAULT_COLLECTOR_OPERATION_MODE
 
         data_schema = vol.Schema(
             {
                 vol.Required(CONF_POLL_INTERVAL, default=poll_interval): _POLL_INTERVAL_SELECTOR,
                 vol.Required(CONF_CONTROL_MODE, default=control_mode): _control_mode_selector(
                     self._translation_bundle,
+                ),
+                vol.Required(
+                    CONF_COLLECTOR_OPERATION_MODE,
+                    default=collector_operation_mode,
+                ): _collector_operation_mode_selector(
+                    self._tr(
+                        "common.dynamic.collector_operation_smartess_and_ha",
+                        "SmartESS cloud + Home Assistant",
+                    ),
+                    self._tr(
+                        "common.dynamic.collector_operation_ha_only",
+                        "Home Assistant only",
+                    ),
                 ),
                 vol.Required("connection"): section(
                     vol.Schema(
@@ -3259,7 +5326,10 @@ class EybondLocalOptionsFlow(_TranslationBundleMixin, OptionsFlow):
     ) -> ConfigFlowResult:
         coordinator = self._coordinator()
         placeholders = self._diagnostics_placeholders()
-        menu_options: list[str] = ["export_support_bundle"]
+        menu_options: list[str] = []
+        if coordinator is not None and bool(getattr(coordinator, "smartess_cloud_export_available", False)):
+            menu_options.append("export_smartess_cloud_evidence")
+        menu_options.append("proxy_capture")
 
         if coordinator is not None and getattr(coordinator, "smartess_smg_bridge_plan", None) is not None:
             menu_options.append("create_smartess_smg_bridge")
@@ -3273,6 +5343,219 @@ class EybondLocalOptionsFlow(_TranslationBundleMixin, OptionsFlow):
         return self.async_show_menu(
             step_id="advanced_metadata",
             menu_options=menu_options,
+            description_placeholders=placeholders,
+        )
+
+    @_with_translation_bundle
+    async def async_step_proxy_capture(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        coordinator = self._coordinator()
+        if coordinator is None:
+            return await self._async_show_diagnostics_result(
+                action_title=self._diagnostics_result_tr(
+                    "proxy_capture_title",
+                    "Collector Proxy Capture",
+                ),
+                status=self._diagnostics_result_tr(
+                    "coordinator_not_loaded",
+                    "Coordinator is not loaded.",
+                ),
+                next_step=self._diagnostics_result_tr(
+                    "ensure_entry_loaded",
+                    "Ensure the entry is loaded and the inverter has been detected, then try again.",
+                ),
+            )
+
+        errors: dict[str, str] = {}
+        action = ""
+        touch_proxy_capture_lease = getattr(coordinator, "async_touch_proxy_capture_lease", None)
+        if user_input is not None:
+            action = str(user_input.get("proxy_capture_action") or "refresh").strip()
+            try:
+                if action == "start":
+                    overview = coordinator.proxy_capture_overview
+                    await coordinator.async_start_proxy_capture(
+                        anonymized=True,
+                        confirm_redirect=bool(getattr(overview, "redirect_required", False)),
+                    )
+                    self._proxy_capture_action_result = self._tr(
+                        "common.dynamic.proxy_capture_action_started",
+                        "Capture started.",
+                    )
+                elif action == PROXY_CAPTURE_ACTION_RESET_TIMER:
+                    expires_at = ""
+                    if touch_proxy_capture_lease is not None:
+                        expires_at = str(await touch_proxy_capture_lease(extend=True) or "").strip()
+                    if expires_at:
+                        self._proxy_capture_action_result = self._tr(
+                            "common.dynamic.proxy_capture_action_timer_reset",
+                            "Proxy timer reset.",
+                        )
+                    else:
+                        self._proxy_capture_action_result = self._tr(
+                            "common.dynamic.proxy_capture_action_already_stopped",
+                            "Capture was already stopped. Status refreshed.",
+                        )
+                elif action == "stop":
+                    await coordinator.async_stop_proxy_capture()
+                    self._proxy_capture_action_result = self._tr(
+                        "common.dynamic.proxy_capture_action_stopped",
+                        "Capture stopped.",
+                    )
+                else:
+                    refresh = getattr(coordinator, "async_request_refresh", None)
+                    if refresh is not None:
+                        await refresh()
+                    self._proxy_capture_action_result = self._tr(
+                        "common.dynamic.proxy_capture_action_refreshed",
+                        "Live log refreshed.",
+                    )
+            except Exception as exc:  # pragma: no cover - HA renders the error key.
+                if await self._handle_proxy_capture_action_error(coordinator, action, exc):
+                    errors.clear()
+                else:
+                    errors.setdefault("base", "proxy_capture_action_failed")
+                    self._proxy_capture_action_result = self._proxy_capture_action_error_message(exc)
+
+        if touch_proxy_capture_lease is not None and user_input is None:
+            await touch_proxy_capture_lease(extend=False)
+
+        return self._show_proxy_capture_form(coordinator, errors=errors)
+
+    async def _handle_proxy_capture_action_error(
+        self,
+        coordinator,
+        action: str,
+        exc: Exception,
+    ) -> bool:
+        if action != "stop":
+            return False
+        if str(exc or "").strip() != "proxy_capture_not_running":
+            return False
+
+        refresh = getattr(coordinator, "async_request_refresh", None)
+        if refresh is not None:
+            await refresh()
+        self._proxy_capture_action_result = self._tr(
+            "common.dynamic.proxy_capture_action_already_stopped",
+            "Capture was already stopped. Status refreshed.",
+        )
+        return True
+
+    def _proxy_capture_action_error_message(self, exc: Exception) -> str:
+        raw_error = str(exc or "").strip()
+        if not raw_error:
+            return self._tr(
+                "common.dynamic.proxy_capture_action_error_internal",
+                "Collector proxy capture could not be started. Check the Home Assistant log and try again.",
+            )
+
+        error_code, _separator, detail = raw_error.partition(":")
+        if error_code == "proxy_capture_route_stopped":
+            return self._tr(
+                "common.dynamic.proxy_capture_action_error_route_stopped",
+                "Collector proxy route stopped before the collector reconnected. Check the Home Assistant log and try again.",
+            )
+        if error_code == "proxy_capture_collector_reconnect_timeout":
+            return self._tr(
+                "common.dynamic.proxy_capture_action_error_reconnect_timeout",
+                "Collector did not reconnect through the proxy in time. Check the collector callback settings and try again.",
+            )
+        if error_code == "proxy_capture_upstream_connect_failed":
+            return self._tr(
+                "common.dynamic.proxy_capture_action_error_upstream_connect_failed",
+                "Home Assistant could not connect to the current upstream collector endpoint: {detail}.",
+                {
+                    "detail": detail or self._tr("common.dynamic.not_available", "Not available"),
+                },
+            )
+        if error_code == "proxy_capture_not_running":
+            return self._tr(
+                "common.dynamic.proxy_capture_action_already_stopped",
+                "Capture was already stopped. Status refreshed.",
+            )
+        if " " not in raw_error and raw_error.lower() == raw_error:
+            return self._tr(
+                "common.dynamic.proxy_capture_action_error_internal",
+                "Collector proxy capture could not be started. Check the Home Assistant log and try again.",
+            )
+        return raw_error
+
+    def _proxy_capture_action_options(self, coordinator) -> list[SelectOptionDict]:
+        overview = coordinator.proxy_capture_overview
+        options: list[SelectOptionDict] = []
+        if overview.can_stop:
+            options.append(
+                SelectOptionDict(
+                    value="stop",
+                    label=self._tr("common.dynamic.proxy_capture_action_stop", "Stop proxy capture"),
+                )
+            )
+            options.append(
+                SelectOptionDict(
+                    value=PROXY_CAPTURE_ACTION_RESET_TIMER,
+                    label=self._tr(
+                        "common.dynamic.proxy_capture_action_reset_timer",
+                        "Reset proxy timer",
+                    ),
+                )
+            )
+        if overview.can_start:
+            options.append(
+                SelectOptionDict(
+                    value="start",
+                    label=self._tr("common.dynamic.proxy_capture_action_start", "Start proxy capture"),
+                )
+            )
+        options.append(
+            SelectOptionDict(
+                value="refresh",
+                label=self._tr(
+                    "common.dynamic.proxy_capture_action_refresh",
+                    "Refresh live log",
+                ),
+            )
+        )
+        return options
+
+    def _default_proxy_capture_action(self, coordinator, options: list[SelectOptionDict]) -> str:
+        """Return the default proxy-capture action for the current form state."""
+
+        option_values = {str(option["value"]) for option in options}
+        overview = coordinator.proxy_capture_overview
+        if overview.can_start and "start" in option_values:
+            return "start"
+        if overview.can_stop and "refresh" in option_values:
+            return "refresh"
+        if "refresh" in option_values:
+            return "refresh"
+        return str(options[0]["value"] if options else "refresh")
+
+    def _show_proxy_capture_form(
+        self,
+        coordinator,
+        *,
+        errors: dict[str, str] | None = None,
+    ) -> ConfigFlowResult:
+        options = self._proxy_capture_action_options(coordinator)
+        default_action = self._default_proxy_capture_action(coordinator, options)
+        placeholders = self._diagnostics_placeholders()
+        return self.async_show_form(
+            step_id="proxy_capture",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        "proxy_capture_live_log_view",
+                        default=placeholders.get("proxy_capture_live_log") or "",
+                    ): _MULTILINE_LOG_TEXT_SELECTOR,
+                    vol.Required("proxy_capture_action", default=default_action): SelectSelector(
+                        SelectSelectorConfig(options=options, mode=SelectSelectorMode.DROPDOWN)
+                    ),
+                }
+            ),
+            errors=errors or {},
             description_placeholders=placeholders,
         )
 
@@ -3345,6 +5628,7 @@ class EybondLocalOptionsFlow(_TranslationBundleMixin, OptionsFlow):
             path = await coordinator.async_export_support_package_with_cloud_refresh(
                 smartess_username=smartess_username,
                 smartess_password=smartess_password,
+                wants_refresh=wants_inline_refresh,
             )
         except Exception as exc:
             return await self._async_show_diagnostics_result(
@@ -3371,7 +5655,11 @@ class EybondLocalOptionsFlow(_TranslationBundleMixin, OptionsFlow):
                 ),
             )
 
-        download_url = str(coordinator.data.values.get("support_package_download_url") or "")
+        download_url = str(
+            coordinator.data.values.get("support_package_download_url")
+            or coordinator.data.values.get("support_package_download_relative_url")
+            or ""
+        )
         return await self._async_show_diagnostics_result(
             action_title=self._diagnostics_result_tr(
                 "support_archive_created_title",
@@ -3520,45 +5808,6 @@ class EybondLocalOptionsFlow(_TranslationBundleMixin, OptionsFlow):
         )
 
     @_with_translation_bundle
-    async def async_step_export_support_bundle(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> ConfigFlowResult:
-        coordinator = self._coordinator()
-        if coordinator is None:
-            return await self._async_show_diagnostics_result(
-                action_title=self._diagnostics_result_tr(
-                    "support_bundle_title",
-                    "Support Bundle",
-                ),
-                status=self._diagnostics_result_tr(
-                    "coordinator_not_loaded",
-                    "Coordinator is not loaded.",
-                ),
-                next_step=self._diagnostics_result_tr(
-                    "ensure_entry_loaded",
-                    "Ensure the entry is loaded and the inverter has been detected, then try again.",
-                ),
-            )
-
-        path = await coordinator.async_export_support_bundle()
-        return await self._async_show_diagnostics_result(
-            action_title=self._diagnostics_result_tr(
-                "support_bundle_exported_title",
-                "Support Bundle Exported",
-            ),
-            status=self._diagnostics_result_tr(
-                "support_bundle_exported_status",
-                "A support bundle was written to the Home Assistant config directory.",
-            ),
-            path=path,
-            next_step=self._diagnostics_result_tr(
-                "support_bundle_exported_next",
-                "Use the JSON bundle for troubleshooting or as source material for a new local experimental draft.",
-            ),
-        )
-
-    @_with_translation_bundle
     async def async_step_export_smartess_cloud_evidence(
         self,
         user_input: dict[str, Any] | None = None,
@@ -3619,12 +5868,7 @@ class EybondLocalOptionsFlow(_TranslationBundleMixin, OptionsFlow):
         collector_pn = str(getattr(coordinator, "smartess_collector_pn", "") or "")
         return self.async_show_form(
             step_id="export_smartess_cloud_evidence",
-            data_schema=vol.Schema(
-                {
-                    vol.Required("username", default=""): _IP_TEXT_SELECTOR,
-                    vol.Required("password", default=""): _PASSWORD_TEXT_SELECTOR,
-                }
-            ),
+            data_schema=vol.Schema(_smartess_credential_schema_fields()),
             description_placeholders={
                 "collector_pn": collector_pn or self._tr("common.dynamic.not_available", "Not available"),
                 "cloud_evidence_path": self._diagnostics_placeholders()["cloud_evidence_path"],
@@ -4058,6 +6302,165 @@ class EybondLocalOptionsFlow(_TranslationBundleMixin, OptionsFlow):
     def _coordinator(self):
         return getattr(self._config_entry, "runtime_data", None)
 
+    async def _async_with_options_collector_session(self):
+        spec = build_connection_spec(self._config_entry.data, self._config_entry.options)
+        collector_ip = str(
+            getattr(spec, "collector_ip", "")
+            or self._config_entry.options.get(CONF_COLLECTOR_IP, "")
+            or self._config_entry.data.get(CONF_COLLECTOR_IP, "")
+            or ""
+        ).strip()
+        if not collector_ip:
+            raise RuntimeError("collector_ip_unavailable")
+
+        transport = SharedEybondTransport(
+            host=getattr(spec, "server_ip", self._config_entry.data[CONF_SERVER_IP]),
+            port=getattr(spec, "tcp_port", DEFAULT_TCP_PORT),
+            request_timeout=DEFAULT_REQUEST_TIMEOUT,
+            heartbeat_interval=float(getattr(spec, "heartbeat_interval", DEFAULT_HEARTBEAT_INTERVAL)),
+            collector_ip=collector_ip,
+        )
+        await transport.start()
+        try:
+            with suppress(Exception):
+                await async_probe_target(
+                    bind_ip=getattr(spec, "server_ip", self._config_entry.data[CONF_SERVER_IP]),
+                    advertised_server_ip=getattr(
+                        spec,
+                        "effective_advertised_server_ip",
+                        getattr(spec, "server_ip", self._config_entry.data[CONF_SERVER_IP]),
+                    ),
+                    advertised_server_port=getattr(
+                        spec,
+                        "effective_advertised_tcp_port",
+                        getattr(spec, "tcp_port", DEFAULT_TCP_PORT),
+                    ),
+                    target_ip=collector_ip,
+                    udp_port=getattr(spec, "udp_port", DEFAULT_UDP_PORT),
+                    timeout=1.0,
+                )
+            connected = await transport.wait_until_connected(timeout=5.0)
+            if not connected:
+                raise ConnectionError("collector_not_connected")
+            await transport.wait_until_heartbeat(timeout=1.5)
+            return transport, SmartEssLocalSession(transport)
+        except Exception:
+            await transport.stop()
+            raise
+
+    async def _async_query_options_collector_text(
+        self,
+        session: SmartEssLocalSession,
+        parameter: int,
+    ) -> str:
+        response = await session.query_collector(parameter)
+        if response.code != 0:
+            return ""
+        return self._collector_query_response_text(response)
+
+    async def _async_refresh_collector_wifi_status(self) -> None:
+        transport, session = await self._async_with_options_collector_session()
+        try:
+            current_ssid = await self._async_query_options_collector_text(session, SET_TARGET_SSID)
+            network_diagnostics = await self._async_query_options_collector_text(
+                session,
+                QUERY_NETWORK_DIAGNOSTICS,
+            )
+            scan_text = await self._async_query_options_collector_text(session, QUERY_WIFI_SCAN_LIST)
+        finally:
+            await transport.stop()
+
+        self._collector_wifi_current_ssid = current_ssid
+        self._collector_wifi_network_diagnostics = network_diagnostics
+        self._collector_wifi_networks = self._parse_collector_wifi_scan_response(scan_text)
+
+    async def _async_apply_collector_wifi_settings(self, *, ssid: str, password: str) -> None:
+        transport, session = await self._async_with_options_collector_session()
+        try:
+            ssid_response = await session.set_collector(SET_TARGET_SSID, ssid)
+            if ssid_response.status != 0 or ssid_response.parameter != SET_TARGET_SSID:
+                raise RuntimeError(
+                    f"collector_set_failed:parameter={SET_TARGET_SSID}:status={ssid_response.status}"
+                )
+            password_response = await session.set_collector(SET_TARGET_PASSWORD, password)
+            if password_response.status != 0 or password_response.parameter != SET_TARGET_PASSWORD:
+                raise RuntimeError(
+                    f"collector_set_failed:parameter={SET_TARGET_PASSWORD}:status={password_response.status}"
+                )
+            readback = await session.query_collector(SET_TARGET_SSID)
+            if readback.code == 0:
+                self._collector_wifi_current_ssid = self._collector_query_response_text(readback)
+            apply_response = await session.set_collector(SET_REBOOT_OR_APPLY, "1")
+            if apply_response.status != 0 or apply_response.parameter != SET_REBOOT_OR_APPLY:
+                raise RuntimeError(
+                    f"collector_set_failed:parameter={SET_REBOOT_OR_APPLY}:status={apply_response.status}"
+                )
+        finally:
+            await transport.stop()
+
+    @staticmethod
+    def _collector_query_response_text(response) -> str:
+        text = str(response.text or "").strip().strip("\x00")
+        if text and all(character.isprintable() or character in "\r\n\t" for character in text):
+            return text
+        raw = bytes(getattr(response, "data", b"") or b"").rstrip(b"\x00")
+        return raw.hex() if raw else text
+
+    @staticmethod
+    def _parse_collector_wifi_scan_response(scan_text: str) -> tuple[SmartEssBleWifiNetwork, ...]:
+        text = str(scan_text or "").strip()
+        if text.startswith("["):
+            text = f"49,{text}"
+        return parse_wifi_scan_response(text)
+
+    def _collector_wifi_placeholders(self) -> dict[str, str]:
+        return {
+            "collector_ip": str(
+                self._config_entry.options.get(
+                    CONF_COLLECTOR_IP,
+                    self._config_entry.data.get(CONF_COLLECTOR_IP, ""),
+                )
+                or self._tr("common.dynamic.not_available", "Not available")
+            ),
+            "current_ssid": self._collector_wifi_current_ssid
+            or self._tr("common.dynamic.not_available", "Not available"),
+            "status_updates": self._collector_wifi_status_updates(),
+        }
+
+    def _collector_wifi_status_updates(self) -> str:
+        lines: list[str] = []
+        if self._collector_wifi_last_result:
+            lines.append(
+                self._tr(
+                    "common.dynamic.collector_wifi_last_action_line",
+                    "**Last action:** {value}",
+                    {"value": self._collector_wifi_last_result},
+                )
+            )
+        if self._collector_wifi_last_error:
+            lines.append(
+                self._tr(
+                    "common.dynamic.collector_wifi_last_error_line",
+                    "**Last error:** {value}",
+                    {"value": self._collector_wifi_last_error},
+                )
+            )
+        if not lines:
+            return ""
+        return "\n\n" + "\n".join(lines)
+
+    def _collector_wifi_refresh_action_label(self) -> str:
+        return self._tr(
+            "common.dynamic.collector_wifi_action_refresh",
+            "Refresh Wi-Fi list and status",
+        )
+
+    def _collector_wifi_apply_action_label(self) -> str:
+        return self._tr(
+            "common.dynamic.collector_wifi_action_apply",
+            "Apply Wi-Fi settings to the current collector",
+        )
+
     def _metadata_source_summary(self, metadata) -> str:
         if metadata is None:
             return self._tr("common.dynamic.not_available", "Not available")
@@ -4093,13 +6496,6 @@ class EybondLocalOptionsFlow(_TranslationBundleMixin, OptionsFlow):
 
         if rollback_paths.paths and "rollback_local_metadata" not in menu_options:
             menu_options.append("rollback_local_metadata")
-
-        if (
-            coordinator is not None
-            and bool(getattr(coordinator, "smartess_cloud_export_available", False))
-            and "export_smartess_cloud_evidence" not in menu_options
-        ):
-            menu_options.append("export_smartess_cloud_evidence")
 
         menu_options.append("advanced_metadata")
         return menu_options
@@ -4259,8 +6655,11 @@ class EybondLocalOptionsFlow(_TranslationBundleMixin, OptionsFlow):
                     ): self._support_archive_cloud_mode_selector(
                         had_saved_cloud_evidence=had_saved_cloud_evidence,
                     ),
-                    vol.Optional("username", default=defaults["username"]): _IP_TEXT_SELECTOR,
-                    vol.Optional("password", default=defaults["password"]): _PASSWORD_TEXT_SELECTOR,
+                    **_smartess_credential_schema_fields(
+                        required=False,
+                        username_default=defaults["username"],
+                        password_default=defaults["password"],
+                    ),
                 }
             ),
             errors=errors or {},
@@ -4310,8 +6709,52 @@ class EybondLocalOptionsFlow(_TranslationBundleMixin, OptionsFlow):
 
         return self._tr(
             "common.dynamic.smartess_cloud_diagnostics_hint",
-            "**SmartESS cloud:** {detail} It can still refine local metadata or re-enable bridge-backed entities for an existing device. The visible entity count may stay the same when existing entities are upgraded instead of creating new IDs. **Create support archive** can include saved cloud evidence directly and can refresh it inline before the ZIP is built. Use **Export SmartESS cloud evidence** only when you need the evidence itself for Advanced metadata tools or for standalone review.",
+            "**SmartESS cloud:** {detail} It can still refine local metadata or re-enable bridge-backed entities for an existing device. The visible entity count may stay the same when existing entities are upgraded instead of creating new IDs. **Create support archive** can include saved cloud evidence directly and can refresh it inline before the ZIP is built. Open **Advanced metadata tools** when you need to export the cloud evidence separately or generate drafts from it.",
             {"detail": detail},
+        )
+
+    def _localized_local_override_status(
+        self,
+        details: dict[str, Any],
+        *,
+        kind: str,
+    ) -> str:
+        path = str(details.get("path") or "").strip()
+        kind_label = self._tr(
+            f"common.dynamic.local_override_kind_{kind}",
+            kind.replace("_", " "),
+        )
+        if bool(details.get("exists")) and path:
+            return self._tr(
+                "common.dynamic.local_override_status_active",
+                "Active local override at {path}.",
+                {"path": path},
+            )
+        if path:
+            return self._tr(
+                "common.dynamic.local_override_status_missing",
+                "No active local override. Create {path} to override the built-in {kind}.",
+                {"path": path, "kind": kind_label},
+            )
+        return self._tr(
+            "common.dynamic.local_override_status_unavailable",
+            "No built-in {kind} is available for this entry.",
+            {"kind": kind_label},
+        )
+
+    def _localized_local_metadata_status(self, values: dict[str, Any]) -> str:
+        raw_status = str(values.get("local_metadata_status") or "").strip()
+        if not raw_status:
+            return self._tr(
+                "common.dynamic.no_diagnostics_action",
+                "No diagnostics action has been run yet.",
+            )
+        translation_key = _LOCAL_METADATA_STATUS_TRANSLATION_KEYS.get(raw_status)
+        if translation_key is None:
+            return raw_status
+        return self._tr(
+            f"common.dynamic.local_metadata_status_{translation_key}",
+            raw_status,
         )
 
     def _smartess_cloud_exported_next_step(self) -> str:
@@ -4341,10 +6784,6 @@ class EybondLocalOptionsFlow(_TranslationBundleMixin, OptionsFlow):
                 "common.dynamic.action_export_smartess_cloud_evidence",
                 "Export SmartESS cloud evidence",
             ),
-            "export_support_bundle": self._tr(
-                "common.dynamic.action_export_support_bundle",
-                "Export support bundle",
-            ),
             "create_smartess_draft": self._tr(
                 "common.dynamic.action_create_smartess_draft",
                 "Create SmartESS draft",
@@ -4372,6 +6811,10 @@ class EybondLocalOptionsFlow(_TranslationBundleMixin, OptionsFlow):
             "advanced_metadata": self._tr(
                 "common.dynamic.action_advanced_metadata",
                 "Advanced metadata tools",
+            ),
+            "proxy_capture": self._tr(
+                "common.dynamic.action_proxy_capture",
+                "Collector proxy capture",
             ),
         }.get(action, action)
 
@@ -4494,31 +6937,280 @@ class EybondLocalOptionsFlow(_TranslationBundleMixin, OptionsFlow):
             "support_archive_action_label": self._support_action_label("create_support_package"),
             "effective_profile_source": self._metadata_source_summary(profile_metadata),
             "effective_schema_source": self._metadata_source_summary(register_schema_metadata),
-            "profile_override_status": profile_override["status"],
-            "schema_override_status": schema_override["status"],
+            "profile_override_status": self._localized_local_override_status(
+                profile_override,
+                kind="profile",
+            ),
+            "schema_override_status": self._localized_local_override_status(
+                schema_override,
+                kind="register_schema",
+            ),
             "suggested_profile_output": effective_profile_name or self._tr("common.dynamic.not_available", "Not available"),
             "suggested_schema_output": effective_register_schema_name or self._tr("common.dynamic.not_available", "Not available"),
             "support_package_path": str(values.get("support_package_path") or self._tr("common.dynamic.not_created_yet", "Not created yet")),
-            "support_package_download_url": str(values.get("support_package_download_url") or ""),
+            "support_package_download_url": str(
+                values.get("support_package_download_url")
+                or values.get("support_package_download_relative_url")
+                or ""
+            ),
             "support_package_download_markdown": (
                 self._tr(
                     "common.dynamic.download_support_archive",
                     "[Download support archive]({url})",
-                    {"url": values["support_package_download_url"]},
+                    {
+                        "url": values.get("support_package_download_url")
+                        or values.get("support_package_download_relative_url")
+                        or ""
+                    },
                 )
                 if values.get("support_package_download_url")
+                or values.get("support_package_download_relative_url")
                 else self._tr("common.dynamic.not_available_yet", "Not available yet")
             ),
-            "support_bundle_path": str(values.get("support_bundle_path") or self._tr("common.dynamic.not_created_yet", "Not created yet")),
             "cloud_evidence_path": self._current_cloud_evidence_path(coordinator)
             or self._tr("common.dynamic.not_created_yet", "Not created yet"),
+            "proxy_capture_status_label": self._localized_proxy_capture_status_label(values),
+            "proxy_capture_summary": str(values.get("proxy_capture_summary") or self._tr("common.dynamic.not_available", "Not available")),
+            "proxy_capture_blocking_reason": self._localized_proxy_capture_blocking_reason(values),
+            "proxy_capture_current_endpoint": str(values.get("proxy_capture_current_endpoint") or self._tr("common.dynamic.not_available", "Not available")),
+            "proxy_capture_target_endpoint": str(values.get("proxy_capture_target_endpoint") or self._tr("common.dynamic.not_available", "Not available")),
+            "proxy_capture_masked_endpoint": str(values.get("proxy_capture_masked_endpoint") or self._tr("common.dynamic.not_available", "Not available")),
+            "proxy_capture_redirect_required": (
+                self._tr("common.dynamic.yes", "Yes")
+                if values.get("proxy_capture_redirect_required")
+                else self._tr("common.dynamic.no", "No")
+            ),
+            "proxy_capture_can_stop": (
+                self._tr("common.dynamic.yes", "Yes")
+                if values.get("proxy_capture_can_stop")
+                else self._tr("common.dynamic.no", "No")
+            ),
+            "proxy_trace_path": str(values.get("proxy_trace_path") or self._tr("common.dynamic.not_created_yet", "Not created yet")),
+            "proxy_trace_manifest_path": str(values.get("proxy_trace_saved_result_path") or self._tr("common.dynamic.not_created_yet", "Not created yet")),
+            "proxy_trace_manifest_download_url": str(values.get("proxy_trace_saved_result_download_url") or ""),
+            "proxy_trace_manifest_download_markdown": (
+                self._tr(
+                    "common.dynamic.download_proxy_capture_result",
+                    "[Download saved result]({url})",
+                    {"url": values.get("proxy_trace_saved_result_download_url") or ""},
+                )
+                if values.get("proxy_trace_saved_result_download_url")
+                else self._tr("common.dynamic.not_available_yet", "Not available yet")
+            ),
+            "proxy_capture_saved_result_section": self._proxy_capture_saved_result_section(
+                saved_result_download_url=str(
+                    values.get("proxy_trace_saved_result_download_url") or ""
+                ).strip(),
+                status=str(values.get("proxy_capture_status") or ""),
+            ),
+            "proxy_trace_line_count": str(values.get("proxy_trace_line_count") or 0),
+            "proxy_trace_kind_summary": str(values.get("proxy_trace_kind_summary") or self._tr("common.dynamic.not_available", "Not available")),
+            "proxy_trace_recent_kinds": str(values.get("proxy_trace_recent_kinds") or self._tr("common.dynamic.not_available", "Not available")),
+            "proxy_trace_recent_events": str(values.get("proxy_trace_recent_events") or ""),
+            "proxy_capture_live_log": self._proxy_capture_live_log(values),
+            "proxy_capture_user_plan": self._proxy_capture_user_plan(values),
+            "proxy_capture_timer_summary": self._proxy_capture_timer_summary(values),
+            "proxy_capture_duration_minutes": str(
+                _coerce_proxy_capture_duration_minutes(
+                    values.get(CONF_PROXY_CAPTURE_DURATION_MINUTES),
+                    default=DEFAULT_PROXY_CAPTURE_DURATION_MINUTES,
+                )
+            ),
+            "proxy_capture_remaining_minutes": str(
+                _coerce_proxy_capture_duration_minutes(
+                    values.get("proxy_capture_remaining_minutes"),
+                    default=0,
+                    minimum=0,
+                )
+            ),
+            "proxy_trace_last_timestamp": str(values.get("proxy_trace_last_timestamp") or self._tr("common.dynamic.not_available", "Not available")),
+            "proxy_capture_session_expires_at": self._format_proxy_capture_session_expires_at(
+                values.get("proxy_capture_session_expires_at")
+            ),
+            "proxy_capture_action_result": str(getattr(self, "_proxy_capture_action_result", "") or self._tr("common.dynamic.not_run_yet", "Not run yet")),
             "local_profile_draft_path": str(values.get("local_profile_draft_path") or self._tr("common.dynamic.not_created_yet", "Not created yet")),
             "local_schema_draft_path": str(values.get("local_schema_draft_path") or self._tr("common.dynamic.not_created_yet", "Not created yet")),
-            "local_metadata_status": str(values.get("local_metadata_status") or self._tr("common.dynamic.no_diagnostics_action", "No diagnostics action has been run yet.")),
+            "local_metadata_status": self._localized_local_metadata_status(values),
             "smartess_cloud_diagnostics_hint": self._smartess_cloud_diagnostics_hint(),
         }
         placeholders.update(self._localized_support_workflow(values))
         return placeholders
+
+    def _localized_proxy_capture_status_label(self, values: dict[str, Any]) -> str:
+        status = str(values.get("proxy_capture_status") or "").strip()
+        fallback = str(values.get("proxy_capture_status_label") or "").strip()
+        if not status and fallback:
+            status = fallback.lower()
+        return self._tr(
+            f"common.dynamic.proxy_capture_status_{status}",
+            fallback or self._tr("common.dynamic.not_available", "Not available"),
+        )
+
+    def _localized_proxy_capture_blocking_reason(self, values: dict[str, Any]) -> str:
+        reason = str(values.get("proxy_capture_blocking_reason") or "").strip()
+        if not reason:
+            return self._tr("common.dynamic.not_applicable", "Not applicable")
+        return self._tr(
+            f"common.dynamic.proxy_capture_blocking_{reason}",
+            reason,
+        )
+
+    def _format_proxy_capture_session_expires_at(self, value: object) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+
+        normalized = f"{raw[:-1]}+00:00" if raw.endswith("Z") else raw
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return raw
+
+        localized = parsed
+        timezone_name = str(
+            getattr(getattr(self.hass, "config", None), "time_zone", "") or ""
+        ).strip()
+        if parsed.tzinfo is not None and timezone_name:
+            try:
+                localized = parsed.astimezone(ZoneInfo(timezone_name))
+            except (ValueError, ZoneInfoNotFoundError):
+                localized = parsed
+
+        formatted = localized.strftime("%d.%m.%Y %H:%M")
+        if localized.tzinfo is None:
+            return formatted
+
+        timezone_label = (localized.tzname() or "").strip()
+        if timezone_label in {"+00:00", "UTC+00:00"}:
+            timezone_label = "UTC"
+        return f"{formatted} {timezone_label}".strip()
+
+    def _proxy_capture_user_plan(self, values: dict[str, Any]) -> str:
+        blocking_reason = self._localized_proxy_capture_blocking_reason(values)
+        if values.get("proxy_capture_can_stop"):
+            expires_at = self._format_proxy_capture_session_expires_at(
+                values.get("proxy_capture_session_expires_at")
+            )
+            remaining = self._format_proxy_capture_remaining_time(
+                values.get("proxy_capture_remaining_seconds")
+            )
+            if expires_at:
+                return self._tr(
+                    "common.dynamic.proxy_capture_plan_running_with_lease",
+                    "Capture is in progress. Refresh live log updates the events shown here. Use Reset proxy timer to extend the current session. Home Assistant will stop the capture and restore the collector connection in {remaining_time}, no later than {expires_at}. When you have enough data, choose Stop capture.",
+                    {
+                        "expires_at": expires_at,
+                        "remaining_time": remaining or expires_at,
+                    },
+                )
+            return self._tr(
+                "common.dynamic.proxy_capture_plan_running",
+                "Capture is in progress. Leave this page open and use Refresh live log to see new events. Use Reset proxy timer to extend the current session when needed. When you have enough data, choose Stop capture.",
+            )
+        if str(values.get("proxy_capture_blocking_reason") or "").strip():
+            return self._tr(
+                "common.dynamic.proxy_capture_plan_blocked",
+                "Capture cannot start yet: {reason}",
+                {"reason": blocking_reason},
+            )
+        if str(values.get("proxy_trace_saved_result_download_url") or "").strip() or str(
+            values.get("proxy_trace_saved_result_path") or ""
+        ).strip():
+            return self._tr(
+                "common.dynamic.proxy_capture_plan_ready_after_session",
+                "The previous capture is complete. Download the saved result below or start a new capture when you need another session.",
+            )
+        return self._tr(
+            "common.dynamic.proxy_capture_plan_start",
+            "Start capture will have Home Assistant accept collector traffic on the proxy endpoint and record it here.",
+        )
+
+    def _format_proxy_capture_remaining_time(self, value: object) -> str:
+        try:
+            seconds = max(0, int(float(value)))
+        except (TypeError, ValueError):
+            return ""
+        if seconds <= 0:
+            return self._tr("common.dynamic.proxy_capture_remaining_less_than_minute", "less than 1 min")
+        minutes = max(1, (seconds + 59) // 60)
+        unit = self._tr("common.dynamic.duration_minutes_short", "min")
+        return f"{minutes} {unit}"
+
+    def _proxy_capture_timer_summary(self, values: dict[str, Any]) -> str:
+        configured_minutes = _coerce_proxy_capture_duration_minutes(
+            values.get(CONF_PROXY_CAPTURE_DURATION_MINUTES),
+            default=DEFAULT_PROXY_CAPTURE_DURATION_MINUTES,
+        )
+        if values.get("proxy_capture_can_stop"):
+            remaining = self._format_proxy_capture_remaining_time(
+                values.get("proxy_capture_remaining_seconds")
+            )
+            expires_at = self._format_proxy_capture_session_expires_at(
+                values.get("proxy_capture_session_expires_at")
+            )
+            if remaining and expires_at:
+                return self._tr(
+                    "common.dynamic.proxy_capture_timer_running_with_deadline",
+                    "Remaining: {remaining_time}. Auto-stop: {expires_at}.",
+                    {"remaining_time": remaining, "expires_at": expires_at},
+                )
+            if remaining:
+                return self._tr(
+                    "common.dynamic.proxy_capture_timer_running",
+                    "Remaining: {remaining_time}.",
+                    {"remaining_time": remaining},
+                )
+        return self._tr(
+            "common.dynamic.proxy_capture_timer_configured",
+            "Session duration: {duration_minutes} min.",
+            {"duration_minutes": configured_minutes},
+        )
+
+    def _proxy_capture_saved_result_section(
+        self,
+        *,
+        saved_result_download_url: str,
+        status: str,
+    ) -> str:
+        normalized_status = str(status or "").strip()
+        if normalized_status in {"starting", "running", "stopping", "restoring"}:
+            return ""
+        if not saved_result_download_url:
+            return ""
+        download_markdown = (
+            self._tr(
+                "common.dynamic.download_proxy_capture_result",
+                "[Download saved result]({url})",
+                {"url": saved_result_download_url},
+            )
+            if saved_result_download_url
+            else self._tr("common.dynamic.not_available_yet", "Not available yet")
+        )
+        return self._tr(
+            "common.dynamic.proxy_capture_saved_result_section",
+            "**Saved result:** {download}",
+            {
+                "download": download_markdown,
+            },
+        )
+
+    def _proxy_capture_live_log(self, values: dict[str, Any]) -> str:
+        status = str(values.get("proxy_capture_status") or "").strip()
+        if status not in {"starting", "running", "stopping", "restoring"}:
+            return self._tr(
+                "common.dynamic.proxy_capture_live_log_not_started",
+                "The live log is empty. Start capture, then use Refresh live log to show new events here.",
+            )
+        live_log = str(values.get("proxy_trace_live_log") or "").strip()
+        if live_log:
+            return live_log
+        recent_events = str(values.get("proxy_trace_recent_events") or "").strip()
+        if recent_events:
+            return recent_events
+        return self._tr(
+            "common.dynamic.proxy_capture_live_log_waiting",
+            "Capture is running. No traffic has reached the log yet. Use Refresh live log after the collector reconnects.",
+        )
 
     async def _async_show_diagnostics_result(
         self,

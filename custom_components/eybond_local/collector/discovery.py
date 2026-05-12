@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import dataclass
 import logging
 import socket
+from time import monotonic
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,58 @@ def _probe_target_sync(
         sock.close()
 
 
+def _probe_target_replies_sync(
+    *,
+    bind_ip: str,
+    advertised_server_ip: str,
+    advertised_server_port: int,
+    target_ip: str,
+    udp_port: int,
+    timeout: float,
+) -> tuple[DiscoveryProbeResult, ...]:
+    messages = build_discovery_messages(advertised_server_ip, advertised_server_port)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    replies: list[DiscoveryProbeResult] = []
+    seen: set[tuple[str, int]] = set()
+    try:
+        try:
+            sock.bind((bind_ip, 0))
+        except OSError:
+            sock.bind(("", 0))
+        local_port = sock.getsockname()[1]
+        for message in messages:
+            sock.sendto(message, (target_ip, udp_port))
+            deadline = monotonic() + max(0.0, timeout)
+            while True:
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    break
+                sock.settimeout(remaining)
+                try:
+                    data, addr = sock.recvfrom(2048)
+                except OSError:
+                    break
+                key = (addr[0], addr[1])
+                if key in seen:
+                    continue
+                seen.add(key)
+                replies.append(
+                    DiscoveryProbeResult(
+                        target_ip=target_ip,
+                        message=message.decode("ascii", errors="replace"),
+                        local_port=local_port,
+                        reply=data.decode("ascii", errors="replace").strip(),
+                        reply_from=f"{addr[0]}:{addr[1]}",
+                    )
+                )
+            if replies:
+                break
+        return tuple(replies)
+    finally:
+        sock.close()
+
+
 async def async_probe_target(
     *,
     bind_ip: str,
@@ -86,6 +139,28 @@ async def async_probe_target(
 
     return await asyncio.to_thread(
         _probe_target_sync,
+        bind_ip=bind_ip,
+        advertised_server_ip=advertised_server_ip,
+        advertised_server_port=advertised_server_port,
+        target_ip=target_ip,
+        udp_port=udp_port,
+        timeout=timeout,
+    )
+
+
+async def async_probe_target_replies(
+    *,
+    bind_ip: str,
+    advertised_server_ip: str,
+    advertised_server_port: int,
+    target_ip: str,
+    udp_port: int,
+    timeout: float,
+) -> tuple[DiscoveryProbeResult, ...]:
+    """Send one-shot discovery probes and capture all UDP responses in the window."""
+
+    return await asyncio.to_thread(
+        _probe_target_replies_sync,
         bind_ip=bind_ip,
         advertised_server_ip=advertised_server_ip,
         advertised_server_port=advertised_server_port,

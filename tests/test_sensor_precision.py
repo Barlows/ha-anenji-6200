@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 import sys
 import types
@@ -26,6 +27,7 @@ def _install_sensor_stubs() -> None:
     core = _ensure_module("homeassistant.core")
     helpers = _ensure_module("homeassistant.helpers")
     entity = _ensure_module("homeassistant.helpers.entity")
+    entity_registry = _ensure_module("homeassistant.helpers.entity_registry")
     entity_platform = _ensure_module("homeassistant.helpers.entity_platform")
     restore_state = _ensure_module("homeassistant.helpers.restore_state")
     update_coordinator = _ensure_module("homeassistant.helpers.update_coordinator")
@@ -36,13 +38,15 @@ def _install_sensor_stubs() -> None:
         BATTERY = "battery"
         CURRENT = "current"
         ENERGY = "energy"
+        ENUM = "enum"
         FREQUENCY = "frequency"
         POWER = "power"
         TEMPERATURE = "temperature"
         VOLTAGE = "voltage"
 
     class SensorEntity:
-        pass
+        async def async_added_to_hass(self):
+            return None
 
     class SensorStateClass:
         MEASUREMENT = "measurement"
@@ -68,6 +72,9 @@ def _install_sensor_stubs() -> None:
         def __init__(self, coordinator):
             self.coordinator = coordinator
 
+        async def async_added_to_hass(self):
+            return None
+
     def callback(func):
         return func
 
@@ -90,9 +97,15 @@ def _install_sensor_stubs() -> None:
     ha.util = util
     components.sensor = sensor
     helpers.entity = entity
+    helpers.entity_registry = entity_registry
     helpers.entity_platform = entity_platform
     helpers.restore_state = restore_state
     helpers.update_coordinator = update_coordinator
+
+    def async_get(hass):
+        return hass.entity_registry
+
+    entity_registry.async_get = async_get
 
     if "custom_components.eybond_local.runtime.coordinator" not in sys.modules:
         runtime_coordinator = types.ModuleType(
@@ -116,12 +129,29 @@ from custom_components.eybond_local.sensor import EybondValueSensor
 
 
 class _FakeCoordinator:
-    def __init__(self, key: str, value: object) -> None:
+    def __init__(self, key: str, value: object, *, collector_cloud_family: str = "") -> None:
         self.config_entry = types.SimpleNamespace(entry_id="entry123")
         self.data = types.SimpleNamespace(values={key: value}, connected=True)
+        self.collector_cloud_family = collector_cloud_family
 
     def device_info(self) -> dict[str, str]:
         return {}
+
+
+class _FakeRegistry:
+    def __init__(self, options: dict[str, object] | None = None) -> None:
+        self._entries = {
+            "sensor.battery_voltage": types.SimpleNamespace(options=options or {})
+        }
+
+    def async_get(self, entity_id: str):
+        return self._entries.get(entity_id)
+
+    def async_update_entity_options(self, entity_id: str, domain: str, options: dict[str, object]) -> None:
+        entry = self._entries[entity_id]
+        merged = dict(entry.options)
+        merged[domain] = dict(options)
+        entry.options = merged
 
 
 class SensorPrecisionTests(unittest.TestCase):
@@ -177,6 +207,101 @@ class SensorPrecisionTests(unittest.TestCase):
         sensor = EybondValueSensor(coordinator, description)
 
         self.assertIsNone(sensor.suggested_display_precision)
+
+    def test_enum_sensor_exposes_translation_key_and_options(self) -> None:
+        coordinator = _FakeCoordinator("collector_signal_quality", "excellent")
+        description = MeasurementDescription(
+            key="collector_signal_quality",
+            name="Collector Signal Quality",
+            translation_key="collector_signal_quality",
+            device_class="enum",
+            options=("unknown", "excellent", "good", "fair", "weak"),
+        )
+
+        sensor = EybondValueSensor(coordinator, description)
+
+        self.assertEqual(sensor._attr_translation_key, "collector_signal_quality")
+        self.assertEqual(sensor._attr_options, ["unknown", "excellent", "good", "fair", "weak"])
+        self.assertEqual(sensor.native_value, "excellent")
+
+    def test_collector_signal_sensors_are_inactive_for_legacy_collectors(self) -> None:
+        coordinator = _FakeCoordinator(
+            "collector_signal_strength",
+            -67,
+            collector_cloud_family="legacy_binary",
+        )
+        description = MeasurementDescription(
+            key="collector_signal_strength",
+            name="Collector Signal Strength",
+            unit="dBm",
+            device_class="signal_strength",
+            enabled_default=True,
+        )
+
+        sensor = EybondValueSensor(coordinator, description)
+
+        self.assertFalse(sensor._attr_entity_registry_enabled_default)
+        self.assertFalse(sensor.available)
+
+    def test_collector_signal_quality_is_inactive_for_legacy_collectors(self) -> None:
+        coordinator = _FakeCoordinator(
+            "collector_signal_quality",
+            "excellent",
+            collector_cloud_family="legacy_binary",
+        )
+        description = MeasurementDescription(
+            key="collector_signal_quality",
+            name="Collector Signal Quality",
+            translation_key="collector_signal_quality",
+            device_class="enum",
+            options=("unknown", "excellent", "good", "fair", "weak"),
+            enabled_default=True,
+        )
+
+        sensor = EybondValueSensor(coordinator, description)
+
+        self.assertFalse(sensor._attr_entity_registry_enabled_default)
+        self.assertFalse(sensor.available)
+
+    def test_collector_signal_sensors_stay_active_for_smartess_at_collectors(self) -> None:
+        coordinator = _FakeCoordinator(
+            "collector_signal_strength",
+            -67,
+            collector_cloud_family="smartess_at",
+        )
+        description = MeasurementDescription(
+            key="collector_signal_strength",
+            name="Collector Signal Strength",
+            unit="dBm",
+            device_class="signal_strength",
+            enabled_default=True,
+        )
+
+        sensor = EybondValueSensor(coordinator, description)
+
+        self.assertTrue(sensor._attr_entity_registry_enabled_default)
+        self.assertTrue(sensor.available)
+
+    def test_added_to_hass_repairs_stale_zero_precision_override(self) -> None:
+        coordinator = _FakeCoordinator("battery_voltage", 52.0)
+        description = MeasurementDescription(
+            key="battery_voltage",
+            name="Battery Voltage",
+            unit="V",
+            device_class="voltage",
+            suggested_display_precision=1,
+        )
+        registry = _FakeRegistry(options={"sensor": {"suggested_display_precision": 0}})
+        sensor = EybondValueSensor(coordinator, description)
+        sensor.entity_id = "sensor.battery_voltage"
+        sensor.hass = types.SimpleNamespace(entity_registry=registry)
+
+        asyncio.run(sensor.async_added_to_hass())
+
+        self.assertEqual(
+            registry.async_get("sensor.battery_voltage").options,
+            {"sensor": {"suggested_display_precision": 1}},
+        )
 
 
 if __name__ == "__main__":
