@@ -1788,6 +1788,80 @@
    }
   },
   {
+   "entry_key": "smg_6200_fw7904",
+   "fingerprint": {
+    "layout_code": 11,
+    "model_code": 30980,
+    "rated_power_one_of": [
+     6200
+    ]
+   },
+   "structural": [
+    "serial_ascii_plausible"
+   ],
+   "model_name": "Aninerel 6200 (dual output)",
+   "surface_key": "anenji_op2_6200_full",
+   "runtime_probe": {
+    "validation": [
+     {
+      "key": "output_rating_voltage",
+      "min": 1
+     },
+     {
+      "key": "output_rating_frequency",
+      "min": 1
+     },
+     {
+      "key": "rated_power",
+      "one_of": [
+       6200
+      ]
+     }
+    ],
+    "optional_registers": [
+     {
+      "key": "device_type",
+      "register": 171
+     },
+     {
+      "key": "protocol_number",
+      "register": 184
+     },
+     {
+      "key": "rated_cell_count",
+      "register": 644
+     },
+     {
+      "key": "max_discharge_current_protection",
+      "register": 351
+     }
+    ],
+    "optional_ascii": [
+     {
+      "key": "device_name",
+      "register": 172,
+      "word_count": 12
+     },
+     {
+      "key": "program_version",
+      "register": 626,
+      "word_count": 8
+     }
+    ]
+   },
+   "cloud_hints": {
+    "devcodes": []
+   },
+   "provenance": {
+    "sources": [
+     "user support archive (2026-07-13): device_type/model_code=30980 (0x7904), protocol_number/layout_code=11, rated_power=6200, program_version=7904_A6251230v1, confirmed dual-output (OP2) hardware",
+     "one firmware release above anenji_op2_6200 (model_code 30979 / fw 7903); same layout_code=11 dual-output SMG 6200-class hardware family",
+     "bound successfully via the smg_6200 register schema/profile on a working pre-catalog-rewrite fork; user confirms physical OP2 dual-output"
+    ],
+    "confidence": "capture-derived"
+   }
+  },
+  {
    "entry_key": "anenji_6200",
    "fingerprint": {
     "layout_code": 1,
