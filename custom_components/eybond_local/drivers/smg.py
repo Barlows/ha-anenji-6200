@@ -422,6 +422,16 @@ class SmgModbusDriver(InverterDriver):
         values.update(_derive_inverter_clock(values))
         values.update(_derive_pv_channel_summary(values))
 
+        output_power = values.get("output_power")
+        rated_power = inverter.details.get("rated_power") or values.get("rated_power")
+        if isinstance(output_power, int):
+            if output_power < 0:
+                values.pop("output_power", None)
+            elif output_power >= 65532:
+                values.pop("output_power", None)
+            elif isinstance(rated_power, int) and rated_power > 0 and output_power > int(rated_power * 1.2):
+                values.pop("output_power", None)
+
         fault_descriptions = _decode_named_bits(
             values.get("fault_code"),
             fault_code_names,
