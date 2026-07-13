@@ -52,7 +52,7 @@
       "1": "Solar First (SOL)",
       "2": "Solar-Battery-Utility (SBU)",
       "3": "Solar-Utility-Battery (SUB)",
-      "4": "Solar-Utility-FeedIn (SUF)
+      "4": "Solar-Utility-FeedIn (SUF)"
     },
     "input_voltage_range": {
       "0": "Appliances",
