@@ -119,6 +119,12 @@
           "label": "Solar-Utility-Battery (SUB)",
           "order": 3,
           "description": "Solar, then utility, then battery."
+        },
+        {
+          "value": 4,
+          "label": "Solar-Utility-FeedIn (SUF)",
+          "order": 4,
+          "description": "Solar, then utility, then back-feed surplus to the grid."
         }
       ],
       "recommendations": [
