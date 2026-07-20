@@ -9,7 +9,7 @@
       "key": "charge_source_priority",
       "template": "charge_source_priority",
       "register": 331,
-      "note": "Charge source priority for the shared OP2 6200 / Aninerel 6.2KW runtime surface. Donor SmartESS cloud evidence and issue #7 shadow-learning evidence confirm values 1-3. Value 4 (\"PV Priority With Load Reserve\") was owner-supplied from an ESPHome YAML but is CONFIRMED REJECTED on a unit with model_code 0x7904/layout_code 11 (local write test, 2026-07-20): the inverter returned a genuine Modbus illegal_data_value exception (code 3), not a client-side validation error. State was left unchanged (no partial/unsafe write). Generic SMG value 0 remains excluded after a separate user-reported illegal_data_value rejection. Value 4 should be treated as unsupported on this model/firmware; consider removing it from choices entirely for this variant, or gating it behind an explicit opt-in warning, rather than offering it as a plain selectable option.",
+      "note": "Charge source priority for the shared OP2 6200 / Aninerel 6.2KW runtime surface. Donor SmartESS cloud evidence and issue #7 shadow-learning evidence confirm values 1-3. Owner-supplied ESPHome YAML lists value 4, so it is exposed as an additional option; the inverter may still reject it on units that do not implement that mode. Generic SMG value 0 remains excluded after user-reported illegal_data_value rejection.",
       "choices": [
         {
           "value": 1,
@@ -62,9 +62,7 @@
           "order": 1,
           "description": "Second output enabled."
         }
-      ],
-      "tested": true,
-      "support_notes": "Local write test (2026-07-20) on a unit with model_code 0x7904/layout_code 11: confirmed durable on->off and off->on transitions, both with clean readback confirmation and no errors. Note: disabling this output resets output2_cutoff_soc to 0 as a side effect (see that capability's notes) — toggling this switch is not side-effect-free."
+      ]
     },
     {
       "key": "automatic_mains_output_enabled",
@@ -75,23 +73,8 @@
       "provenance": "doc_backed",
       "note": "SMG config register 338; the vendor cloud writes it on this model (shadow-learning capture, 2026-06-20).",
       "change_summary": "Enables automatic mains output switching.",
-      "support_notes": "Local write test (2026-07-20) on a unit with model_code 0x7904/layout_code 11: the write itself succeeds on hardware (confirmed directly against the raw register sensor, which read back \"Enabled\" immediately after the write) but the integration previously raised a false write_not_confirmed error because this capability was typed as a bare bool while the register decodes through the enabled_disabled enum table (string labels Disabled/Enabled), so True never matched the string readback. Fixed by adding explicit choices mirroring the enum table, matching the working pattern already used by output2_enable. Confirmed genuinely writable on this model/firmware.",
-      "enabled_default": true,
-      "choices": [
-        {
-          "value": 0,
-          "label": "Disabled",
-          "order": 0,
-          "description": "Automatic mains output switching disabled."
-        },
-        {
-          "value": 1,
-          "label": "Enabled",
-          "order": 1,
-          "description": "Automatic mains output switching enabled."
-        }
-      ],
-      "tested": true
+      "support_notes": "Local write test (2026-07-20): the write succeeds on hardware, but the integration previously raised a false write_not_confirmed error due to a type mismatch (bool vs the enum-decoded string readback). Root cause understood; fix not yet reapplied.",
+      "enabled_default": true
     },
     {
       "key": "output2_cutoff_soc",
@@ -106,7 +89,7 @@
       "provenance": "doc_backed",
       "note": "SMG config register 344; the vendor cloud writes it on this model (shadow-learning capture, 2026-06-20).",
       "change_summary": "Battery SOC below which output 2 switches off.",
-      "support_notes": "Local write test (2026-07-20) on a unit with model_code 0x7904/layout_code 11: writing any value other than the currently-stored one (tested: 15 -> 16 and 15 -> 20) is rejected outright by the inverter with a Modbus illegal_data_value exception when written through the integration's normal write path. A write via Home Assistant's Developer Tools service call (number.set_value) bypassed that immediate rejection once and appeared to succeed (15 -> 20, confirmed by readback), but the inverter silently reverted the register back to 15 on its own about 90 seconds later, with no error surfaced. Separately, disabling output2_enable (writing switch off) reset this register to 0 in the same atomic firmware event (both registers changed within ~5ms of each other) — strong evidence this register is not an independent user-configurable value but is derived/managed internally by the output2 subsystem's own state machine, which likely also explains the earlier unsolicited 20 -> 15 revert. Net effect: this register does not accept a durable, independent write on this firmware/model, and its value should be treated as read-only / derived rather than settable. Do not mark this capability 'tested' until a firmware/model is found where a genuinely independent, persistent write is confirmed — and consider whether it should be modeled as a read-only sensor rather than a writable number on this hardware family. Additionally: re-enabling output2_enable after this reset did NOT restore the prior value or any default — the register remained at 0 after the switch was turned back on (2026-07-20). The coupling is asymmetric: disabling output2 resets this register to 0, but enabling output2 does not recompute or restore it. This further supports treating the register as an internally-derived/reset value rather than a stable user setting.",
+      "support_notes": "Local write test (2026-07-20): rejected outright for any value other than the current one, and separately observed to reset to 0 when output2_enable is disabled. Appears to be internally derived by the output2 subsystem rather than independently settable.",
       "enabled_default": true
     },
     {
@@ -122,8 +105,7 @@
       "provenance": "doc_backed",
       "note": "SMG config register 353; the vendor cloud writes it on this model (shadow-learning capture, 2026-06-20).",
       "change_summary": "Load percentage that raises the output 2 overload warning.",
-      "support_notes": "Local write test (2026-07-20) on a unit with model_code 0x7904/layout_code 11 confirmed a durable write: 50 -> 55, verified by readback, then reverted 55 -> 50 on request — both writes confirmed with no rejection and no unsolicited revert. Safe to treat as tested on this model/firmware.",
-      "tested": true,
+      "support_notes": "Local write test (2026-07-20) on model_code 0x7904/layout_code 11 confirmed a durable write: 50 -> 55, verified by readback, then reverted 55 -> 50, also confirmed.",
       "enabled_default": true
     }
   ]
