@@ -89,7 +89,7 @@
       "provenance": "doc_backed",
       "note": "SMG config register 344; the vendor cloud writes it on this model (shadow-learning capture, 2026-06-20).",
       "change_summary": "Battery SOC below which output 2 switches off.",
-      "support_notes": "Cloud-observed write on an Aninerel 6200 dual-output unit; not yet confirmed by a local write test.",
+      "support_notes": "Local write test (2026-07-20) on a unit with model_code 0x7904/layout_code 11: writing any value other than the currently-stored one (tested: 15 -> 16 and 15 -> 20) is rejected outright by the inverter with a Modbus illegal_data_value exception when written through the integration's normal write path. Writing via Home Assistant's Developer Tools service call (number.set_value) bypassed that immediate rejection once and appeared to succeed (15 -> 20, confirmed by readback) but the inverter silently reverted the register back to 15 on its own approximately 90 seconds later, with no error surfaced. Net effect: this register does not accept a durable write to any value other than its current one on this firmware/model, despite the documented 0-100 range. Do not mark this capability 'tested' until a firmware/model is found where a genuinely persistent write is confirmed.",
       "enabled_default": true
     },
     {
@@ -105,7 +105,8 @@
       "provenance": "doc_backed",
       "note": "SMG config register 353; the vendor cloud writes it on this model (shadow-learning capture, 2026-06-20).",
       "change_summary": "Load percentage that raises the output 2 overload warning.",
-      "support_notes": "Cloud-observed write on an Aninerel 6200 dual-output unit; not yet confirmed by a local write test.",
+      "support_notes": "Local write test (2026-07-20) on a unit with model_code 0x7904/layout_code 11 confirmed a durable write: 50 -> 55, verified by readback, then reverted 55 -> 50 on request \u2014 both writes confirmed with no rejection and no unsolicited revert. Safe to treat as tested on this model/firmware.",
+      "tested": true,
       "enabled_default": true
     }
   ]
