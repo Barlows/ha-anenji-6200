@@ -178,7 +178,7 @@
       "18": "Parallel Battery Voltage Difference Too Large",
       "19": "Lithium Battery Communication Abnormal",
       "20": "Battery Discharge Current Exceeds Set Value",
-      "22": "Battery Open (transient connection issue under sudden load)"
+      "22": "Output 2 Overload"
     }
   },
   "spec_sets": {
