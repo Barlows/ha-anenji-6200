@@ -1,4 +1,4 @@
-# EyeBond Local — local Home Assistant integration for SmartESS / SmartValue solar inverters
+# EyeBond Local SC — local Home Assistant integration for SmartESS / SmartValue solar inverters
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](https://www.mozilla.org/en-US/MPL/2.0/)
