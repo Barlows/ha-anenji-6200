@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import asyncio
 import sys
+from types import SimpleNamespace
 import unittest
+from unittest.mock import AsyncMock, patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -578,6 +581,102 @@ class ModbusCatalogDriverTests(unittest.IsolatedAsyncioTestCase):
         # The owner confirmed the native battery sign is already the intended
         # user-facing sign; do not manufacture a second opposite projection.
         self.assertNotIn("battery_power", values)
+
+    async def test_kevolt_failed_runtime_cannot_be_hidden_by_cached_settings(self) -> None:
+        from custom_components.eybond_local.payload.modbus import ModbusError
+
+        driver = ModbusCatalogDriver()
+        transport = _transport(input_registers={}, holding_registers=_deye_3ph_high_holding_registers())
+        inverter = await driver.async_probe(transport, _target())
+        assert inverter is not None
+        runtime_state = {}
+        good = await driver.async_read_values(transport, inverter, runtime_state=runtime_state)
+        self.assertIn("inverter_power", good.values)
+        for error, count in (
+            (TimeoutError("request_timeout"), 13),
+            (ModbusError("response_too_short"), 13),
+            (ConnectionError("collector_disconnected"), 1),
+        ):
+            with self.subTest(error=str(error)):
+                session = SimpleNamespace(read_registers=AsyncMock(side_effect=error))
+                with patch.object(driver, "_session", return_value=session):
+                    with self.assertRaises(type(error)) as raised:
+                        await driver.async_read_values(transport, inverter, runtime_state=runtime_state)
+                self.assertIs(raised.exception, error)
+                self.assertEqual(session.read_registers.await_count, count)
+
+    async def test_kevolt_one_missing_runtime_block_keeps_other_current_readings(self) -> None:
+        from custom_components.eybond_local.payload.modbus import ModbusError
+
+        driver = ModbusCatalogDriver()
+        registers = _deye_3ph_high_holding_registers()
+        transport = _transport(input_registers={}, holding_registers=registers)
+        inverter = await driver.async_probe(transport, _target())
+        assert inverter is not None
+
+        async def read(address, count, *, function=3):
+            if address == 586:
+                raise ModbusError("response_too_short")
+            return [registers.get(address + offset, 0) for offset in range(count)]
+
+        session = SimpleNamespace(read_registers=AsyncMock(side_effect=read))
+        with patch.object(driver, "_session", return_value=session):
+            result = await driver.async_read_values(transport, inverter, runtime_state={})
+        self.assertEqual(result.mode, DriverReadMode.FULL)
+        self.assertEqual(result.values["run_state"], "Normal")
+        self.assertEqual(result.values["grid_frequency"], 50.0)
+        self.assertNotIn("battery_voltage", result.values)
+
+    async def test_two_kevolt_entries_keep_independent_reads_and_settings_during_outage(self) -> None:
+        # Drivers are shared singletons. A failed physical collector must not
+        # affect a sibling entry using the same driver and Modbus slave id.
+        driver = ModbusCatalogDriver()
+        first = _transport(input_registers={}, holding_registers=_deye_3ph_high_holding_registers())
+        second_registers = _deye_3ph_high_holding_registers()
+        second_registers[587] = 5210
+        second_registers[60] = 2
+        second = _transport(input_registers={}, holding_registers=second_registers)
+        first_inverter, second_inverter = await asyncio.gather(
+            driver.async_probe(first, _target()), driver.async_probe(second, _target())
+        )
+        assert first_inverter is not None and second_inverter is not None
+        first_state, second_state = {}, {}
+        first_good, second_good = await asyncio.gather(
+            driver.async_read_values(first, first_inverter, runtime_state=first_state),
+            driver.async_read_values(second, second_inverter, runtime_state=second_state),
+        )
+        self.assertEqual(first_good.values["battery_voltage"], 53.07)
+        self.assertEqual(second_good.values["battery_voltage"], 52.1)
+        self.assertNotEqual(first_good.values["inverter_power"], second_good.values["inverter_power"])
+        error = ConnectionError("collector_disconnected")
+        with patch.object(first, "async_send_payload", new=AsyncMock(side_effect=error)) as failed:
+            first_failed, second_live = await asyncio.gather(
+                driver.async_read_values(first, first_inverter, runtime_state=first_state),
+                driver.async_read_values(second, second_inverter, runtime_state=second_state),
+                return_exceptions=True,
+            )
+        self.assertIs(first_failed, error)
+        self.assertEqual(failed.await_count, 1)
+        self.assertEqual(second_live.values["battery_voltage"], 52.1)
+        self.assertEqual(second_live.values["inverter_power"], second_good.values["inverter_power"])
+        recovered = await driver.async_read_values(first, first_inverter, runtime_state=first_state)
+        self.assertEqual(recovered.values["battery_voltage"], 53.07)
+        self.assertEqual(recovered.values["inverter_power"], first_good.values["inverter_power"])
+
+    async def test_kevolt_empty_forward_replies_report_failure_through_real_modbus_parser(self) -> None:
+        from custom_components.eybond_local.payload.modbus import ModbusError
+
+        driver = ModbusCatalogDriver()
+        transport = _transport(input_registers={}, holding_registers=_deye_3ph_high_holding_registers())
+        inverter = await driver.async_probe(transport, _target())
+        assert inverter is not None
+        # Live failure signature: the collector returns a correlated FC4
+        # envelope, but its inverter payload is empty. Keep real RTU parsing
+        # and retry policy here; an empty reply is never fresh telemetry.
+        with patch.object(transport, "async_send_payload", new=AsyncMock(return_value=b"")) as send:
+            with self.assertRaisesRegex(ModbusError, "response_too_short"):
+                await driver.async_read_values(transport, inverter, runtime_state={})
+        self.assertEqual(send.await_count, 26)
 
     async def test_kevolt_controls_are_full_mode_only_and_use_fc16_with_readback_keys(self) -> None:
         from custom_components.eybond_local.control_policy import can_expose_capability

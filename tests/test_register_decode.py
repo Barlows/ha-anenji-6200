@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import asyncio
 import sys
+from types import SimpleNamespace
 import unittest
+from unittest.mock import AsyncMock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -22,11 +25,58 @@ from custom_components.eybond_local.payload.register_decode import (  # noqa: E4
     decode_ascii_word,
     decode_block,
     decode_raw_value,
+    read_spec_set_values,
 )
 
 
 def _spec(**kwargs) -> RegisterValueSpec:
     return RegisterValueSpec(key=kwargs.pop("key", "value"), register=kwargs.pop("register", 10), **kwargs)
+
+
+class ReadSpecSetFailureTests(unittest.IsolatedAsyncioTestCase):
+    def _schema(self):
+        return SimpleNamespace(
+            blocks=tuple(SimpleNamespace(start=n, count=1, function=3) for n in (10, 20, 30)),
+            spec_set=lambda _: tuple(_spec(key=f"value_{n}", register=n) for n in (10, 20)),
+        )
+
+    async def test_total_failure_preserves_error_and_skips_unrelated_blocks(self):
+        for error in (TimeoutError("request_timeout"), ValueError("unsupported_map")):
+            with self.subTest(error=type(error).__name__):
+                session = SimpleNamespace(read_registers=AsyncMock(side_effect=error))
+                with self.assertRaises(type(error)) as raised:
+                    await read_spec_set_values(session, self._schema())
+                self.assertIs(raised.exception, error)
+                self.assertEqual(session.read_registers.await_count, 2)
+
+    async def test_partial_read_keeps_available_values(self):
+        for results, expected in (
+            ([TimeoutError("request_timeout"), [42]], {"value_20": 42}),
+            ([[21], ValueError("unsupported_map")], {"value_10": 21}),
+        ):
+            session = SimpleNamespace(read_registers=AsyncMock(side_effect=results))
+            self.assertEqual(await read_spec_set_values(session, self._schema()), expected)
+
+    async def test_disconnected_transport_stops_without_reading_remaining_blocks(self):
+        error = ConnectionError("collector_disconnected")
+        session = SimpleNamespace(read_registers=AsyncMock(side_effect=error))
+        with self.assertRaises(ConnectionError) as raised:
+            await read_spec_set_values(session, self._schema())
+        self.assertIs(raised.exception, error)
+        self.assertEqual(session.read_registers.await_count, 1)
+
+    async def test_cancelled_read_is_not_swallowed(self):
+        session = SimpleNamespace(read_registers=AsyncMock(side_effect=asyncio.CancelledError))
+        with self.assertRaises(asyncio.CancelledError):
+            await read_spec_set_values(session, self._schema())
+        self.assertEqual(session.read_registers.await_count, 1)
+
+    async def test_empty_spec_set_does_not_create_an_error_or_send_reads(self):
+        schema = self._schema()
+        schema.spec_set = lambda _: ()
+        session = SimpleNamespace(read_registers=AsyncMock())
+        self.assertEqual(await read_spec_set_values(session, schema), {})
+        session.read_registers.assert_not_awaited()
 
 
 class DecodeBlockTests(unittest.TestCase):

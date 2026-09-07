@@ -166,12 +166,14 @@ async def read_spec_set_values(
 ) -> dict[str, Any]:
     """Read every schema block and decode the specs it covers.
 
-    Blocks that fail to read are skipped: partially responding devices still
-    produce the values they do expose, matching the historical driver
-    behaviour.
+    Unsupported or temporarily failing blocks do not suppress successful
+    reads. A completely failed sweep is an error, however, not a successful
+    empty snapshot. A disconnected transport aborts immediately.
     """
 
     values: dict[str, Any] = {}
+    successful_reads = 0
+    last_read_error: Exception | None = None
     specs = schema.spec_set(spec_set)
     for block in schema.blocks:
         block_function = getattr(block, "function", 3)
@@ -193,7 +195,17 @@ async def read_spec_set_values(
                 block.count,
                 function=block_function,
             )
-        except Exception:  # pylint: disable=broad-except
+        except ConnectionError:
+            # Positive transport failure cannot be repaired by reading every
+            # remaining register block on the same disconnected session.
+            raise
+        except Exception as exc:  # pylint: disable=broad-except
+            last_read_error = exc
             continue
+        successful_reads += 1
         values.update(decode_block(block.start, words, block_specs, ascii_style=ascii_style))
+    if successful_reads == 0 and last_read_error is not None:
+        # Preserve the actual error (timeout, unsupported map, etc.) so the
+        # runtime recovery policy can distinguish inverter and link failures.
+        raise last_read_error
     return values

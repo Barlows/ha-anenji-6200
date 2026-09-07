@@ -61,6 +61,25 @@ the GitHub release body should be rendered from the matching version section her
 
 ### Fixed
 
+- Schema-driven Modbus polling now reports a failed cycle when every runtime
+  block fails, instead of publishing an empty successful snapshot. Cached
+  settings cannot hide the failure; valid partial telemetry remains available,
+  and a disconnected transport stops the sweep immediately.
+- Fixed long diagnostic states exceeding Home Assistant's 255-character limit.
+  Write-capability sensors now show a count with the full list in the
+  `capabilities` attribute; other long texts retain their full value in
+  `full_value`. Support archives keep the original data.
+- Fixed false rejection of successful secondary-priority schedule writes:
+  normal SMG polling now uses the same native capability decoder as write
+  confirmation, including HHMM times such as `655` → `06:55`.
+- Updated device-registry access for Home Assistant 2026.9, preserving
+  entry-scoped ownership, collector links, entity ids and older HA compatibility.
+  The current real-HA CI lane now runs on 2026.9.1.
+- Moved SMG battery voltage and Protocol 3-10 lifetime PV generation out of the
+  diagnostic category without changing registers, entity ids or statistics.
+- Corrected the exact Anenji `0x8401` display name to ANJ-11KW-48V-WIFI after
+  owner clarification; existing profile keys and the `0x8000` WIFI-P identity
+  remain unchanged. The fingerprint is not a parallel-capability test.
 - Fixed a framed-transport desynchronization where one unexpected unwrapped
   Modbus RTU response could be combined with the next EyeBond header, consume
   subsequent valid frames, and stall telemetry until the socket was replaced.
@@ -70,11 +89,12 @@ the GitHub release body should be rendered from the matching version section her
 - Preload the SmartESS semantic catalog with the other JSON metadata caches in
   Home Assistant's executor, avoiding a first-use blocking file read from the
   event loop when diagnostics or cloud evidence first resolves a field.
-- Restored exact Anenji ANJ-11KW-48V-WIFI-P identification for the captured
+- Restored exact Anenji 11kW identification for the captured
   Protocol 4 fingerprint `layout=4`, `model=0x8401`. Unlike the broad legacy
   heuristic, the new catalog entry affects only this proven fingerprint; it
-  uses the documented Protocol 4 telemetry map while keeping all writes
-  untested and Full-Control-only until hardware confirmation.
+  uses the documented Protocol 4 telemetry map and its own control profile.
+  The old displayed name remains a compatibility alias so an existing entry
+  cannot accidentally select the other hardware variant before a live probe.
 - Fixed cancellation cleanup for an in-progress inverter driver sweep on
   Python 3.14. Expected late probe failures are now consumed by an owned
   no-fail outcome relay instead of being reported as unhandled event-loop
