@@ -1,0 +1,550 @@
+{
+  "extends": "./classic_smg_rs232_v1.json",
+  "profile_key": "modbus_smg_communication_protocol_2",
+  "title": "GM6200 Protocol 2 Controls (Unverified)",
+  "driver_key": "modbus_smg",
+  "protocol_family": "modbus_smg",
+  "capability_defaults": {
+    "tested": false,
+    "provenance": "doc_backed",
+    "support_tier": "conditional"
+  },
+  "capabilities": [
+    {
+      "key": "output_mode",
+      "choices": [
+        {
+          "value": 0,
+          "label": "Single"
+        },
+        {
+          "value": 1,
+          "label": "Parallel"
+        },
+        {
+          "value": 2,
+          "label": "3 Phase-P1"
+        },
+        {
+          "value": 3,
+          "label": "3 Phase-P2"
+        },
+        {
+          "value": 4,
+          "label": "3 Phase-P3"
+        }
+      ]
+    },
+    {
+      "key": "output_source_priority",
+      "choices": [
+        {
+          "value": 1,
+          "label": "Solar-Utility-Battery (SUB)"
+        },
+        {
+          "value": 2,
+          "label": "Solar-Battery-Utility (SBU)"
+        },
+        {
+          "value": 3,
+          "label": "PV-Utility-Battery (Grid-Tied PV)"
+        },
+        {
+          "value": 4,
+          "label": "Self-Consumption (ZEC)"
+        }
+      ]
+    },
+    {
+      "key": "charge_source_priority",
+      "choices": [
+        {
+          "value": 1,
+          "label": "PV Priority"
+        },
+        {
+          "value": 2,
+          "label": "PV and Utility"
+        },
+        {
+          "value": 3,
+          "label": "PV Only"
+        },
+        {
+          "value": 4,
+          "label": "PV Priority With Load Reserve"
+        }
+      ]
+    },
+    {
+      "key": "battery_bulk_voltage",
+      "minimum": 0,
+      "maximum": 700
+    },
+    {
+      "key": "battery_overvoltage_protection_voltage",
+      "minimum": 0,
+      "maximum": 700
+    },
+    {
+      "key": "battery_float_voltage",
+      "minimum": 0,
+      "maximum": 700
+    },
+    {
+      "key": "battery_redischarge_voltage",
+      "minimum": 0,
+      "maximum": 700
+    },
+    {
+      "key": "battery_under_voltage",
+      "minimum": 0,
+      "maximum": 700
+    },
+    {
+      "key": "battery_under_voltage_off_grid",
+      "minimum": 0,
+      "maximum": 700
+    },
+    {
+      "key": "battery_equalization_voltage",
+      "minimum": 0,
+      "maximum": 700
+    },
+    {
+      "key": "parallel_pv_detection_mode",
+      "register": 311,
+      "value_kind": "bool",
+      "title": "Parallel PV Detection",
+      "group": "system",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 311.",
+      "choices": [
+        {
+          "value": 0,
+          "label": "Independent"
+        },
+        {
+          "value": 1,
+          "label": "All Units Required"
+        }
+      ]
+    },
+    {
+      "key": "external_ct_enabled",
+      "register": 312,
+      "value_kind": "bool",
+      "title": "External CT",
+      "group": "system",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 312.",
+      "choices": [
+        {
+          "value": 0,
+          "label": "Off"
+        },
+        {
+          "value": 1,
+          "label": "On"
+        }
+      ]
+    },
+    {
+      "key": "warning_mask_i",
+      "register": 314,
+      "value_kind": "u32",
+      "title": "Warning Mask I",
+      "group": "system",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 314.",
+      "word_count": 2,
+      "combine": "u32_high_first",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "support_tier": "blocked",
+      "support_notes": "Warning suppression is not enabled for an unverified model."
+    },
+    {
+      "key": "secondary_output_priority",
+      "register": 318,
+      "value_kind": "enum",
+      "title": "Secondary Output Priority",
+      "group": "output",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 318.",
+      "choices": [
+        {
+          "value": 0,
+          "label": "Disabled"
+        },
+        {
+          "value": 1,
+          "label": "Solar-Utility-Battery (SUB)"
+        },
+        {
+          "value": 2,
+          "label": "Solar-Battery-Utility (SBU)"
+        },
+        {
+          "value": 3,
+          "label": "PV-Utility-Battery (Grid-Tied PV)"
+        },
+        {
+          "value": 4,
+          "label": "Self-Consumption (ZEC)"
+        }
+      ]
+    },
+    {
+      "key": "secondary_charging_priority",
+      "register": 319,
+      "value_kind": "enum",
+      "title": "Secondary Charging Priority",
+      "group": "charging",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 319.",
+      "choices": [
+        {
+          "value": 0,
+          "label": "Disabled"
+        },
+        {
+          "value": 1,
+          "label": "PV Priority"
+        },
+        {
+          "value": 2,
+          "label": "PV and Utility"
+        },
+        {
+          "value": 3,
+          "label": "PV Only"
+        },
+        {
+          "value": 4,
+          "label": "PV Priority With Load Reserve"
+        }
+      ]
+    },
+    {
+      "key": "battery_type",
+      "register": 322,
+      "value_kind": "enum",
+      "title": "Battery Type",
+      "group": "battery",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 322.",
+      "choices": [
+        {
+          "value": 0,
+          "label": "AGM"
+        },
+        {
+          "value": 1,
+          "label": "Flooded"
+        },
+        {
+          "value": 2,
+          "label": "User"
+        },
+        {
+          "value": 3,
+          "label": "Li1"
+        },
+        {
+          "value": 4,
+          "label": "Li2"
+        },
+        {
+          "value": 5,
+          "label": "Li3"
+        },
+        {
+          "value": 6,
+          "label": "Li4"
+        },
+        {
+          "value": 8,
+          "label": "LiB"
+        }
+      ],
+      "editable_if": [
+        "battery_connected",
+        "charging_inactive"
+      ]
+    },
+    {
+      "key": "constant_voltage_to_float_time",
+      "register": 330,
+      "value_kind": "u16",
+      "title": "Constant Voltage to Float Time",
+      "group": "charging",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 330.",
+      "minimum": 0,
+      "maximum": 900,
+      "unit": "min"
+    },
+    {
+      "key": "automatic_mains_output_enabled",
+      "register": 338,
+      "value_kind": "bool",
+      "title": "Automatic Mains Output",
+      "group": "output",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 338.",
+      "choices": [
+        {
+          "value": 0,
+          "label": "Disabled"
+        },
+        {
+          "value": 1,
+          "label": "Enabled"
+        }
+      ]
+    },
+    {
+      "key": "low_dc_protection_soc_grid_mode",
+      "register": 341,
+      "value_kind": "u16",
+      "title": "Grid Mode Battery Cutoff SOC",
+      "group": "battery",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 341.",
+      "minimum": 20,
+      "maximum": 50,
+      "unit": "%"
+    },
+    {
+      "key": "solar_battery_utility_return_soc_threshold",
+      "register": 342,
+      "value_kind": "u16",
+      "title": "Grid Mode Battery Recovery SOC",
+      "group": "battery",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 342.",
+      "minimum": 60,
+      "maximum": 100,
+      "unit": "%"
+    },
+    {
+      "key": "low_dc_cutoff_soc",
+      "register": 343,
+      "value_kind": "u16",
+      "title": "Off-Grid Battery Cutoff SOC",
+      "group": "battery",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 343.",
+      "minimum": 3,
+      "maximum": 30,
+      "unit": "%"
+    },
+    {
+      "key": "pv_grid_feed_power_limit",
+      "register": 344,
+      "value_kind": "u16",
+      "title": "PV Grid Feed Power Limit",
+      "group": "output",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 344.",
+      "minimum": 200,
+      "maximum": 65535,
+      "unit": "W",
+      "support_tier": "blocked",
+      "support_notes": "Grid-export settings require an exact-model safety policy; protocol-level Full Control does not enable them."
+    },
+    {
+      "key": "secondary_output_priority_start_time",
+      "register": 345,
+      "value_kind": "time_hhmm",
+      "title": "Secondary Output Priority Start Time",
+      "group": "output",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 345."
+    },
+    {
+      "key": "secondary_output_priority_end_time",
+      "register": 346,
+      "value_kind": "time_hhmm",
+      "title": "Secondary Output Priority End Time",
+      "group": "output",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 346."
+    },
+    {
+      "key": "secondary_charging_priority_start_time",
+      "register": 347,
+      "value_kind": "time_hhmm",
+      "title": "Secondary Charging Priority Start Time",
+      "group": "charging",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 347."
+    },
+    {
+      "key": "secondary_charging_priority_end_time",
+      "register": 348,
+      "value_kind": "time_hhmm",
+      "title": "Secondary Charging Priority End Time",
+      "group": "charging",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 348."
+    },
+    {
+      "key": "max_discharge_current_protection",
+      "register": 351,
+      "value_kind": "u16",
+      "title": "Maximum Discharge Current Protection",
+      "group": "battery",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 351.",
+      "minimum": 0,
+      "maximum": 65535,
+      "unit": "A"
+    },
+    {
+      "key": "islanding_detection_enabled",
+      "register": 352,
+      "value_kind": "bool",
+      "title": "Islanding Detection",
+      "group": "system",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 352.",
+      "choices": [
+        {
+          "value": 0,
+          "label": "Off"
+        },
+        {
+          "value": 1,
+          "label": "On"
+        }
+      ],
+      "support_tier": "blocked",
+      "support_notes": "Grid safety protection must not be disabled through an unverified protocol profile."
+    },
+    {
+      "key": "forced_equalization_charging",
+      "register": 425,
+      "value_kind": "action",
+      "title": "Force Equalization Charging",
+      "group": "battery",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 425.",
+      "action_value": 1,
+      "poll_readback": false,
+      "support_tier": "blocked",
+      "support_notes": "Forced equalization requires exact battery and inverter validation."
+    },
+    {
+      "key": "inverter_date_write",
+      "register": 434,
+      "value_kind": "date_words",
+      "title": "Inverter Date Write",
+      "group": "system",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 434.",
+      "word_count": 3,
+      "read_key": "inverter_date"
+    },
+    {
+      "key": "inverter_time_write",
+      "register": 437,
+      "value_kind": "time_words",
+      "title": "Inverter Time Write",
+      "group": "system",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 437.",
+      "word_count": 3,
+      "read_key": "inverter_time"
+    },
+    {
+      "key": "clear_generation_data",
+      "register": 459,
+      "value_kind": "action",
+      "title": "Clear Generation Data",
+      "group": "system",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 459.",
+      "action_value": 170,
+      "poll_readback": false,
+      "support_tier": "blocked",
+      "support_notes": "Irreversible reset/clear operation is blocked for unverified models."
+    },
+    {
+      "key": "clear_record",
+      "register": 460,
+      "value_kind": "action",
+      "title": "Clear Records",
+      "group": "system",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 460.",
+      "action_value": 170,
+      "poll_readback": false,
+      "support_tier": "blocked",
+      "support_notes": "Irreversible reset/clear operation is blocked for unverified models."
+    },
+    {
+      "key": "reset_user_parameters",
+      "register": 461,
+      "value_kind": "action",
+      "title": "Reset User Parameters",
+      "group": "system",
+      "advanced": true,
+      "enabled_default": false,
+      "requires_confirm": true,
+      "note": "GM6200 Communication Protocol 2, July 2024, register 461.",
+      "action_value": 170,
+      "poll_readback": false,
+      "support_tier": "blocked",
+      "support_notes": "Irreversible reset/clear operation is blocked for unverified models."
+    }
+  ]
+}

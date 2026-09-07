@@ -9,6 +9,12 @@ the GitHub release body should be rendered from the matching version section her
 
 ### Added
 
+- Added protocol-level fallback profiles for unknown SMG models reporting
+  protocol 1, 2, or 11. Protocols 1 and 11 expose 30 compatible basic controls;
+  the July 2024 GM6200 protocol-2 document supplies a separate 54-capability
+  profile, CT power, schedules, clock and PV-energy decoding. All generic
+  controls remain untested and require Full Control; blocked operations stay
+  unavailable. Exact model profiles retain their existing behavior.
 - Added version-specific, document-backed write profiles for Anenji
   Communication Protocol No. 3-10 variants 3, 4, 5, and 6. The exact HHS-11kW
   Protocol 3 fingerprint can now opt into its documented controls through Full
@@ -41,8 +47,9 @@ the GitHub release body should be rendered from the matching version section her
 - Replaced the ambiguous writable `modbus_smg/base.json` profile with one
   explicit, document-backed classic SMG RS232 V1 map shared by compatible
   layout 1/2/11 model profiles. Exact hardware overlays retain their existing
-  tested controls and model-only registers, while unknown SMG fingerprints
-  remain read-only. The V1 document version is no longer presented as proof
+  tested controls and model-only registers. Unknown fingerprints now use the
+  compatible protocol profiles described above, not a known model's tested
+  write surface. The V1 document version is no longer presented as proof
   that register 184 must contain protocol number 1.
 - Rebuilt the Anenji Protocol No. 3-10 telemetry layer as one documented shared
   schema with separate Protocol 3 and Protocol 4 output projections. ANJ-11KW,

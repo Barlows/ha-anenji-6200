@@ -135,7 +135,7 @@ class DetectionEvidenceTests(unittest.TestCase):
         )
 
         self.assertTrue(result.resolved)
-        self.assertEqual(result.resolved_key, "modbus_smg.family_fallback")
+        self.assertEqual(result.resolved_key, "modbus_smg.protocol_1_family_fallback")
 
     def test_conflicting_optional_rated_power_rejects_exact_model_leaf(self) -> None:
         tree = build_detection_decision_tree(protocol_family="modbus_smg")
@@ -152,7 +152,7 @@ class DetectionEvidenceTests(unittest.TestCase):
         )
 
         self.assertTrue(result.resolved)
-        self.assertEqual(result.resolved_key, "modbus_smg.family_fallback")
+        self.assertEqual(result.resolved_key, "modbus_smg.protocol_1_family_fallback")
 
     def test_descriptor_report_records_matching_catalog_decision(self) -> None:
         report = build_descriptor_decision_report(
@@ -194,7 +194,7 @@ class DetectionEvidenceTests(unittest.TestCase):
         evaluation = report["evaluation"]
         self.assertIsInstance(evaluation, dict)
         assert isinstance(evaluation, dict)
-        self.assertEqual(evaluation["resolved_key"], "modbus_smg.family_fallback")
+        self.assertEqual(evaluation["resolved_key"], "modbus_smg.protocol_1_family_fallback")
 
     def test_descriptor_report_from_probe_omits_serial_value(self) -> None:
         report = build_descriptor_decision_report_from_catalog_identity_probe(

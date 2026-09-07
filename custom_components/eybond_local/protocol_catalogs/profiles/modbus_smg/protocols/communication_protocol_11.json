@@ -1,0 +1,74 @@
+{
+  "extends": "./classic_smg_rs232_v1.json",
+  "profile_key": "modbus_smg_communication_protocol_11",
+  "title": "SMG Protocol 11 Compatible Controls (Unverified)",
+  "driver_key": "modbus_smg",
+  "protocol_family": "modbus_smg",
+  "capability_defaults": {
+    "tested": false,
+    "provenance": "doc_backed",
+    "support_tier": "conditional"
+  },
+  "capabilities": [
+    {
+      "key": "battery_bulk_voltage",
+      "minimum": 0,
+      "maximum": 700,
+      "note": "No exact battery-class limits are inferred for an unknown model. This broad 12/24/48 V UI window is not a hardware specification."
+    },
+    {
+      "key": "battery_overvoltage_protection_voltage",
+      "minimum": 0,
+      "maximum": 700,
+      "note": "No exact battery-class limits are inferred for an unknown model. This broad 12/24/48 V UI window is not a hardware specification."
+    },
+    {
+      "key": "battery_float_voltage",
+      "minimum": 0,
+      "maximum": 700,
+      "note": "No exact battery-class limits are inferred for an unknown model. This broad 12/24/48 V UI window is not a hardware specification."
+    },
+    {
+      "key": "battery_redischarge_voltage",
+      "minimum": 0,
+      "maximum": 700,
+      "note": "No exact battery-class limits are inferred for an unknown model. This broad 12/24/48 V UI window is not a hardware specification."
+    },
+    {
+      "key": "battery_under_voltage",
+      "minimum": 0,
+      "maximum": 700,
+      "note": "No exact battery-class limits are inferred for an unknown model. This broad 12/24/48 V UI window is not a hardware specification."
+    },
+    {
+      "key": "battery_under_voltage_off_grid",
+      "minimum": 0,
+      "maximum": 700,
+      "note": "No exact battery-class limits are inferred for an unknown model. This broad 12/24/48 V UI window is not a hardware specification."
+    },
+    {
+      "key": "battery_equalization_voltage",
+      "minimum": 0,
+      "maximum": 700,
+      "note": "No exact battery-class limits are inferred for an unknown model. This broad 12/24/48 V UI window is not a hardware specification."
+    },
+    {
+      "key": "charge_source_priority",
+      "choices": [
+        {
+          "value": 1,
+          "label": "PV Priority"
+        },
+        {
+          "value": 2,
+          "label": "PV and Utility"
+        },
+        {
+          "value": 3,
+          "label": "PV Only"
+        }
+      ],
+      "support_notes": "Registers follow the documented classic map corroborated by layout-11 captures. Only shared charger-priority values 1..3 are offered; model-specific values 0 and 4 require an exact or learned profile. This is not a complete vendor Protocol 11 specification."
+    }
+  ]
+}

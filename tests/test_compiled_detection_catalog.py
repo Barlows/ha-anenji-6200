@@ -224,7 +224,7 @@ class CompiledDetectionCatalogTests(unittest.TestCase):
         self.assertEqual(exact.candidate_keys, ("smg_6200",))
         self.assertTrue(exact.resolved)
         self.assertEqual(family.resolution, RESOLUTION_FAMILY)
-        self.assertEqual(family.candidate_keys, ("modbus_smg.family_fallback",))
+        self.assertEqual(family.candidate_keys, ("modbus_smg.protocol_1_family_fallback",))
         self.assertTrue(family.resolved)
 
     def test_compiles_pi_actions_and_resolves_catalog_variants(self) -> None:

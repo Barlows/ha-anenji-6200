@@ -20,6 +20,24 @@ HA_TEST_ROOT = REPO_ROOT / "tests_ha"
 
 _FAMILY_TESTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
+        "custom_components/eybond_local/protocol_catalogs/profiles/modbus_smg/",
+        (
+            "test_classic_smg_write_profile.py",
+            "test_protocol_3_10_write_profiles.py",
+            "test_smg_compatible_protocols.py",
+            "test_smg_driver.py",
+            "test_write_exposure_policy.py",
+        ),
+    ),
+    (
+        "custom_components/eybond_local/protocol_catalogs/register_schemas/modbus_smg/",
+        (
+            "test_register_schema_loader.py",
+            "test_smg_compatible_protocols.py",
+            "test_smg_driver.py",
+        ),
+    ),
+    (
         "custom_components/eybond_local/runtime/coordinator",
         (
             "test_coordinator_device_hierarchy.py",
@@ -107,6 +125,13 @@ _FAMILY_TESTS: tuple[tuple[str, tuple[str, ...]], ...] = (
 # these entries prevent a cheap ``affected`` run from silently missing a typed
 # boundary or neutral wire contract.
 _EXACT_TESTS: dict[str, tuple[str, ...]] = {
+    "custom_components/eybond_local/protocol_catalogs/inverter_catalog.json": (
+        "test_catalog_identity.py",
+        "test_compiled_detection_catalog.py",
+        "test_device_catalog.py",
+        "test_smg_compatible_protocols.py",
+        "test_smg_driver.py",
+    ),
     "custom_components/eybond_local/collector/entity_scope.py": (
         "test_collector_device_routing.py",
         "test_init_module.py",
@@ -194,6 +219,7 @@ _EXACT_TESTS: dict[str, tuple[str, ...]] = {
     ),
     "custom_components/eybond_local/drivers/smg.py": (
         "test_smg_driver.py",
+        "test_smg_compatible_protocols.py",
         "test_driver_local_register_evidence.py",
     ),
     "custom_components/eybond_local/drivers/must.py": (

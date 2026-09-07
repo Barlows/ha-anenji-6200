@@ -212,12 +212,19 @@ If a user provides a full register map, a partial register list, a third-party p
 - private raw material stays local, with only a sanitized source summary committed
 - unresolved research notes should be captured only when they remain actionable and privacy-safe
 
-Current SMG-family open reverse-engineering candidates:
+See [SMG Protocol Maps](../architecture/SMG_PROTOCOL_MAPS.md) before extending
+SMG metadata. Register numbers and protocol numbers must be interpreted within
+their specific map, not as a sequence of backward-compatible versions.
+
+Classic SMG-family open reverse-engineering candidates (not a claim that these
+addresses are unknown in every protocol):
 
 - live block registers: `218`, `221`, `222`, `228`, `230`
 - config block registers: `304`, `311`, `312`, `317..319`, `328`, `330`, `339`, `340`
 
 These are not blockers for current Home Assistant functionality, but they remain known candidates for future schema work.
+For example, protocol 2 documents configuration registers 311, 312, 318, 319
+and 330; that does not authorize adding their meanings to protocols 1 or 11.
 
 ### 7. Validate Offline First
 

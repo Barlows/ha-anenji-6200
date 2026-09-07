@@ -118,13 +118,27 @@ output-register locations, and fields documented only for Protocol 3/4 are not
 projected on Protocol 5/6. An exact catalog model still takes priority when
 available.
 
-Classic SMG-family inverters use a separate documented RS232 V1 register map.
-The document version is not treated as an inverter identity: compatible devices
-have been observed with layout values 1, 2, and 11. EyeBond Local therefore
-shares only the documented controls, then applies validation and any additional
-registers in the exact model profile. On the maintainer-tested SMG 6200,
-hardware-confirmed controls remain available in Auto mode. An unknown SMG
-fingerprint remains read-only instead of inheriting writes from a similar model.
+The same approach now covers unknown SMG models reporting protocol **1, 2, or
+11**. They appear as **SMG Protocol N (Unverified Variant)**, not as a guessed
+brand or model. Protocols 1 and 11 have a compatible basic settings set;
+protocol 2 has its own documented GM6200 settings, including schedules and the
+inverter clock. Protocol 11 support is based on the common documented map and
+device captures, not a complete vendor specification for that number.
+
+To try these settings, select **Full Control** under the inverter's control
+settings. Some controls become visible immediately; advanced settings remain
+disabled until you enable the individual entity. All generic-profile controls
+are marked **untested**. Selecting Full Control does not itself send any
+settings to the inverter. Operations explicitly marked blocked remain
+unavailable. Share a support archive and the settings you actually verified if
+you want to help confirm support for your model.
+
+Exact model profiles still take priority and keep their existing tested
+controls. In particular, the maintainer-tested SMG 6200 keeps its normal Auto
+mode controls. A larger protocol number does not mean that it supports all
+registers from smaller numbers; unsupported numbers are not assigned a guessed
+map. If a setting is missing, [active device learning](DEVICE_LEARNING.md) can
+sometimes identify additional cloud controls for the particular inverter.
 
 ## Available, unavailable, and disabled entities
 

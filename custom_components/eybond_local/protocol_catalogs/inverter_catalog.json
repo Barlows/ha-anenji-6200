@@ -1209,6 +1209,37 @@
    "notes": [
     "Deye-compatible three-phase high-power hybrid map observed on the Kevolt PD0080G-TPM-EU. All read ranges use holding-register function 3 and stay at 15 words or fewer, matching the successful request shape in the supplied cloud proxy capture. A bounded document-backed operational control subset uses FC 0x10 and remains Full-Control-only until writes are confirmed on hardware."
    ]
+  },
+  "smg_protocol_2": {
+   "ranges": [
+    [
+     171,
+     1
+    ],
+    [
+     184,
+     1
+    ],
+    [
+     402,
+     2
+    ],
+    [
+     434,
+     12
+    ],
+    [
+     626,
+     8
+    ],
+    [
+     643,
+     2
+    ]
+   ],
+   "notes": [
+    "GM6200 Protocol 2 identity, active priorities and clock/energy windows; do not inherit OP2 or Protocol 3-6 addresses."
+   ]
   }
  },
  "surfaces": [
@@ -1581,6 +1612,39 @@
    "tier": "full",
    "read_only": false,
    "support_capture_policy": "deye_3ph_high_80kw"
+  },
+  {
+   "key": "smg_protocol_1_family_fallback",
+   "protocol_key": "modbus_smg",
+   "driver_key": "modbus_smg",
+   "variant_key": "protocol_1_family_fallback",
+   "profile_name": "modbus_smg/protocols/communication_protocol_1.json",
+   "register_schema_name": "modbus_smg/protocols/communication_protocol_1.json",
+   "tier": "full",
+   "read_only": false,
+   "support_capture_policy": "smg_protocol_1"
+  },
+  {
+   "key": "smg_protocol_2_family_fallback",
+   "protocol_key": "modbus_smg",
+   "driver_key": "modbus_smg",
+   "variant_key": "protocol_2_family_fallback",
+   "profile_name": "modbus_smg/protocols/communication_protocol_2.json",
+   "register_schema_name": "modbus_smg/protocols/communication_protocol_2.json",
+   "tier": "full",
+   "read_only": false,
+   "support_capture_policy": "smg_protocol_2"
+  },
+  {
+   "key": "smg_protocol_11_family_fallback",
+   "protocol_key": "modbus_smg",
+   "driver_key": "modbus_smg",
+   "variant_key": "protocol_11_family_fallback",
+   "profile_name": "modbus_smg/protocols/communication_protocol_11.json",
+   "register_schema_name": "modbus_smg/protocols/communication_protocol_11.json",
+   "tier": "full",
+   "read_only": false,
+   "support_capture_policy": "smg_protocol_1"
   }
  ],
  "devices": [
@@ -2895,54 +2959,6 @@
  "family_defaults": [
   {
    "when_layout_codes": [
-    1,
-    2,
-    11
-   ],
-   "model_name": "SMG Family (Unverified Variant)",
-   "surface_key": "smg_family_read_only",
-   "runtime_probe": {
-    "validation": [
-     {
-      "key": "output_rating_voltage",
-      "min": 1
-     },
-     {
-      "key": "output_rating_frequency",
-      "min": 1
-     }
-    ],
-    "optional_registers": [
-     {
-      "key": "device_type",
-      "register": 171
-     },
-     {
-      "key": "protocol_number",
-      "register": 184
-     },
-     {
-      "key": "rated_cell_count",
-      "register": 644
-     }
-    ],
-    "optional_ascii": [
-     {
-      "key": "device_name",
-      "register": 172,
-      "word_count": 12
-     },
-     {
-      "key": "program_version",
-      "register": 626,
-      "word_count": 8
-     }
-    ]
-   },
-   "note": "Known SMG layout, unknown model: base reads only; writes require learning."
-  },
-  {
-   "when_layout_codes": [
     3
    ],
    "model_name": "SMG Protocol 3 (Unverified Variant)",
@@ -3044,6 +3060,144 @@
     ]
    },
    "note": "Documented Protocol 6, unknown model: protocol-specific telemetry; document-backed untested controls require explicit Full Control."
+  },
+  {
+   "when_layout_codes": [
+    1
+   ],
+   "model_name": "SMG Protocol 1 (Unverified Variant)",
+   "surface_key": "smg_protocol_1_family_fallback",
+   "runtime_probe": {
+    "validation": [
+     {
+      "key": "output_rating_voltage",
+      "min": 1
+     },
+     {
+      "key": "output_rating_frequency",
+      "min": 1
+     }
+    ],
+    "optional_registers": [
+     {
+      "key": "device_type",
+      "register": 171
+     },
+     {
+      "key": "protocol_number",
+      "register": 184
+     },
+     {
+      "key": "rated_cell_count",
+      "register": 644
+     }
+    ],
+    "optional_ascii": [
+     {
+      "key": "device_name",
+      "register": 172,
+      "word_count": 12
+     },
+     {
+      "key": "program_version",
+      "register": 626,
+      "word_count": 8
+     }
+    ]
+   },
+   "note": "Protocol 1 compatible map, unknown model: untested controls require explicit Full Control. Exact model descriptors win; no model-specific write verification is inherited."
+  },
+  {
+   "when_layout_codes": [
+    2
+   ],
+   "model_name": "SMG Protocol 2 (Unverified Variant)",
+   "surface_key": "smg_protocol_2_family_fallback",
+   "runtime_probe": {
+    "validation": [
+     {
+      "key": "output_rating_voltage",
+      "min": 1
+     },
+     {
+      "key": "output_rating_frequency",
+      "min": 1
+     }
+    ],
+    "optional_registers": [
+     {
+      "key": "device_type",
+      "register": 171
+     },
+     {
+      "key": "protocol_number",
+      "register": 184
+     },
+     {
+      "key": "rated_cell_count",
+      "register": 644
+     }
+    ],
+    "optional_ascii": [
+     {
+      "key": "device_name",
+      "register": 172,
+      "word_count": 12
+     },
+     {
+      "key": "program_version",
+      "register": 626,
+      "word_count": 8
+     }
+    ]
+   },
+   "note": "Protocol 2 compatible map, unknown model: untested controls require explicit Full Control. Exact model descriptors win; no model-specific write verification is inherited."
+  },
+  {
+   "when_layout_codes": [
+    11
+   ],
+   "model_name": "SMG Protocol 11 (Unverified Variant)",
+   "surface_key": "smg_protocol_11_family_fallback",
+   "runtime_probe": {
+    "validation": [
+     {
+      "key": "output_rating_voltage",
+      "min": 1
+     },
+     {
+      "key": "output_rating_frequency",
+      "min": 1
+     }
+    ],
+    "optional_registers": [
+     {
+      "key": "device_type",
+      "register": 171
+     },
+     {
+      "key": "protocol_number",
+      "register": 184
+     },
+     {
+      "key": "rated_cell_count",
+      "register": 644
+     }
+    ],
+    "optional_ascii": [
+     {
+      "key": "device_name",
+      "register": 172,
+      "word_count": 12
+     },
+     {
+      "key": "program_version",
+      "register": 626,
+      "word_count": 8
+     }
+    ]
+   },
+   "note": "Protocol 11 compatible map, unknown model: untested controls require explicit Full Control. Exact model descriptors win; no model-specific write verification is inherited."
   }
  ]
 }

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "source_key": "documentation_gm6200_protocol_2",
+  "kind": "documentation",
+  "title": "GM6200 Communication Protocol 2, July 2024",
+  "reference": "https://github.com/syssi/esphome-smg-ii/blob/main/docs/GM6200%2BCommunication%2BProtocol%2B2_CN.html",
+  "captured_at": "2026-09-07",
+  "visibility": "public",
+  "summary_publishable": true,
+  "summary": "The document explicitly identifies holding register 184 as 0x02. It shares the classic live/configuration base but defines distinct output/charging enums, schedules at 345-348, CT power at 235-236 and clock/energy at 434-445. This is not a Protocol 11 specification.",
+  "assertions": [
+    "register_map",
+    "runtime_compatibility"
+  ]
+}

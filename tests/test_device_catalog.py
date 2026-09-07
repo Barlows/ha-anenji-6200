@@ -585,7 +585,7 @@ class CompiledDeviceCatalogCorpusTest(unittest.TestCase):
             },
         )
         self.assertEqual(result.resolution, RESOLUTION_FAMILY)
-        self.assertEqual(result.surface_key, "smg_family_read_only")
+        self.assertEqual(result.surface_key, "smg_protocol_1_family_fallback")
 
     def test_issue_13_sandisolar_fingerprint_resolves_exact_protocol_4_surface(self) -> None:
         result = _tree_resolve(

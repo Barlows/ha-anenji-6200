@@ -204,8 +204,8 @@ class DetectionDecisionTreeTests(unittest.TestCase):
         )
 
         self.assertEqual(result.status, "resolved")
-        self.assertEqual(result.resolved_key, "modbus_smg.family_fallback")
-        self.assertEqual(result.path[-1].matched_signature, "one_of:1,2,11")
+        self.assertEqual(result.resolved_key, "modbus_smg.protocol_1_family_fallback")
+        self.assertEqual(result.path[-1].matched_signature, "one_of:1")
 
 
 def _synthetic_duplicate_fingerprint_catalog() -> DetectionDescriptorCatalog:

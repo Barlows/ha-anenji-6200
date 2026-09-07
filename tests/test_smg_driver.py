@@ -2133,7 +2133,7 @@ class SmgFamilyFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("max_discharge_current_protection", values)
         self.assertNotIn("max_discharge_current_protection", inverter.details)
 
-    async def test_probe_falls_back_to_read_only_family_variant_for_unknown_smg_power_class(self) -> None:
+    async def test_probe_falls_back_to_untested_protocol_profile_for_unknown_smg_power_class(self) -> None:
         driver = SmgModbusDriver()
         target = ProbeTarget(devcode=0x0001, collector_addr=0xFF, device_addr=0x01)
         transport = FixtureTransport(
@@ -2145,24 +2145,22 @@ class SmgFamilyFallbackTests(unittest.IsolatedAsyncioTestCase):
         inverter = await driver.async_probe(transport, target)
 
         assert inverter is not None
-        self.assertEqual(inverter.variant_key, "family_fallback")
-        self.assertEqual(inverter.model_name, "SMG Family (Unverified Variant)")
-        # Family tier is structurally read-only: NO profile attaches at all.
-        self.assertEqual(inverter.profile_name, "")
-        self.assertEqual(inverter.register_schema_name, "modbus_smg/base.json")
-        self.assertEqual(len(inverter.capabilities), 0)
-        self.assertEqual(len(inverter.capability_presets), 0)
-        self.assertEqual(len(inverter.capability_groups), 0)
+        self.assertEqual(inverter.variant_key, "protocol_1_family_fallback")
+        self.assertEqual(inverter.model_name, "SMG Protocol 1 (Unverified Variant)")
+        self.assertEqual(inverter.profile_name, "modbus_smg/protocols/communication_protocol_1.json")
+        self.assertEqual(inverter.register_schema_name, "modbus_smg/protocols/communication_protocol_1.json")
+        self.assertEqual(len(inverter.capabilities), 30)
+        self.assertTrue(all(not capability.tested for capability in inverter.capabilities))
         self.assertEqual(inverter.details["rated_power"], 11000)
         catalog_details = inverter.details["device_catalog"]
         self.assertEqual(catalog_details["kind"], "family")
-        self.assertEqual(catalog_details["tier"], "partial")
+        self.assertEqual(catalog_details["tier"], "full")
         descriptor_decision = catalog_details["descriptor_decision"]
         self.assertEqual(descriptor_decision["kind"], "descriptor_decision_shadow")
         self.assertEqual(descriptor_decision["agreement"], "match")
         self.assertEqual(
             descriptor_decision["evaluation"]["resolved_key"],
-            "modbus_smg.family_fallback",
+            "modbus_smg.protocol_1_family_fallback",
         )
         self.assertEqual(
             inverter.details["descriptor_decision_shadow"],

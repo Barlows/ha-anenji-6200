@@ -192,7 +192,7 @@ class CatalogIdentityProbeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(probe.compiled_resolution.resolution, "family")
         self.assertEqual(
             probe.compiled_resolution.surface_key,
-            "smg_family_read_only",
+            "smg_protocol_1_family_fallback",
         )
 
     async def test_zero_identity_region_is_link_down(self) -> None:

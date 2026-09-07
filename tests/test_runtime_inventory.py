@@ -20,7 +20,7 @@ class RuntimeInventoryTests(unittest.TestCase):
     def test_profile_names_are_derived_from_compiled_runtime_surfaces(self) -> None:
         names = runtime_profile_names()
 
-        self.assertEqual(len(names), 26)
+        self.assertEqual(len(names), 29)
         self.assertIn("eybond_g_ascii/models/gootu_gt_h2436m14p5.json", names)
         self.assertIn("eybond_g_ascii/models/lvyuan_ty_sic_3_6kbe_w1.json", names)
         self.assertIn("modbus_smg/default.json", names)
@@ -35,7 +35,7 @@ class RuntimeInventoryTests(unittest.TestCase):
         self.assertIn("modbus_smg/models/anenji_hhs_11kw_wifi_no_parallel.json", names)
         self.assertIn("modbus_smg/models/sandisolar_sd_11kp48v_wifi.json", names)
         self.assertIn("modbus_smg/models/anenji_op2_6200.json", names)
-        for protocol_number in (3, 4, 5, 6):
+        for protocol_number in (1, 2, 3, 4, 5, 6, 11):
             self.assertIn(
                 f"modbus_smg/protocols/communication_protocol_{protocol_number}.json",
                 names,
@@ -49,12 +49,12 @@ class RuntimeInventoryTests(unittest.TestCase):
         summary = inventory["summary"]
 
         self.assertEqual(summary["profiles"], len(inventory["profiles"]))
-        self.assertEqual(summary["profiles"], 26)
-        self.assertEqual(summary["capabilities"], 1027)
-        self.assertEqual(summary["validation_state_counts"], {"tested": 424, "untested": 603})
+        self.assertEqual(summary["profiles"], 29)
+        self.assertEqual(summary["capabilities"], 1141)
+        self.assertEqual(summary["validation_state_counts"], {"tested": 424, "untested": 717})
         self.assertEqual(
             summary["support_tier_counts"],
-            {"blocked": 22, "conditional": 665, "standard": 340},
+            {"blocked": 29, "conditional": 772, "standard": 340},
         )
 
         profile_by_key = {item["profile_key"]: item for item in inventory["profiles"]}

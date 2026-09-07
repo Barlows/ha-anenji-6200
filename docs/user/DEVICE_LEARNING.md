@@ -72,18 +72,19 @@ If the inverter powers critical loads, run learning only when it is safe to reco
 2. Open **EyeBond Local**.
 3. Click **Configure**.
 4. Choose **Expand device support**.
-5. Choose **Analyze device data** for a read-only check, or **Verify additional
+5. Open **Analyze cloud data and device capabilities**.
+6. Choose **Analyze device data** for a read-only check, or **Verify additional
    local controls** only for an advanced active check.
-6. If more than one compatible API is offered, choose the exact cloud source.
-7. For active verification, read and accept the notice covering the temporary
+7. If more than one compatible API is offered, choose the exact cloud source.
+8. For active verification, read and accept the notice covering the temporary
    endpoint change, bounded cloud test commands, and local interception.
-8. Enter the supported cloud/app credentials for this one session, if the flow
+9. Enter the supported cloud/app credentials for this one session, if the flow
    asks for them.
-9. Wait for the check to finish. Progress can pause while the selected cloud
-   service waits for its next sample or history page; it must never move
-   backwards.
-10. Review the result. Only active learning can offer locally proven items to
-   apply; read-only metadata remains support evidence.
+10. Wait for the check to finish. Progress can pause while the selected cloud
+    service waits for its next sample or history page; it must never move
+    backwards.
+11. Review the result. Only active learning can offer locally proven items to
+    apply; read-only metadata remains support evidence.
 
 The cloud/app password is not saved.
 

@@ -47,6 +47,7 @@ MAINTAINER_MARKDOWN = (
 ARCHITECTURE_MARKDOWN = (
     REPO_ROOT / "docs" / "architecture" / "CLOUD_LEARNING_ARCHITECTURE.md",
     REPO_ROOT / "docs" / "architecture" / "CONNECTION_ARCHITECTURE.md",
+    REPO_ROOT / "docs" / "architecture" / "SMG_PROTOCOL_MAPS.md",
     REPO_ROOT / "docs" / "architecture" / "TYPED_TELEMETRY.md",
 )
 DOCUMENTATION_MARKDOWN = tuple(

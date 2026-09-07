@@ -96,20 +96,20 @@ class DetectionDescriptorLoaderTests(unittest.TestCase):
                 ),
             )
 
-    def test_family_fallback_descriptor_is_partial_and_read_only(self) -> None:
+    def test_classic_family_fallbacks_have_distinct_protocol_bindings(self) -> None:
         catalog = load_detection_descriptor_catalog()
 
-        fallback = catalog.descriptor_for_key("modbus_smg.family_fallback")
-
-        self.assertIsNotNone(fallback)
-        assert fallback is not None
-        self.assertTrue(fallback.family_fallback)
-        self.assertTrue(fallback.read_only)
-        self.assertEqual(fallback.tier, "partial")
-        self.assertEqual(fallback.binding.variant_key, "family_fallback")
-        self.assertEqual(fallback.binding.profile_name, "")
-        self.assertEqual(fallback.anchors[0].key, "fingerprint.layout_code")
-        self.assertEqual(fallback.anchors[0].one_of, (1, 2, 11))
+        for protocol in (1, 2, 11):
+            with self.subTest(protocol=protocol):
+                fallback = catalog.descriptor_for_key(f"modbus_smg.protocol_{protocol}_family_fallback")
+                self.assertIsNotNone(fallback)
+                self.assertTrue(fallback.family_fallback)
+                self.assertFalse(fallback.read_only)
+                self.assertEqual(fallback.tier, "full")
+                self.assertEqual(fallback.binding.variant_key, f"protocol_{protocol}_family_fallback")
+                self.assertEqual(fallback.binding.profile_name, f"modbus_smg/protocols/communication_protocol_{protocol}.json")
+                self.assertEqual(fallback.anchors[0].key, "fingerprint.layout_code")
+                self.assertEqual(fallback.anchors[0].one_of, (protocol,))
 
     def test_protocol_family_fallback_carries_only_untested_controls(self) -> None:
         catalog = load_detection_descriptor_catalog()

@@ -1,0 +1,15 @@
+{
+  "extends": "../base.json",
+  "schema_key": "modbus_smg_communication_protocol_1",
+  "title": "SMG Protocol 1 Common Registers",
+  "driver_key": "modbus_smg",
+  "protocol_family": "modbus_smg",
+  "spec_set_removals": {
+    "config": [
+      "dry_contact_mode"
+    ]
+  },
+  "measurement_description_removals": [
+    "dry_contact_mode"
+  ]
+}

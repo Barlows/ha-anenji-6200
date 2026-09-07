@@ -1,0 +1,145 @@
+{
+  "extends": "../base.json",
+  "schema_key": "modbus_smg_communication_protocol_2",
+  "title": "GM6200 Protocol 2 Registers",
+  "driver_key": "modbus_smg",
+  "protocol_family": "modbus_smg",
+  "blocks": [
+    {
+      "key": "live",
+      "start": 201,
+      "count": 36
+    },
+    {
+      "key": "config",
+      "start": 300,
+      "count": 53
+    }
+  ],
+  "enum_tables": {
+    "protocol_2_output_source": {
+      "1": "Solar-Utility-Battery (SUB)",
+      "2": "Solar-Battery-Utility (SBU)",
+      "3": "PV-Utility-Battery (Grid-Tied PV)",
+      "4": "Self-Consumption (ZEC)"
+    },
+    "protocol_2_charge_source": {
+      "1": "PV Priority",
+      "2": "PV and Utility",
+      "3": "PV Only",
+      "4": "PV Priority With Load Reserve"
+    },
+    "protocol_2_output_mode": {
+      "0": "Single",
+      "1": "Parallel",
+      "2": "3 Phase-P1",
+      "3": "3 Phase-P2",
+      "4": "3 Phase-P3"
+    }
+  },
+  "spec_set_removals": {
+    "config": [
+      "dry_contact_mode"
+    ]
+  },
+  "measurement_description_removals": [
+    "dry_contact_mode"
+  ],
+  "spec_sets": {
+    "live": [
+      {
+        "key": "external_ct_power",
+        "register": 235,
+        "word_count": 2,
+        "combine": "u32_high_first",
+        "signed": true
+      }
+    ],
+    "config": [
+      {
+        "key": "output_source_priority",
+        "register": 301,
+        "enum_table": "protocol_2_output_source"
+      },
+      {
+        "key": "charge_source_priority",
+        "register": 331,
+        "enum_table": "protocol_2_charge_source"
+      },
+      {
+        "key": "output_mode",
+        "register": 300,
+        "enum_table": "protocol_2_output_mode"
+      }
+    ],
+    "aux_config": [
+      {
+        "key": "inverter_clock_year",
+        "register": 434
+      },
+      {
+        "key": "inverter_clock_month",
+        "register": 435
+      },
+      {
+        "key": "inverter_clock_day",
+        "register": 436
+      },
+      {
+        "key": "inverter_clock_hour",
+        "register": 437
+      },
+      {
+        "key": "inverter_clock_minute",
+        "register": 438
+      },
+      {
+        "key": "inverter_clock_second",
+        "register": 439
+      },
+      {
+        "key": "pv_generation_day",
+        "register": 443,
+        "divisor": 100,
+        "decimals": 2
+      },
+      {
+        "key": "pv_generation_sum",
+        "register": 444,
+        "word_count": 2,
+        "combine": "u32_high_first",
+        "divisor": 100,
+        "decimals": 2
+      }
+    ]
+  },
+  "measurement_descriptions": [
+    {
+      "key": "external_ct_power",
+      "name": "External CT Power",
+      "unit": "W",
+      "device_class": "power",
+      "state_class": "measurement",
+      "enabled_default": false,
+      "live": true
+    },
+    {
+      "key": "pv_generation_day",
+      "name": "PV Generation Day",
+      "unit": "kWh",
+      "device_class": "energy",
+      "state_class": "total_increasing",
+      "enabled_default": false,
+      "live": true
+    },
+    {
+      "key": "pv_generation_sum",
+      "name": "PV Generation Sum",
+      "unit": "kWh",
+      "device_class": "energy",
+      "state_class": "total_increasing",
+      "enabled_default": false,
+      "live": true
+    }
+  ]
+}

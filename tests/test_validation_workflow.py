@@ -20,6 +20,18 @@ class AffectedValidationSelectionTests(unittest.TestCase):
             for path in affected_test_files((Path(production_path),))
         }
 
+    def test_smg_metadata_and_driver_select_compatible_protocol_replays(self) -> None:
+        for path in (
+            "protocol_catalogs/profiles/modbus_smg/protocols/communication_protocol_11.json",
+            "protocol_catalogs/register_schemas/modbus_smg/protocols/communication_protocol_2.json",
+            "protocol_catalogs/inverter_catalog.json",
+            "drivers/smg.py",
+        ):
+            with self.subTest(path=path):
+                selected = self._selected(f"custom_components/eybond_local/{path}")
+                self.assertIn("test_smg_compatible_protocols.py", selected)
+                self.assertIn("test_smg_driver.py", selected)
+
     def test_typed_telemetry_boundary_selects_behavior_and_projection_tests(self) -> None:
         selected = self._selected("custom_components/eybond_local/telemetry.py")
 
