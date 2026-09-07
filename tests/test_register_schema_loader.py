@@ -103,6 +103,8 @@ class RegisterSchemaLoaderTests(unittest.TestCase):
         self.assertEqual(schema.driver_key, "modbus_smg")
         self.assertEqual(schema.protocol_family, "modbus_smg")
         self.assertEqual(schema.source_name, "modbus_smg/models/smg_6200.json")
+        self.assertFalse(schema.measurement_description("battery_voltage").diagnostic)
+
         self.assertEqual(schema.source_scope, "builtin")
         self.assertEqual(schema.block("status").start, 100)
         self.assertEqual(schema.block("live").count, 34)
@@ -127,6 +129,14 @@ class RegisterSchemaLoaderTests(unittest.TestCase):
             schema.binary_sensor_description("battery_connected").name,
             "Battery Connected",
         )
+
+    def test_protocol4_energy_and_battery_are_regular_sensors(self) -> None:
+        schema = load_register_schema("modbus_smg/models/anenji_anj_11kw_48v_wifi_p.json")
+        self.assertFalse(schema.measurement_description("battery_voltage").diagnostic)
+        energy = schema.measurement_description("pv_generation_sum")
+        self.assertFalse(energy.diagnostic)
+        self.assertEqual(energy.state_class, "total_increasing")
+        self.assertEqual(energy.unit, "kWh")
 
     def test_loads_anenji_op2_model_overlay_schema(self) -> None:
         # Dual-output (OP2) model: the overlay widens the polled live block to

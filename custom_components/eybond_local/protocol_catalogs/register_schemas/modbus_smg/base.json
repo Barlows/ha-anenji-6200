@@ -1100,7 +1100,7 @@
       "device_class": "voltage",
       "state_class": "measurement",
       "icon": "mdi:battery-medium",
-      "diagnostic": true,
+      "diagnostic": false,
       "enabled_default": true
     },
     {

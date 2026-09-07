@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -21,6 +22,37 @@ from ..device_projection import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _registry_devices(registry: object) -> tuple[object, ...]:
+    """Bridge the pre-2026.9 mapping and current public device collection."""
+
+    devices = registry.devices
+    return tuple(devices.values() if isinstance(devices, Mapping) else devices)
+
+
+def _device_owner_ids(device: object) -> set[str]:
+    """Use the single-owner API on new HA, retaining old multi-owner support."""
+
+    if hasattr(device, "config_entry_id"):
+        return {device.config_entry_id}
+    return set(getattr(device, "config_entries", ()))
+
+
+def _entry_device(registry: object, entry_id: str, identifier: tuple[str, str]):
+    """Resolve only inside the owning entry, even if identifiers are reused."""
+
+    lookup = getattr(registry, "async_get_device_by_identifier", None)
+    if callable(lookup):
+        return lookup(identifier, entry_id)
+    return next(
+        (
+            device
+            for device in _registry_devices(registry)
+            if identifier in device.identifiers and entry_id in _device_owner_ids(device)
+        ),
+        None,
+    )
 
 
 def _registry_owner_counts(hass: object, config_entries: set[object]) -> tuple[int, int] | None:
@@ -98,7 +130,7 @@ def _is_foreign_eybond_inverter_child(
         for identifier in identifiers
     ):
         return False
-    return entry_id not in set(getattr(device, "config_entries", ()))
+    return entry_id not in _device_owner_ids(device)
 
 
 def _is_safe_orphaned_inverter_child(
@@ -120,7 +152,7 @@ def _is_safe_orphaned_inverter_child(
         return False
     owner_counts = _registry_owner_counts(
         hass,
-        set(getattr(device, "config_entries", ())),
+        _device_owner_ids(device),
     )
     if owner_counts is None or owner_counts[0] != 0:
         return False
@@ -142,11 +174,11 @@ def _reconcile_inverter_children(hass: object, entry_id: str) -> None:
 
     try:
         registry = dr.async_get(hass)
-        devices = tuple(registry.devices.values())
-        collector_device = registry.async_get_device(
-            identifiers={(DOMAIN, f"{entry_id}:collector")}
+        devices = _registry_devices(registry)
+        collector_device = _entry_device(
+            registry, entry_id, (DOMAIN, f"{entry_id}:collector")
         )
-        inverter_device = registry.async_get_device(identifiers={(DOMAIN, entry_id)})
+        inverter_device = _entry_device(registry, entry_id, (DOMAIN, entry_id))
     except Exception:
         return
     collector_device_id = getattr(collector_device, "id", None)
@@ -232,7 +264,7 @@ class CoordinatorDeviceRegistryMixin:
 
             device_registry = dr.async_get(self.hass)
             entity_registry = er.async_get(self.hass)
-            devices = tuple(device_registry.devices.values())
+            devices = _registry_devices(device_registry)
         except Exception:
             return {"available": False, "reason": "registry_unavailable"}
 
@@ -240,29 +272,15 @@ class CoordinatorDeviceRegistryMixin:
         collector_identifier = (DOMAIN, f"{entry_id}:collector")
         inverter_identifier = (DOMAIN, entry_id)
 
-        collector_device = next(
-            (
-                device
-                for device in devices
-                if collector_identifier in set(getattr(device, "identifiers", ()))
-            ),
-            None,
-        )
-        inverter_device = next(
-            (
-                device
-                for device in devices
-                if inverter_identifier in set(getattr(device, "identifiers", ()))
-            ),
-            None,
-        )
+        collector_device = _entry_device(device_registry, entry_id, collector_identifier)
+        inverter_device = _entry_device(device_registry, entry_id, inverter_identifier)
         collector_device_id = getattr(collector_device, "id", None)
         inverter_device_id = getattr(inverter_device, "id", None)
 
         relevant_devices = tuple(
             device
             for device in devices
-            if entry_id in set(getattr(device, "config_entries", ()))
+            if entry_id in _device_owner_ids(device)
             or (
                 collector_device_id is not None
                 and getattr(device, "via_device_id", None) == collector_device_id
@@ -310,7 +328,7 @@ class CoordinatorDeviceRegistryMixin:
             except Exception:
                 entity_entries = ()
             identifiers = set(getattr(device, "identifiers", ()))
-            config_entries = set(getattr(device, "config_entries", ()))
+            config_entries = _device_owner_ids(device)
             owner_counts = _registry_owner_counts(self.hass, config_entries)
             records.append(
                 {
@@ -389,15 +407,28 @@ class CoordinatorDeviceRegistryMixin:
 
         if not self.has_inverter_identity:
             return self.collector_device_info()
-        return DeviceInfo(
-            **build_inverter_device_info_payload(
-                entry_id=self.config_entry.entry_id,
-                entry_title=self.config_entry.title,
-                detected_model=self.config_entry.data.get(CONF_DETECTED_MODEL),
-                detected_serial=self.config_entry.data.get(CONF_DETECTED_SERIAL),
-                inverter=self.data.inverter,
-            )
+        return DeviceInfo(**self._inverter_device_info_payload(self.data))
+
+    def _inverter_device_info_payload(self, snapshot: RuntimeSnapshot) -> dict[str, object]:
+        """Resolve the collector link at the HA boundary, not in the pure projector."""
+
+        entry_id = self.config_entry.entry_id
+        info = build_inverter_device_info_payload(
+            entry_id=entry_id,
+            entry_title=self.config_entry.title,
+            detected_model=self.config_entry.data.get(CONF_DETECTED_MODEL),
+            detected_serial=self.config_entry.data.get(CONF_DETECTED_SERIAL),
+            inverter=snapshot.inverter,
         )
+        identifier = (DOMAIN, f"{entry_id}:collector")
+        if "via_device_id" in getattr(DeviceInfo, "__annotations__", {}):
+            collector = _entry_device(dr.async_get(self.hass), entry_id, identifier)
+            if collector is not None:
+                info["via_device_id"] = collector.id
+        else:
+            # HA <=2026.7 does not accept via_device_id in DeviceInfo or create.
+            info["via_device"] = identifier
+        return info
 
     def collector_device_info(self) -> DeviceInfo:
         """Build stable device metadata for collector-owned entities."""
@@ -441,7 +472,9 @@ class CoordinatorDeviceRegistryMixin:
 
         if not self.has_inverter_identity:
             registry = dr.async_get(self.hass)
-            device = registry.async_get_device(identifiers={(DOMAIN, self.config_entry.entry_id)})
+            device = _entry_device(
+                registry, self.config_entry.entry_id, (DOMAIN, self.config_entry.entry_id)
+            )
             remove_device = getattr(registry, "async_remove_device", None)
             if device is not None and callable(remove_device):
                 try:
@@ -456,13 +489,7 @@ class CoordinatorDeviceRegistryMixin:
             return
 
         snapshot = snapshot or self.data
-        info = build_inverter_device_info_payload(
-            entry_id=self.config_entry.entry_id,
-            entry_title=self.config_entry.title,
-            detected_model=self.config_entry.data.get(CONF_DETECTED_MODEL),
-            detected_serial=self.config_entry.data.get(CONF_DETECTED_SERIAL),
-            inverter=snapshot.inverter,
-        )
+        info = self._inverter_device_info_payload(snapshot)
         identifiers = info.get("identifiers")
         if not identifiers:
             return
@@ -473,9 +500,11 @@ class CoordinatorDeviceRegistryMixin:
         desired_serial = info.get("serial_number") or ""
         desired_manufacturer = info.get("manufacturer") or ""
         desired_via_device = info.get("via_device")
-        desired_via_device_id = None
+        desired_via_device_id = info.get("via_device_id")
         if desired_via_device:
-            collector_device = registry.async_get_device(identifiers={desired_via_device})
+            collector_device = _entry_device(
+                registry, self.config_entry.entry_id, desired_via_device
+            )
             if collector_device is not None:
                 desired_via_device_id = collector_device.id
         meta = (

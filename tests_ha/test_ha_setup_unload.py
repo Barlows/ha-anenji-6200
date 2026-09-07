@@ -9,11 +9,13 @@ platforms, and Home Assistant performs the unload.
 from __future__ import annotations
 
 import asyncio
+import pytest
 
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -193,7 +195,7 @@ async def test_setup_unlinks_a_foreign_inverter_child_from_current_collector(
     foreign_entry.add_to_hass(hass)
     registry = dr.async_get(hass)
     collector_identifier = (DOMAIN, f"{entry.entry_id}:collector")
-    registry.async_get_or_create(
+    collector = registry.async_get_or_create(
         config_entry_id=entry.entry_id,
         identifiers={collector_identifier},
         name="Current collector",
@@ -203,24 +205,105 @@ async def test_setup_unlinks_a_foreign_inverter_child_from_current_collector(
         config_entry_id=foreign_entry.entry_id,
         identifiers={foreign_identifier},
         name="Old inverter",
-        via_device=collector_identifier,
     )
+    registry.async_update_device(stale.id, via_device_id=collector.id)
     assert hass.config_entries.async_get_entry(foreign_entry.entry_id) is foreign_entry
     assert stale is not None
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    retained_foreign = registry.async_get_device(identifiers={foreign_identifier})
+    retained_foreign = registry.async_get(stale.id)
     assert retained_foreign is not None
     assert retained_foreign.via_device_id is None
-    assert retained_foreign.config_entries == {foreign_entry.entry_id}
-    canonical = registry.async_get_device(identifiers={(DOMAIN, entry.entry_id)})
+    assert retained_foreign in dr.async_entries_for_config_entry(registry, foreign_entry.entry_id)
+    owned = dr.async_entries_for_config_entry(registry, entry.entry_id)
+    canonical = next(d for d in owned if (DOMAIN, entry.entry_id) in d.identifiers)
     assert canonical is not None
-    collector = registry.async_get_device(identifiers={collector_identifier})
+    collector = registry.async_get(collector.id)
     assert collector is not None
     assert canonical.via_device_id == collector.id
 
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+@pytest.mark.skipif(
+    not hasattr(dr.DeviceRegistry, "async_get_device_by_identifier"),
+    reason="HA before per-entry device identifiers",
+)
+async def test_device_registry_updates_are_scoped_and_deprecation_free(
+    hass: HomeAssistant, fake_runtime, caplog,
+) -> None:
+    """Duplicate identifiers in another entry cannot redirect our updates."""
+
+    entry = _persisted_anenji_entry(hass)
+    registry = dr.async_get(hass)
+    foreign_entry = MockConfigEntry(domain="test", title="Other collector")
+    foreign_entry.add_to_hass(hass)
+    foreign = registry.async_get_or_create(
+        config_entry_id=foreign_entry.entry_id,
+        identifiers={(DOMAIN, entry.entry_id)},
+        name="Foreign inverter",
+        model="Must remain unchanged",
+    )
+    foreign_collector = registry.async_get_or_create(
+        config_entry_id=foreign_entry.entry_id,
+        identifiers={(DOMAIN, f"{entry.entry_id}:collector")},
+        name="Foreign collector",
+    )
+    caplog.clear()
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = entry.runtime_data
+    owned = dr.async_entries_for_config_entry(registry, entry.entry_id)
+    collector = next(d for d in owned if (DOMAIN, f"{entry.entry_id}:collector") in d.identifiers)
+    inverter = next(d for d in owned if (DOMAIN, entry.entry_id) in d.identifiers)
+    assert inverter.id != foreign.id
+    assert inverter.via_device_id == collector.id != foreign_collector.id
+    before = {e.entity_id: e.unique_id for e in er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)}
+    coordinator.async_sync_device_registry()
+    assert coordinator.device_registry_diagnostics()["topology_status"] == "ok"
+    assert "via_device" not in coordinator.inverter_device_info()
+    assert coordinator.inverter_device_info()["via_device_id"] == collector.id
+    assert registry.async_get(foreign.id).model == "Must remain unchanged"
+    after = {e.entity_id: e.unique_id for e in er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)}
+    assert before == after
+    assert not [
+        r.message for r in caplog.records
+        if "deprecated" in r.message and "eybond_local" in r.message
+    ]
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+async def test_sensor_recategorization_preserves_existing_registry_identity(
+    hass: HomeAssistant, fake_runtime,
+) -> None:
+    """Move existing sensors out of diagnostics without replacing their ids."""
+
+    entry = _persisted_anenji_entry(hass)
+    registry = er.async_get(hass)
+    existing = {}
+    for key in ("battery_voltage", "pv_generation_sum"):
+        entity = registry.async_get_or_create(
+            "sensor", DOMAIN, f"{entry.entry_id}_{key}",
+            config_entry=entry,
+            suggested_object_id=f"my_{key}",
+            entity_category=EntityCategory.DIAGNOSTIC,
+            disabled_by=None,
+        )
+        registry.async_update_entity(entity.entity_id, name=f"My {key}")
+        existing[key] = entity.entity_id
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    for key, entity_id in existing.items():
+        entity = registry.async_get(entity_id)
+        assert entity is not None
+        assert entity.unique_id == f"{entry.entry_id}_{key}"
+        assert entity.entity_category is None
+        assert entity.name == f"My {key}"
+        assert entity.disabled_by is None
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
 

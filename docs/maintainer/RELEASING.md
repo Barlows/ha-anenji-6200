@@ -47,7 +47,7 @@ python3 tools/model_catalog.py \
 ```bash
 python3 tools/validate.py release \
   --ha-lane 2026.2=/path/to/ha-2026.2/bin/python \
-  --ha-lane 2026.7=/path/to/ha-2026.7/bin/python
+  --ha-lane 2026.9=/path/to/ha-2026.9/bin/python
 ```
 
    This first requires a populated local fixture catalog and a blocker-free

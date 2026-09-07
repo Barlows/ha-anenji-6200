@@ -630,14 +630,14 @@ def main() -> int:
             if not lanes:
                 for version, variable in (
                     ("2026.2", "EYBOND_HA_2026_2_PYTHON"),
-                    ("2026.7", "EYBOND_HA_2026_7_PYTHON"),
+                    ("2026.9", "EYBOND_HA_2026_9_PYTHON"),
                 ):
                     executable = os.environ.get(variable, "")
                     if executable:
                         lanes.append((version, executable))
-            if {version for version, _executable in lanes} != {"2026.2", "2026.7"}:
+            if {version for version, _executable in lanes} != {"2026.2", "2026.9"}:
                 raise ValidationError(
-                    "release mode requires exactly the 2026.2 and 2026.7 HA lanes; "
+                    "release mode requires exactly the 2026.2 and 2026.9 HA lanes; "
                     "pass --ha-lane twice or set EYBOND_HA_*_PYTHON"
                 )
             _run(

@@ -15,6 +15,17 @@ def _fake_probe():
     return AsyncMock(return_value=types.SimpleNamespace(reply="", reply_from=""))
 
 
+def _fake_identity_channel():
+    """Keep transport-policy unit tests independent of the host's TCP port."""
+
+    return types.SimpleNamespace(
+        available=True,
+        async_open=AsyncMock(),
+        async_close=AsyncMock(),
+        snapshot_session_observations=lambda: (),
+    )
+
+
 _OBSERVED_PN = "PN123"
 
 
@@ -591,8 +602,12 @@ class RuntimeLinkManagerTests(unittest.TestCase):
         )
         probe = _fake_probe()
 
+        channel = _fake_identity_channel()
         with patch(
             "custom_components.eybond_local.runtime.link.callback.async_send_callback_trigger", probe
+        ), patch(
+            "custom_components.eybond_local.collector.silent_session_probe.SilentSessionIdentityProbeChannel",
+            return_value=channel,
         ):
             connected = asyncio.run(
                 manager.async_try_connect(timeout=5.0, require_heartbeat=True)
@@ -600,6 +615,8 @@ class RuntimeLinkManagerTests(unittest.TestCase):
 
         self.assertTrue(connected)
         self.assertEqual(probe.await_count, 1)  # exactly one UDP trigger
+        channel.async_open.assert_awaited_once()
+        channel.async_close.assert_awaited_once()
         self.assertEqual(manager._callback_trigger_count, 1)
         self.assertEqual(announcer.start_calls, 0)  # no continuous announcer
         self.assertEqual(len(transport.connected_waits), 1)
@@ -718,9 +735,18 @@ class RuntimeLinkManagerTests(unittest.TestCase):
             )
         )
 
-        connected = asyncio.run(manager.async_try_connect(timeout=5.0, require_heartbeat=True))
+        channel = _fake_identity_channel()
+        with patch(
+            "custom_components.eybond_local.runtime.link.callback.async_send_callback_trigger",
+            _fake_probe(),
+        ), patch(
+            "custom_components.eybond_local.collector.silent_session_probe.SilentSessionIdentityProbeChannel",
+            return_value=channel,
+        ):
+            connected = asyncio.run(manager.async_try_connect(timeout=5.0, require_heartbeat=True))
 
         self.assertTrue(connected)
+        channel.async_close.assert_awaited_once()
         self.assertFalse(primary_transport.connected)
         self.assertTrue(auxiliary_transport.connected)
         self.assertTrue(auxiliary_transport.connected_waits)

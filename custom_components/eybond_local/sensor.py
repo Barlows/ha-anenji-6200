@@ -60,6 +60,9 @@ _FLOAT_PRECISION_DEVICE_CLASSES = {
     "temperature",
     "voltage",
 }
+# HA states are bounded; the runtime/support snapshot must remain lossless.
+_MAX_STATE_LENGTH = 255
+_CAPABILITY_LIST_SENSORS = {"write_capabilities", "blocked_write_capabilities"}
 _SUMMARY_ATTRIBUTE_MAP: dict[str, tuple[tuple[str, str], ...]] = {
     "operational_state": (
         ("site_mode", "site_mode_state"),
@@ -342,7 +345,13 @@ class EybondValueSensor(CoordinatorEntity[EybondLocalCoordinator], SensorEntity)
 
     @property
     def native_value(self) -> Any:
-        return self.coordinator.data.runtime_value(self._description.key)
+        value = self.coordinator.data.runtime_value(self._description.key)
+        if isinstance(value, str):
+            if self._description.key in _CAPABILITY_LIST_SENSORS:
+                return len([key for key in value.split(",") if key.strip()])
+            if len(value) > _MAX_STATE_LENGTH:
+                return value[: _MAX_STATE_LENGTH - 1] + "…"
+        return value
 
     @property
     def suggested_display_precision(self) -> int | None:
@@ -359,10 +368,16 @@ class EybondValueSensor(CoordinatorEntity[EybondLocalCoordinator], SensorEntity)
     def extra_state_attributes(self) -> dict[str, Any] | None:
         values = self.coordinator.data.runtime_values()
         fields = _SUMMARY_ATTRIBUTE_MAP.get(self._description.key)
-        if not fields:
-            return None
         attributes: dict[str, Any] = {}
-        for attribute_key, value_key in fields:
+        value = self.coordinator.data.runtime_value(self._description.key)
+        if isinstance(value, str):
+            if self._description.key in _CAPABILITY_LIST_SENSORS:
+                attributes["capabilities"] = [
+                    key.strip() for key in value.split(",") if key.strip()
+                ]
+            elif len(value) > _MAX_STATE_LENGTH:
+                attributes["full_value"] = value
+        for attribute_key, value_key in fields or ():
             value = values.get(value_key)
             if value is None or value == "":
                 continue

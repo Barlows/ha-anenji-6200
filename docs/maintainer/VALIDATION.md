@@ -43,11 +43,16 @@ provided:
 ```bash
 python3 tools/validate.py release \
   --ha-lane 2026.2=/path/to/ha-2026.2/bin/python \
-  --ha-lane 2026.7=/path/to/ha-2026.7/bin/python
+  --ha-lane 2026.9=/path/to/ha-2026.9/bin/python
 ```
 
 The same paths can be supplied through `EYBOND_HA_2026_2_PYTHON` and
-`EYBOND_HA_2026_7_PYTHON`.
+`EYBOND_HA_2026_9_PYTHON`.
+
+The current lane is pinned by `requirements-test-ha-2026.9.txt` to a matched
+Home Assistant 2026.9.1 test stack. It replaces the 2026.7 lane, not an additional
+per-change environment. Device-registry regressions must exercise entry-scoped
+identifiers and assert that the integration emits no deprecated-API warnings.
 
 `affected` is intentionally explicit rather than pretending to be a complete
 dependency solver. Composition-root families select their architecture and

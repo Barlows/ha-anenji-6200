@@ -18,7 +18,7 @@
 #     * 0.13.316 is the LAST release supporting Python 3.13 (requires_python
 #       >=3.13). The next one (0.13.317) moves to homeassistant==2026.3.1 and
 #       requires_python >=3.14, because Home Assistant dropped 3.13 in the 2026.3
-#       cycle. The 3.14 lane lives in requirements-test-ha-2026.7.txt.
+#       cycle. The 3.14 lane lives in requirements-test-ha-2026.9.txt.
 #
 # NOTE: `bleak` (the integration's only manifest requirement) is intentionally
 # NOT listed. The Home Assistant stack already pulls it transitively through its

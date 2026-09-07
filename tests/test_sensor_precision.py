@@ -150,6 +150,56 @@ class _FakeRegistry:
 
 
 class SensorPrecisionTests(unittest.TestCase):
+    def test_capability_lists_publish_count_and_lossless_attributes(self) -> None:
+        from custom_components.eybond_local.metadata.profile_loader import load_driver_profile
+
+        profile = load_driver_profile("modbus_smg/models/aninerel_anl_4200t_24l_w_pro.json")
+        keys = [capability.key for capability in profile.capabilities]
+        raw = ", ".join(keys)
+        self.assertGreater(len(raw), 255)
+        for key in ("write_capabilities", "blocked_write_capabilities"):
+            with self.subTest(key=key):
+                coordinator = _FakeCoordinator(key, raw)
+                sensor = EybondValueSensor(coordinator, MeasurementDescription(key=key, name=key))
+                self.assertEqual(sensor.native_value, len(keys))
+                self.assertEqual(sensor.extra_state_attributes, {"capabilities": keys})
+                self.assertEqual(coordinator.data.runtime_value(key), raw)
+                coordinator.data.values[key] = ""
+                self.assertEqual(sensor.native_value, 0)
+                self.assertEqual(sensor.extra_state_attributes, {"capabilities": []})
+                coordinator.data.values.pop(key)
+                self.assertFalse(sensor.available)
+                self.assertIsNone(sensor.native_value)
+
+    def test_long_text_is_bounded_only_at_the_ha_boundary(self) -> None:
+        for length in (254, 255, 256, 2000):
+            with self.subTest(length=length):
+                raw = "Ї" * length
+                coordinator = _FakeCoordinator("last_error", raw)
+                sensor = EybondValueSensor(
+                    coordinator, MeasurementDescription(key="last_error", name="Last Error")
+                )
+                self.assertLessEqual(len(sensor.native_value), 255)
+                self.assertEqual(coordinator.data.runtime_value("last_error"), raw)
+                if length > 255:
+                    self.assertEqual(sensor.native_value, raw[:254] + "…")
+                    self.assertEqual(sensor.extra_state_attributes, {"full_value": raw})
+                    coordinator.data.values["last_error"] = "short"
+                    self.assertEqual(sensor.native_value, "short")
+                    self.assertIsNone(sensor.extra_state_attributes)
+                else:
+                    self.assertEqual(sensor.native_value, raw)
+                    self.assertIsNone(sensor.extra_state_attributes)
+
+    def test_long_text_retains_existing_summary_attributes(self) -> None:
+        coordinator = _FakeCoordinator("protection_state", "x" * 300)
+        coordinator.data.values["warning_count"] = 3
+        sensor = EybondValueSensor(
+            coordinator, MeasurementDescription(key="protection_state", name="Protection")
+        )
+        self.assertEqual(sensor.extra_state_attributes["active_warning_count"], 3)
+        self.assertEqual(sensor.extra_state_attributes["full_value"], "x" * 300)
+
     def test_sensor_prefers_typed_telemetry_over_legacy_compatibility_value(self) -> None:
         from custom_components.eybond_local.telemetry import (
             TypedTelemetryFrame,

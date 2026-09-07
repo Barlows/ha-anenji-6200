@@ -72,7 +72,6 @@ def build_inverter_device_info_payload(
         "identifiers": {(DOMAIN, entry_id)},
         "name": name,
         "manufacturer": "OEM / EyeBond",
-        "via_device": (DOMAIN, f"{entry_id}:collector"),
     }
     if model:
         payload["model"] = model

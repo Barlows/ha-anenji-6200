@@ -1,0 +1,7 @@
+# Current real Home Assistant test lane (Python 3.14).
+# One pin fixes the matched stack, including Home Assistant 2026.9.1.
+# Do not separately install Home Assistant or the lightweight unit-test stubs.
+# This lane exercises the per-config-entry device registry and protected
+# registry collections reported in issues #38/#40. The 2026.2 lane remains
+# the older compatibility check.
+pytest-homeassistant-custom-component==0.13.364

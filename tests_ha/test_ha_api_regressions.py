@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from homeassistant.config_entries import ConfigFlow
 from homeassistant.core import HomeAssistant
@@ -26,6 +27,39 @@ MANIFEST = (
     / "eybond_local"
     / "manifest.json"
 )
+
+
+async def test_diagnostic_sensor_states_respect_ha_limit_without_losing_data(
+    hass: HomeAssistant, caplog,
+) -> None:
+    """Exercise the real sensor -> HA state machine boundary, not a stub."""
+
+    from custom_components.eybond_local.models import MeasurementDescription, RuntimeSnapshot
+    from custom_components.eybond_local.sensor import EybondValueSensor
+
+    entry = MockConfigEntry(domain=DOMAIN, title="State projection", data={})
+    entry.add_to_hass(hass)
+    keys = [f"capability_{i:03d}" for i in range(60)]
+    raw = ", ".join(keys)
+    coordinator = SimpleNamespace(
+        config_entry=entry,
+        data=RuntimeSnapshot(values={"write_capabilities": raw, "last_error": "Ї" * 1000}, connected=True),
+    )
+    for key in ("write_capabilities", "last_error"):
+        sensor = EybondValueSensor(coordinator, MeasurementDescription(key=key, name=key))
+        sensor.hass = hass
+        sensor.entity_id = f"sensor.eybond_test_{key}"
+        sensor.async_write_ha_state()
+        state = hass.states.get(sensor.entity_id)
+        assert state is not None
+        assert len(state.state) <= 255
+        assert state.state != "unknown"
+        if key == "write_capabilities":
+            assert state.state == "60"
+            assert state.attributes["capabilities"] == keys
+        else:
+            assert state.attributes["full_value"] == "Ї" * 1000
+    assert "falling back to unknown" not in caplog.text
 
 
 async def test_manifest_declares_http_dependency(hass: HomeAssistant) -> None:

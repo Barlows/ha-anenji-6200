@@ -35,7 +35,9 @@ class DeviceInfoProjectionTests(unittest.TestCase):
         self.assertEqual(payload["name"], "Live model")
         self.assertEqual(payload["model"], "Live model")
         self.assertEqual(payload["serial_number"], "live-serial")
-        self.assertEqual(payload["via_device"], ("eybond_local", "entry-1:collector"))
+        # The coordinator resolves the link for the installed HA API.
+        self.assertNotIn("via_device", payload)
+        self.assertNotIn("via_device_id", payload)
 
     def test_persisted_inverter_identity_keeps_startup_device_stable(self) -> None:
         payload = build_inverter_device_info_payload(

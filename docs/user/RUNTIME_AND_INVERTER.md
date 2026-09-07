@@ -74,6 +74,13 @@ the same as continuously overloaded polling.
 
 ## Control mode
 
+The optional **Write Capabilities** and **Blocked Write Capabilities** diagnostic
+sensors show how many settings are listed. Open the entity's attributes to see
+the complete list under `capabilities`. This is a diagnostic inventory, not a
+promise that every listed setting is enabled in your current Control mode.
+If another diagnostic text is too long for a Home Assistant state, its full
+text is available in the `full_value` attribute and in the Support Archive.
+
 Control mode is independent from the collector's cloud connection profile.
 
 - **Read-only** hides inverter writes and keeps monitoring.

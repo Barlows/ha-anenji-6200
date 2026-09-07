@@ -5,7 +5,7 @@
 # tests/ inject fake `homeassistant.*` packages into sys.modules, so the suite
 # must run against those fakes, not a real install. The real Home Assistant
 # lifecycle is covered by a separate failure boundary, the `ha-runtime-tests`
-# matrix (requirements-test-ha-2026.2.txt / requirements-test-ha-2026.7.txt).
+# matrix (requirements-test-ha-2026.2.txt / requirements-test-ha-2026.9.txt).
 #
 # Why exactly these two are enough: the fakes cover `homeassistant.*`, but they
 # do NOT cover the two genuine third-party libraries the production modules
