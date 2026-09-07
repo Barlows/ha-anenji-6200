@@ -123,7 +123,8 @@ async def test_active_scan_silent_callback_full_ha_lifecycle(
             "server_ip": SYNTHETIC_SERVER_IP,
             "collector_ip": "192.0.2.55",
             "collector_pn": "E5000099990003",
-            "tcp_port": 8899,
+            # Independent of the flow's listener and of parallel HA test lanes.
+            "tcp_port": _free_tcp_port(),
             "udp_port": 58899,
             "driver_hint": "auto",
         },
