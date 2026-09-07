@@ -29,7 +29,7 @@ from custom_components.eybond_local.drivers.write_confirmation import (  # noqa:
     WRITE_CONFIRMATION_DIAGNOSTIC_KEY,
     write_confirmation_diagnostics,
 )
-from custom_components.eybond_local.models import RegisterValueSpec  # noqa: E402
+from custom_components.eybond_local.models import RegisterValueSpec, WriteCapability  # noqa: E402
 from custom_components.eybond_local.control_policy import can_expose_capability  # noqa: E402
 from custom_components.eybond_local.fixtures.transport import FixtureTransport  # noqa: E402
 from custom_components.eybond_local.metadata.register_schema_loader import (  # noqa: E402
@@ -452,7 +452,7 @@ class SmgAnenjiVariantTests(unittest.IsolatedAsyncioTestCase):
         inverter = await driver.async_probe(transport, target)
 
         assert inverter is not None
-        self.assertEqual(inverter.model_name, "Anenji ANJ-11KW-48V-WIFI-P")
+        self.assertEqual(inverter.model_name, "Anenji ANJ-11KW-48V-WIFI")
         self.assertEqual(
             inverter.variant_key,
             "anenji_anj_11kw_48v_wifi_p_8401",
@@ -1396,11 +1396,11 @@ class SmgAnenjiVariantTests(unittest.IsolatedAsyncioTestCase):
 
         values: dict[str, object] = {}
         _apply_capability_read_back(values, (capability,), ((354, [0xABCF]),))
-        self.assertEqual(values["output2_enable"], 1)
+        self.assertEqual(values["output2_enable"], "On")
 
         values = {}
         _apply_capability_read_back(values, (capability,), ((354, [0xABCE]),))
-        self.assertEqual(values["output2_enable"], 0)
+        self.assertEqual(values["output2_enable"], "Off")
 
     async def test_write_inverter_clock_capabilities_updates_date_and_time_words(self) -> None:
         driver = SmgModbusDriver()
@@ -1438,6 +1438,34 @@ class SmgAnenjiVariantTests(unittest.IsolatedAsyncioTestCase):
         values = _full_values(await driver.async_read_values(transport, inverter))
         self.assertEqual(values["inverter_date"], "2026-04-18")
         self.assertEqual(values["inverter_time"], "08:09:10")
+
+    async def test_secondary_schedule_write_survives_full_poll_on_both_fingerprints(self) -> None:
+        from custom_components.eybond_local.runtime.hub.common import _write_readback_matches
+
+        for model_code in (0x8003, 0x8401):
+            with self.subTest(model_code=model_code):
+                driver = SmgModbusDriver()
+                target = ProbeTarget(devcode=1, collector_addr=255, device_addr=1)
+                registers = self._anenji_registers()
+                registers[171] = model_code
+                transport = FixtureTransport(
+                    registers=registers, command_responses=None, probe_target=target,
+                )
+                inverter = await driver.async_probe(transport, target)
+                assert inverter is not None
+                timers = tuple(c for c in inverter.capabilities if c.value_kind == "time_hhmm")
+                self.assertEqual(len(timers), 4)
+                for capability in timers:
+                    written = await driver.async_write_capability(
+                        transport, inverter, capability.key, "06:55",
+                    )
+                    self.assertEqual(transport._registers[capability.register], 655)
+                    values = _full_values(await driver.async_read_values(transport, inverter))
+                    self.assertEqual(values[capability.value_key], "06:55")
+                    self.assertTrue(_write_readback_matches(
+                        capability, requested_value="06:55", written_value=written,
+                        readback_value=values[capability.value_key],
+                    ))
 
     async def test_force_eq_charge_action_writes_register_656(self) -> None:
         driver = SmgModbusDriver()
@@ -1721,10 +1749,10 @@ class SmgFamilyFallbackTests(unittest.IsolatedAsyncioTestCase):
         config[304 - 300] = 1  # Beeps -> on
         config[338 - 300] = 0  # Auto AC Output -> off
         caps = (
-            SimpleNamespace(value_key="learned_beeps_304", key="learned_beeps_304", register=304),
-            SimpleNamespace(value_key="learned_auto_338", key="learned_auto_338", register=338),
-            SimpleNamespace(value_key="buzzer_mode", key="buzzer_mode", register=303),  # already decoded
-            SimpleNamespace(value_key="learned_eq_999", key="learned_eq_999", register=999),  # not polled
+            WriteCapability("learned_beeps_304", 304, "u16", "test"),
+            WriteCapability("learned_auto_338", 338, "u16", "test"),
+            WriteCapability("buzzer_mode", 303, "u16", "test"),  # already decoded
+            WriteCapability("learned_eq_999", 999, "u16", "test"),  # not polled
         )
 
         _apply_capability_read_back(values, caps, ((300, config),))
@@ -1741,10 +1769,53 @@ class SmgFamilyFallbackTests(unittest.IsolatedAsyncioTestCase):
         config = [0] * 44
         config[320 - 300] = 560
         caps = (
-            SimpleNamespace(value_key="learned_v_320", key="learned_v_320", register=320, divisor=10),
+            WriteCapability("learned_v_320", 320, "scaled_u16", "test", divisor=10),
         )
         _apply_capability_read_back(values, caps, ((300, config),))
         self.assertEqual(values["learned_v_320"], 56.0)
+
+    def test_schedule_readback_uses_native_hhmm_for_all_protocol_timers(self) -> None:
+        from custom_components.eybond_local.metadata.profile_loader import load_driver_profile
+        from custom_components.eybond_local.runtime.hub.common import _write_readback_matches
+
+        profile = load_driver_profile("modbus_smg/protocols/communication_protocol_3_10.json")
+        timers = tuple(c for c in profile.capabilities if c.value_kind == "time_hhmm")
+        self.assertEqual(len(timers), 4)
+        for capability in timers:
+            for raw, expected in ((0, "00:00"), (655, "06:55"), (2359, "23:59")):
+                with self.subTest(key=capability.key, raw=raw):
+                    values = {}
+                    _apply_capability_read_back(values, (capability,), ((capability.register, [raw]),))
+                    self.assertEqual(values[capability.value_key], expected)
+                    self.assertTrue(_write_readback_matches(
+                        capability, requested_value=expected, written_value=expected,
+                        readback_value=values[capability.value_key],
+                    ))
+                    self.assertFalse(_write_readback_matches(
+                        capability, requested_value="12:34", written_value="12:34",
+                        readback_value=values[capability.value_key],
+                    ))
+            for invalid in (1260, 2400, 65535):
+                values = {}
+                _apply_capability_read_back(values, (capability,), ((capability.register, [invalid]),))
+                self.assertNotIn(capability.value_key, values)
+
+    def test_readback_shares_multiword_and_scaled_capability_decoding(self) -> None:
+        cases = (
+            (WriteCapability("clock", 100, "time_words", "test", word_count=3), [6, 55, 0], "06:55:00"),
+            (WriteCapability("date", 100, "date_words", "test", word_count=3), [2026, 9, 7], "2026-09-07"),
+            (WriteCapability("energy", 100, "u32", "test", word_count=2, combine="u32_high_first"), [1, 2], 65538),
+            (WriteCapability("power", 100, "u16", "test", multiplier=10), [2], 20),
+        )
+        for capability, words, expected in cases:
+            with self.subTest(kind=capability.value_kind):
+                values = {}
+                _apply_capability_read_back(values, (capability,), ((100, words),))
+                self.assertEqual(values[capability.value_key], expected)
+                if capability.word_count > 1:
+                    values = {}
+                    _apply_capability_read_back(values, (capability,), ((100, words[:-1]),))
+                    self.assertNotIn(capability.value_key, values)
 
     async def test_read_out_of_block_capability_registers(self) -> None:
         # Out-of-block controls (Boot method 406, Output control 420) are read directly; in-block

@@ -13,7 +13,6 @@ from ..models import (
     ProbeTarget,
     RegisterValueSpec,
     WriteCapability,
-    decimals_for_divisor,
 )
 from ..payload.modbus import (
     ModbusError,
@@ -901,7 +900,7 @@ async def _read_out_of_block_capability_registers(
 
 def _apply_capability_read_back(
     values: dict[str, Any],
-    capabilities,
+    capabilities: tuple[WriteCapability, ...],
     register_blocks: tuple[tuple[int, list[int]], ...],
 ) -> None:
     """Fill ``values`` for writable capabilities that have a register but no decode spec.
@@ -920,44 +919,22 @@ def _apply_capability_read_back(
             register_map[start + index] = raw
 
     for capability in capabilities:
-        value_key = getattr(capability, "value_key", "") or getattr(capability, "key", "")
+        value_key = capability.value_key
         if not value_key or value_key in values:
             continue
-        register = int(getattr(capability, "register", 0) or 0)
-        if register <= 0 or register not in register_map:
+        register = capability.register
+        if register not in register_map:
             continue
-        word_count = int(getattr(capability, "word_count", 1) or 1)
-        if word_count >= 2:
-            high = register_map.get(register)
-            low = register_map.get(register + 1)
-            if high is None or low is None:
-                continue
-            if str(getattr(capability, "combine", "") or "") == "u32_high_first":
-                raw_value = (high << 16) | low
-            else:
-                raw_value = (low << 16) | high
-        else:
-            raw_value = register_map[register]
-        bitmask = int(getattr(capability, "bitmask", 0) or 0)
-        if bitmask:
-            # Masked capability: only its own bits carry the value (the rest of
-            # the register belongs to other settings).
-            shift = (bitmask & -bitmask).bit_length() - 1
-            raw_value = (raw_value & bitmask) >> shift
-        value_kind = str(getattr(capability, "value_kind", "") or "")
-        divisor = int(getattr(capability, "divisor", 0) or 0)
-        if value_kind == "enum":
-            # A select reads the decoded LABEL (a string), like built-in enums. Map the raw
-            # register value to its label via the capability's enum map; without this the select
-            # gets a bare int and shows "unknown".
-            enum_map = getattr(capability, "enum_value_map", None) or {}
-            values[value_key] = enum_map.get(raw_value, f"Unknown ({raw_value})")
-        elif divisor > 1:
-            # Scaled number: store the NATIVE (display) value, since the number entity reads
-            # value_key as-is and its native_min/max + the write encode use the same divisor.
-            values[value_key] = round(raw_value / divisor, decimals_for_divisor(divisor))
-        else:
-            values[value_key] = raw_value
+        try:
+            words = tuple(register_map[register + offset] for offset in range(capability.word_count))
+            words = _comparable_capability_words(capability, words)
+            # Polling and immediate write confirmation must use the same codec:
+            # HHMM 655 is "06:55", not the integer 655 in the entity state.
+            values[value_key] = _decode_capability_value(capability, list(words))
+        except (KeyError, ValueError):
+            # Missing/invalid words are not a native value or a successful write
+            # confirmation. Leave them absent instead of publishing raw data.
+            continue
 
 
 def _observe_capability_write_full_poll(

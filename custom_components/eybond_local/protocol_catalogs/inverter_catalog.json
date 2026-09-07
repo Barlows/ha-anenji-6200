@@ -1945,7 +1945,10 @@
    "structural": [
     "serial_ascii_plausible"
    ],
-   "model_name": "Anenji ANJ-11KW-48V-WIFI-P",
+   "model_name": "Anenji ANJ-11KW-48V-WIFI",
+   "aliases": [
+    "Anenji ANJ-11KW-48V-WIFI-P"
+   ],
    "surface_key": "smg_anenji_11kw_8401_full",
    "runtime_probe": {
     "validation": [
@@ -1973,7 +1976,9 @@
    "provenance": {
     "sources": [
      "project-issue:13 support archive (2026-08-30): layout_code=4, model_code=0x8401, stable serial and responsive Protocol 4 telemetry",
-     "project-issue:13 historical evidence: the same collector/inverter identity was cloud-classified as devcode 6544 and operated through the Anenji Protocol 4 map on v0.2.0"
+     "project-issue:13 historical evidence: the same collector/inverter identity was cloud-classified as devcode 6544 and operated through the Anenji Protocol 4 map on v0.2.0",
+     "project-issue:38 owner clarification (2026-09-03): ANJ-11KW-48V-WIFI without parallel; 0x8401 does not justify asserting a -P suffix",
+     "compatibility: retain the old displayed -P name as a persisted-name alias only, so old 0x8401 entries cannot be mistaken for 0x8000 before live fingerprint verification"
     ],
     "confidence": "capture-derived"
    }

@@ -1,7 +1,7 @@
 {
   "extends": "../protocols/communication_protocol_4.json",
   "profile_key": "modbus_smg_anenji_anj_11kw_48v_wifi_p_8401",
-  "title": "Anenji ANJ-11KW-48V-WIFI-P (0x8401)",
+  "title": "Anenji ANJ-11KW-48V-WIFI (0x8401)",
   "driver_key": "modbus_smg",
   "protocol_family": "modbus_smg",
   "capability_defaults": {

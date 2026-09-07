@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "source_key": "github_issue_38_anenji_8401_model_name",
+  "kind": "github_issue",
+  "title": "Anenji 0x8401 owner model-name clarification",
+  "reference": "project-issue:38#issuecomment-5526527737",
+  "captured_at": "2026-09-03",
+  "visibility": "public",
+  "summary": "The owner identifies the 0x8401 inverter as ANJ-11KW-48V-WIFI, not WIFI-P. This supports omitting the unproven -P suffix in the runtime name; it does not establish a general fingerprint-to-parallel-capability rule.",
+  "assertions": ["commercial_identity"]
+}

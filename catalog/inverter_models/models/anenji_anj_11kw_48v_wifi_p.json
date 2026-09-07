@@ -2,13 +2,13 @@
   "schema_version": 1,
   "model_key": "anenji_anj_11kw_48v_wifi_p",
   "manufacturer": "Anenji",
-  "model": "ANJ-11KW-48V-WIFI-P",
+  "model": "ANJ-11KW-48V-WIFI / WIFI-P",
   "aliases": [],
   "lifecycle": "supported",
   "variants": [
     {
       "variant_key": "layout4_model32768",
-      "label": "Anenji 11kW variant",
+      "label": "Anenji ANJ-11KW-48V-WIFI-P (0x8000)",
       "device_descriptor_keys": [
         "anenji_anj_11kw"
       ],
@@ -16,7 +16,7 @@
     },
     {
       "variant_key": "layout4_model33793",
-      "label": "Anenji 11kW model-code 0x8401 variant",
+      "label": "Anenji ANJ-11KW-48V-WIFI (0x8401)",
       "device_descriptor_keys": [
         "anenji_anj_11kw_8401"
       ],
@@ -46,6 +46,7 @@
     ]
   },
   "known_limitations": [
+    "The issue #38 owner reports a non-parallel ANJ-11KW-48V-WIFI for 0x8401. Its runtime name omits the unproven -P suffix; the fingerprint alone is not a parallel-capability test. Stable profile and catalog keys are retained.",
     "Irreversible generation-data clear and user-parameter reset actions remain blocked even though the ordinary Protocol 4 control surface is enabled."
   ],
   "knowledge_summary": "Anenji 11kW unit with a model-specific control profile over the shared protocol-4 register projection, backed by donor captures, user-confirmed controls, and the Protocol No. 3-10 documentation.",
@@ -55,6 +56,7 @@
     "documentation_anenji_protocol_3_10",
     "support_archive_anenji_anj_11kw_secondary_controls_20260707",
     "github_issue_13_anenji_8401_beta4",
-    "github_issue_38_anenji_8401_op2_controls"
+    "github_issue_38_anenji_8401_op2_controls",
+    "github_issue_38_anenji_8401_model_name"
   ]
 }

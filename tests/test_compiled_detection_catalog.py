@@ -109,8 +109,9 @@ class CompiledDetectionCatalogTests(unittest.TestCase):
         )
 
     def test_persisted_anenji_model_waits_for_live_hardware_fingerprint(self) -> None:
-        # The same commercial model name is now confirmed with model codes
-        # 0x8000 and 0x8401.  Their control surfaces differ, so a persisted
+        # The same historical displayed model name was used for model codes
+        # 0x8000 and 0x8401. The latter now omits -P, but old entries retain it.
+        # Their control surfaces differ, so a persisted
         # display name alone must not restore either surface while live probing
         # is degraded.  Exact runtime evidence selects the proper descriptor.
         self.assertIsNone(

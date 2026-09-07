@@ -21,7 +21,7 @@ This page describes what has been confirmed for a specific inverter model or mod
 
 | Manufacturer | Model | Protocol | Detection | Runtime Tier | Telemetry | Controls | Hardware |
 |---|---|---|---|---|---|---|---|
-| Anenji | ANJ-11KW-48V-WIFI-P — Anenji 11kW variant | modbus_smg | fingerprint | full | confirmed | confirmed | captured |
+| Anenji | ANJ-11KW-48V-WIFI / WIFI-P — Anenji ANJ-11KW-48V-WIFI-P (0x8000) | modbus_smg | fingerprint | full | confirmed | confirmed | captured |
 | PowMr | 4.2KW — PI30 VMII-NXPW5KW raw-model variant | pi30 | anchors | full | confirmed | confirmed | captured |
 | PowMr | 4.2KW — SmartESS 0925 local Modbus alternate runtime | pi30 | anchors | full | confirmed | confirmed | captured |
 | Sandisolar | SD-HYM-4862HWP | modbus_smg | fingerprint | full | confirmed | confirmed | confirmed |
@@ -31,7 +31,7 @@ This page describes what has been confirmed for a specific inverter model or mod
 | Manufacturer | Model | Protocol | Detection | Runtime Tier | Telemetry | Controls | Hardware |
 |---|---|---|---|---|---|---|---|
 | Anenji | 6200 (single output) | modbus_smg | fingerprint | full | confirmed | partial | captured |
-| Anenji | ANJ-11KW-48V-WIFI-P — Anenji 11kW model-code 0x8401 variant | modbus_smg | fingerprint | full | confirmed | partial | captured |
+| Anenji | ANJ-11KW-48V-WIFI / WIFI-P — Anenji ANJ-11KW-48V-WIFI (0x8401) | modbus_smg | fingerprint | full | confirmed | partial | captured |
 | Anenji | ANJ-4000W-24V | modbus_smg | fingerprint | full | confirmed | partial | captured |
 | Anenji | ANJ-6200-48PL | modbus_smg | fingerprint | full | confirmed | partial | captured |
 | Anenji | HHS-11kW-WIFI (without parallel) | modbus_smg | fingerprint | full | partial | partial | captured |
@@ -99,7 +99,7 @@ Runtime descriptors with no specific commercial model record. These are generic 
   - Controls inherit the SMG 6200 control set; not every writable setting is independently confirmed on this unit.
 - Evidence: 2 source(s)
 
-### Anenji — ANJ-11KW-48V-WIFI-P (`anenji_anj_11kw_48v_wifi_p`)
+### Anenji — ANJ-11KW-48V-WIFI / WIFI-P (`anenji_anj_11kw_48v_wifi_p`)
 
 - Lifecycle: supported
 - Aliases: —
@@ -113,14 +113,14 @@ Runtime descriptors with no specific commercial model record. These are generic 
     - The documented Protocol 4 control surface is treated as tested for this exact fingerprint; irreversible generation-data clear and user-parameter reset actions remain blocked by the independent safety policy.
 - Summary: Anenji 11kW unit with a model-specific control profile over the shared protocol-4 register projection, backed by donor captures, user-confirmed controls, and the Protocol No. 3-10 documentation.
 - Variants:
-  - `layout4_model32768` — Anenji 11kW variant
+  - `layout4_model32768` — Anenji ANJ-11KW-48V-WIFI-P (0x8000)
     - Descriptors: anenji_anj_11kw
     - Known firmware: —
     - `anenji_anj_11kw` → surface `anenji_anj_11kw_full` (driver modbus_smg, variant anenji_anj_11kw_48v_wifi_p)
       - Protocol: modbus_smg | Detection: fingerprint (layout 4, model 32768, rated —)
       - Tier: full | Read-only: no | Profile: modbus_smg/models/anenji_anj_11kw_48v_wifi_p.json | Schema: modbus_smg/models/anenji_anj_11kw_48v_wifi_p.json
       - Capabilities: 63 (tested 50, untested 13); support tiers: blocked 2, conditional 52, standard 9 | Telemetry: 117 measurements, 18 binary sensors
-  - `layout4_model33793` — Anenji 11kW model-code 0x8401 variant
+  - `layout4_model33793` — Anenji ANJ-11KW-48V-WIFI (0x8401)
     - Validation override: hardware captured, telemetry confirmed, controls partial
     - Descriptors: anenji_anj_11kw_8401
     - Known firmware: —
@@ -129,8 +129,9 @@ Runtime descriptors with no specific commercial model record. These are generic 
       - Tier: full | Read-only: no | Profile: modbus_smg/models/anenji_anj_11kw_48v_wifi_p_8401.json | Schema: modbus_smg/protocols/communication_protocol_4.json
       - Capabilities: 60 (tested 60); support tiers: blocked 2, conditional 55, standard 3 | Telemetry: 117 measurements, 18 binary sensors
 - Known limitations:
+  - The issue #38 owner reports a non-parallel ANJ-11KW-48V-WIFI for 0x8401. Its runtime name omits the unproven -P suffix; the fingerprint alone is not a parallel-capability test. Stable profile and catalog keys are retained.
   - Irreversible generation-data clear and user-parameter reset actions remain blocked even though the ordinary Protocol 4 control surface is enabled.
-- Evidence: 6 source(s)
+- Evidence: 7 source(s)
 
 ### Anenji — ANJ-4000W-24V (`anenji_4200_protocol_1`)
 

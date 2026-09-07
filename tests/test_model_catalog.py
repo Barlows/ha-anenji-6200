@@ -450,13 +450,13 @@ class JournalGroupingTests(unittest.TestCase):
         self.assertNotIn("ANJ-6200-48PL", supported_block)
         self.assertIn("SD-HYM-4862HWP", supported_block)
         self.assertIn("ANJ-11KW-48V-WIFI-P", supported_block)
-        self.assertNotIn("model-code 0x8401 variant", supported_block)
+        self.assertNotIn("ANJ-11KW-48V-WIFI (0x8401)", supported_block)
         self.assertIn("4.2KW", supported_block)
 
         limited_block = journal.split("## Limited Or Experimental Models", 1)[1].split(
             "## Research Queue", 1
         )[0]
-        self.assertIn("model-code 0x8401 variant", limited_block)
+        self.assertIn("ANJ-11KW-48V-WIFI (0x8401)", limited_block)
         self.assertIn("| confirmed | partial | captured |", limited_block)
 
     def test_multi_variant_renders_one_row_per_variant(self) -> None:

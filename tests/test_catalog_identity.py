@@ -139,7 +139,7 @@ class CatalogIdentityProbeTest(unittest.IsolatedAsyncioTestCase):
         assert probe is not None
         self.assertEqual(probe.match.kind, MATCH_DEVICE)
         self.assertEqual(probe.match.entry.entry_key, "anenji_anj_11kw_8401")
-        self.assertEqual(probe.match.entry.model_name, "Anenji ANJ-11KW-48V-WIFI-P")
+        self.assertEqual(probe.match.entry.model_name, "Anenji ANJ-11KW-48V-WIFI")
         self.assertEqual(
             probe.match.entry.binding.variant_key,
             "anenji_anj_11kw_48v_wifi_p_8401",
