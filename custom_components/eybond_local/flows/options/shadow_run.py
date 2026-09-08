@@ -276,6 +276,10 @@ class ShadowLearningRunMixin:
 
     def _control_discovery_source_option_label(self, source_id: str) -> str:
         labels = {
+            "smartclient": self._tr(
+                "common.dynamic.cloud_learning_source_smartclient",
+                "SmartClient / ShineMonitor",
+            ),
             "smartess": self._tr(
                 "common.dynamic.cloud_learning_source_smartess",
                 "SmartESS API",
@@ -377,7 +381,8 @@ class ShadowLearningRunMixin:
         errors: dict[str, str] = {}
         defaults = dict(user_input or {})
         username = str(defaults.get("username") or "").strip()
-        password = str(defaults.get("password") or "").strip()
+        # Whitespace can be part of the cloud password and its signed hash.
+        password = str(defaults.get("password") or "")
         if user_input is not None:
             if not username:
                 errors["username"] = "required"

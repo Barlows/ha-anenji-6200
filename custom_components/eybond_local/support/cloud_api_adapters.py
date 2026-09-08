@@ -6,12 +6,14 @@ from abc import ABC
 
 from ..dessmonitor_cloud import DessMonitorCloudError
 from ..smartess_cloud import SmartEssCloudError, classify_smartess_cloud_error
+from ..smartclient_cloud import SmartClientCloudError
 from .cloud_learning_models import CloudApiCapabilities, CloudApiSource
 
 
 LEARNING_SOURCE_SMARTESS = "smartess"
 LEARNING_SOURCE_DESSMONITOR = "dessmonitor"
 LEARNING_SOURCE_VALUECLOUD = "valuecloud"
+LEARNING_SOURCE_SMARTCLIENT = "smartclient"
 
 CREDENTIAL_REALM_EYBOND = "eybond"
 CREDENTIAL_REALM_VALUECLOUD = "valuecloud"
@@ -100,6 +102,31 @@ class DessMonitorCloudApiAdapter(CloudApiAdapter):
         return "unexpected"
 
 
+class SmartClientCloudApiAdapter(CloudApiAdapter):
+    source = CloudApiSource(
+        source_id=LEARNING_SOURCE_SMARTCLIENT,
+        provider_id="smartess",
+        credential_realm_id=CREDENTIAL_REALM_EYBOND,
+        label="SmartClient / ShineMonitor",
+        capabilities=CloudApiCapabilities(
+            metadata=True, control_actions=False, raw_packets=True, history=True,
+        ),
+    )
+
+    def classify_error(self, exc: BaseException) -> str:
+        if isinstance(exc, TimeoutError):
+            return "timeout"
+        if not isinstance(exc, SmartClientCloudError):
+            return ""
+        if exc.code == 10 or exc.reason_code == "auth_failed":
+            return "auth_failed"
+        if exc.reason_code in {"timeout", "network", "rate_limited"}:
+            return exc.reason_code
+        if exc.code in {11, 257, 258} or exc.reason_code in {"device_unavailable", "device_data_unavailable", "identity_mismatch", "identity_ambiguous"}:
+            return "unavailable"
+        return "unexpected"
+
+
 class UnavailableCloudApiAdapter(CloudApiAdapter):
     """Fail-closed API metadata for an unknown exact source id."""
 
@@ -123,10 +150,12 @@ __all__ = [
     "CREDENTIAL_REALM_VALUECLOUD",
     "LEARNING_SOURCE_DESSMONITOR",
     "LEARNING_SOURCE_SMARTESS",
+    "LEARNING_SOURCE_SMARTCLIENT",
     "LEARNING_SOURCE_VALUECLOUD",
     "CloudApiAdapter",
     "DessMonitorCloudApiAdapter",
     "SmartEssCloudApiAdapter",
+    "SmartClientCloudApiAdapter",
     "UnavailableCloudApiAdapter",
     "ValueCloudApiAdapter",
 ]

@@ -166,6 +166,49 @@ async def test_options_flow_entry_is_not_loaded_requirement(
     assert result["type"] in (FlowResultType.FORM, FlowResultType.MENU)
 
 
+@pytest.mark.parametrize("provider", ["smartess", ""])
+async def test_smartclient_read_only_source_reaches_credentials_without_inverter(
+    hass: HomeAssistant, collector_entry: MockConfigEntry, provider: str,
+) -> None:
+    """Real HA selectors offer SmartClient even before local driver detection."""
+
+    from types import SimpleNamespace
+
+    collector_entry.runtime_data = SimpleNamespace(
+        data=SimpleNamespace(values={}),
+        cloud_evidence_provider=provider,
+        smartess_collector_pn=SYNTHETIC_COLLECTOR_PN,
+    )
+    before_data = dict(collector_entry.data)
+    before_options = dict(collector_entry.options)
+    result = await hass.config_entries.options.async_init(collector_entry.entry_id)
+    flow_id = result["flow_id"]
+    result = await hass.config_entries.options.async_configure(
+        flow_id, {"next_step_id": "cloud_tools"},
+    )
+    result = await hass.config_entries.options.async_configure(
+        flow_id, {"next_step_id": "shadow_learning"},
+    )
+    if result["step_id"] == "shadow_learning":
+        result = await hass.config_entries.options.async_configure(
+            flow_id, {"learning_method": "read_only_evidence"},
+        )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "shadow_learning_source"
+    selector = next(iter(result["data_schema"].schema.values()))
+    assert any(option["value"] == "smartclient" for option in selector.config["options"])
+    result = await hass.config_entries.options.async_configure(
+        flow_id, user_input={"learning_source": "smartclient"},
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "shadow_learning_credentials"
+    assert result.get("errors") in (None, {})
+    assert "SmartClient" in str(result["description_placeholders"])
+    assert collector_entry.data == before_data
+    assert collector_entry.options == before_options
+    hass.config_entries.options.async_abort(flow_id)
+
+
 async def test_runtime_options_commit_strategy_to_data_with_one_reload(
     hass: HomeAssistant, collector_entry: MockConfigEntry, fake_runtime
 ) -> None:

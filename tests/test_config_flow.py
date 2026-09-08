@@ -5995,7 +5995,7 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(source["step_id"], "shadow_learning_source")
         self.assertEqual(
             tuple(_schema_select_options(source["data_schema"], "learning_source")),
-            ("dessmonitor", "smartess"),
+            ("dessmonitor", "smartess", "smartclient"),
         )
         self.assertEqual(
             options._shadow_learning_state["wizard_method"],
@@ -8237,7 +8237,7 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(source_step["step_id"], "shadow_learning_source")
         self.assertEqual(
             tuple(_schema_select_options(source_step["data_schema"], "learning_source")),
-            ("dessmonitor", "smartess"),
+            ("dessmonitor", "smartess", "smartclient"),
         )
         result = await options.async_step_shadow_learning_source(
             {"learning_source": "dessmonitor"}
@@ -8249,6 +8249,20 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("wizard_consent", options._shadow_learning_state)
         self.assertEqual(options._config_entry.data, entry_data)
         self.assertEqual(options._config_entry.options, entry_options)
+
+    async def test_smartclient_source_names_the_right_app_without_active_consent(self) -> None:
+        options = self._wizard_options_flow()
+        await options.async_step_shadow_learning(
+            {"learning_method": LEARNING_METHOD_READ_ONLY_EVIDENCE}
+        )
+        result = await options.async_step_shadow_learning_source(
+            {"learning_source": "smartclient"}
+        )
+        self.assertEqual(result["step_id"], "shadow_learning_credentials")
+        self.assertEqual(options._control_discovery_cloud_app_label(options._coordinator()), "SmartClient")
+        self.assertEqual(options._control_discovery_cloud_provider_label(options._coordinator()), "SmartClient / ShineMonitor")
+        self.assertNotIn("wizard_consent", options._shadow_learning_state)
+        self.assertFalse(options._control_discovery_requires_shadow_route(options._coordinator()))
 
     async def test_control_discovery_dessmonitor_active_requires_consent(self) -> None:
         options = self._wizard_options_flow()
@@ -8274,6 +8288,20 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
             options._shadow_learning_state["wizard_source"],
             "dessmonitor",
         )
+
+    async def test_learning_credentials_preserve_password_whitespace(self) -> None:
+        options = self._wizard_options_flow()
+        options._shadow_learning_state.update(
+            {"wizard_method": LEARNING_METHOD_READ_ONLY_EVIDENCE, "wizard_source": "smartclient"}
+        )
+        with patch.object(options, "async_step_shadow_learning_progress", new=AsyncMock(return_value={})):
+            await options.async_step_shadow_learning_credentials(
+                {"username": " owner ", "password": " secret "}
+            )
+        self.assertEqual(options._shadow_learning_state["wizard_credentials"],
+                         {"username": "owner", "password": " secret "})
+        self.assertNotIn("password", options._config_entry.data)
+        self.assertNotIn("password", options._config_entry.options)
 
     async def test_control_discovery_method_selection_fails_closed(self) -> None:
         options = self._wizard_options_flow()
@@ -8355,7 +8383,7 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["next_step_id"], "shadow_learning_review")
         self.assertEqual(
             options._shadow_learning_state["wizard_credentials"],
-            {"username": "demo", "password": "secret"},
+            {"username": "demo", "password": " secret "},
         )
 
     async def test_control_discovery_progress_creates_task_and_shows_progress(self) -> None:
@@ -9753,6 +9781,32 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
             options._shadow_learning_state["discovery"],
             {"status": "ok", "found_controls": 0, "found_metadata": 2},
         )
+
+    async def test_smartclient_pipeline_keeps_exact_source_and_publishes_passive_evidence(self) -> None:
+        from custom_components.eybond_local.smartclient_cloud import SmartClientEvidence, SmartClientIdentity
+        from custom_components.eybond_local.support import smartclient_learning
+
+        coordinator = self._RunnerCoordinator(ready=False)
+        options = self._runner_options_flow(coordinator)
+        options._shadow_learning_state.update(
+            {"wizard_method": LEARNING_METHOD_READ_ONLY_EVIDENCE, "wizard_source": "smartclient"}
+        )
+        bundle = SmartClientEvidence(
+            identity=SmartClientIdentity(coordinator.smartess_collector_pn, "PV0001", 767, 1),
+            telemetry=({"field_id": "2", "title": "PV Voltage", "unit": "V", "value": "220.5"},),
+            controls=(), device_info={}, history={}, raw_packet={},
+            unavailable_actions=(), action_errors=(), fetched_at="2026-09-08T09:00:00+00:00",
+        )
+        with patch.object(smartclient_learning, "fetch_read_only_evidence", return_value=bundle):
+            await options._async_run_control_discovery()
+        self.assertEqual(coordinator.started, [])
+        self.assertEqual(coordinator.stopped, [])
+        self.assertTrue(coordinator.published)
+        self.assertEqual(options._shadow_learning_state["discovery"]["status"], "ok")
+        self.assertEqual(options._shadow_learning_state["cloud_metadata"]["source"], "smartclient")
+        self.assertNotIn("demo@example.com", str(coordinator.published))
+        self.assertNotIn("wizard_credentials", str(coordinator.published))
+        self.assertEqual(options._shadow_learning_state.get("overlay", {}), {})
 
     async def test_dessmonitor_runner_records_typed_local_semantic_coverage(self) -> None:
         coordinator = self._RunnerCoordinator(ready=False)

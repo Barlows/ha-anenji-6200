@@ -122,18 +122,21 @@ def _user_error_from_exception_code(
     native_minimum = capability.native_minimum
     native_maximum = capability.native_maximum
     if native_minimum is not None and native_maximum is not None:
-        allowed_range = f"Allowed profile range: {native_minimum} to {native_maximum}."
+        allowed_range = f"Profile UI range: {native_minimum} to {native_maximum}."
     elif native_minimum is not None:
-        allowed_range = f"Allowed profile minimum: {native_minimum}."
+        allowed_range = f"Profile UI minimum: {native_minimum}."
     elif native_maximum is not None:
-        allowed_range = f"Allowed profile maximum: {native_maximum}."
+        allowed_range = f"Profile UI maximum: {native_maximum}."
     else:
-        allowed_range = "The inverter may enforce a narrower range than the current profile metadata."
+        allowed_range = ""
 
     return ValueError(
         f"illegal_data_value:{capability.key}:"
-        f"The inverter rejected {capability.display_name!r} as out of range. "
-        f"{allowed_range}"
+        f"The inverter rejected the write request for {capability.display_name!r} "
+        "(Modbus exception 03: illegal data value). This response does not "
+        "identify an allowed setting range; the request format or a "
+        "device-specific restriction may need checking. "
+        f"{allowed_range}".rstrip()
     )
 
 

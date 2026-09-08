@@ -22,6 +22,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from .cloud_signing import password_signature, session_signature
 from .collector_identity import pn_is_same_identity
 
 
@@ -451,7 +452,7 @@ def build_login_url(
     _required_token(password, "dessmonitor_password_invalid")
     action = _login_action(username=username, company_key=company_key)
     salt = _salt_millis()
-    sign = _sha1_lower(salt + _sha1_lower(password) + action)
+    sign = password_signature(salt, password, action)
     return f"{_normalized_base_url(base_url)}?sign={sign}&salt={salt}{action}"
 
 
@@ -534,7 +535,7 @@ def build_signed_action_url(
         + f"&_app_version_={quote(app_version, safe='')}"
     )
     salt = _salt_millis()
-    sign = _sha1_lower(salt + session.secret + session.token + suffix)
+    sign = session_signature(salt, session.secret, session.token, suffix)
     return (
         f"{_normalized_base_url(base_url)}?sign={sign}&salt={salt}"
         f"&token={quote(session.token, safe='')}{suffix}"

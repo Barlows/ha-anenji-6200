@@ -8,6 +8,7 @@ from .cloud_api_adapters import (
     CloudApiAdapter,
     DessMonitorCloudApiAdapter,
     SmartEssCloudApiAdapter,
+    SmartClientCloudApiAdapter,
     UnavailableCloudApiAdapter,
     ValueCloudApiAdapter,
 )
@@ -33,6 +34,7 @@ from .cloud_read_only_workflow import ReadOnlyEvidenceWorkflowRunner
 from .dessmonitor_active import DessMonitorActiveCorrelationOperation
 from .dessmonitor_learning import DessMonitorReadOnlyEvidenceOperation
 from .smartess_read_only import SmartEssReadOnlyEvidenceOperation
+from .smartclient_learning import SmartClientReadOnlyEvidenceOperation
 
 
 class CloudLearningEngine(ABC):
@@ -123,6 +125,15 @@ class SmartEssReadOnlyCloudLearningEngine(CloudLearningEngine):
         )
 
 
+class SmartClientReadOnlyCloudLearningEngine(CloudLearningEngine):
+    adapter = SmartClientCloudApiAdapter()
+    method = READ_ONLY_EVIDENCE_METHOD
+    evidence_capabilities = LOCAL_SERIES_EVIDENCE
+
+    def learning_runner(self) -> CloudLearningRunner:
+        return ReadOnlyEvidenceWorkflowRunner(SmartClientReadOnlyEvidenceOperation())
+
+
 class UnavailableCloudLearningEngine(CloudLearningEngine):
     """Fail-closed result for malformed or unregistered selections."""
 
@@ -155,6 +166,7 @@ _REGISTERED_ENGINES: tuple[CloudLearningEngine, ...] = (
     DessMonitorCloudLearningEngine(),
     SmartEssCloudLearningEngine(),
     SmartEssReadOnlyCloudLearningEngine(),
+    SmartClientReadOnlyCloudLearningEngine(),
     ValueCloudCloudLearningEngine(),
 )
 
@@ -382,6 +394,7 @@ __all__ = [
     "DessMonitorCloudLearningEngine",
     "SmartEssCloudLearningEngine",
     "SmartEssReadOnlyCloudLearningEngine",
+    "SmartClientReadOnlyCloudLearningEngine",
     "UnavailableCloudLearningEngine",
     "ValueCloudCloudLearningEngine",
     "compatible_cloud_learning_methods",

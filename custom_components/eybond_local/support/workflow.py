@@ -42,7 +42,11 @@ def _has_smartess_collector_hint(
     smartess_profile_key: str = "",
     smartess_collector_version: str = "",
 ) -> bool:
-    """Return true when onboarding captured any SmartESS-side collector evidence."""
+    """Return true for collector descriptors, not proof of a particular app.
+
+    The historical field names also occur on SmartClient/SmartValue collectors.
+    They cannot select a cloud provider or a local inverter map.
+    """
 
     return any(
         str(value or "").strip()
@@ -107,18 +111,18 @@ def build_support_workflow_state(
         ):
             return _workflow_state(
                 level="smartess_pending",
-                level_label="SmartESS collector evidence",
-                summary="The collector exposed SmartESS metadata, but no local inverter driver is matched yet.",
+                level_label="Collector protocol metadata",
+                summary="The collector returned protocol metadata, but no local inverter driver is matched yet.",
                 next_action=(
                     "Create a support archive and send the ZIP file to the developer. "
-                    "SmartESS app support can still rely on a separate cloud-normalized "
-                    "identity even when the local descriptor is generic, missing, or incomplete."
+                    "The manufacturer's app may identify this inverter through its cloud "
+                    "even when the local descriptor is incomplete."
                 ),
                 primary_action="create_support_package",
                 step_1="Create a support archive.",
                 step_2="Send the ZIP file to the developer.",
-                step_3="Treat the local SmartESS descriptor as collector evidence only until a built-in mapping is confirmed.",
-                advanced_hint="Do not treat a generic or missing local SmartESS descriptor as proof that the inverter is unsupported in the SmartESS app.",
+                step_3="Treat the local protocol descriptor as collector evidence only until a built-in mapping is confirmed.",
+                advanced_hint="Protocol metadata alone does not identify the cloud app or prove a local register map. Select the app you actually use when collecting cloud evidence.",
             )
         return _workflow_state(
             level="unknown",

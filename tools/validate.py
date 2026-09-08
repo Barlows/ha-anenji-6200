@@ -262,6 +262,23 @@ _EXACT_TESTS: dict[str, tuple[str, ...]] = {
         "test_smartess_local.py",
         "test_collector_parameter_registry.py",
     ),
+    "custom_components/eybond_local/cloud_signing.py": (
+        "test_dessmonitor_cloud.py",
+        "test_smartess_cloud_probe.py",
+        "test_smartclient_cloud.py",
+    ),
+    "custom_components/eybond_local/smartclient_cloud.py": (
+        "test_smartclient_cloud.py",
+        "test_smartclient_learning.py",
+        "test_cloud_learning_engines.py",
+        "test_cloud_evidence_architecture.py",
+    ),
+    "custom_components/eybond_local/support/smartclient_learning.py": (
+        "test_smartclient_learning.py",
+        "test_cloud_learning_engines.py",
+        "test_cloud_local_history_correlation.py",
+        "test_cloud_evidence_architecture.py",
+    ),
     "custom_components/eybond_local/dessmonitor_cloud.py": (
         "test_dessmonitor_cloud.py",
         "test_dessmonitor_collection.py",
@@ -347,6 +364,7 @@ _EXACT_TESTS: dict[str, tuple[str, ...]] = {
     ),
     "custom_components/eybond_local/support/cloud_history_evidence.py": (
         "test_cloud_history_evidence.py",
+        "test_smartclient_learning.py",
         "test_smartess_history.py",
         "test_smartess_read_only.py",
         "test_dessmonitor_learning.py",
@@ -400,6 +418,7 @@ _EXACT_TESTS: dict[str, tuple[str, ...]] = {
     ),
     "custom_components/eybond_local/support/cloud_semantic_evidence.py": (
         "test_cloud_semantic_evidence.py",
+        "test_smartclient_learning.py",
         "test_cloud_local_coverage.py",
         "test_cloud_local_history_correlation.py",
         "test_dessmonitor_semantics.py",

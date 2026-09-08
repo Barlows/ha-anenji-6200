@@ -3,7 +3,7 @@
 Cloud learning is an optional evidence workflow. It is not a runtime telemetry
 transport and it never makes cloud data authoritative over local registers.
 
-Three typed concepts deliberately model different questions:
+Four typed concepts deliberately model different questions:
 
 - `CloudEvidenceProvider` identifies the cloud ecosystem that owns existing
   evidence for an entry.
@@ -59,6 +59,7 @@ observation is treated as a possible unproxied write and stops the run.
 | SmartESS API | Active correlation | Temporary protected shadow route | Bounded control probes under explicit consent | Proven local read/control candidates |
 | ValueCloud API | Active local learning | Temporary protected shadow route | Bounded control probes under explicit consent | Proven local read/control candidates |
 | DESSMonitor API | Read-only metadata collection | Never changed | None | Typed semantic hints, bounded history and redacted support evidence |
+| SmartClient / ShineMonitor | Read-only evidence | Never changed | None | Exact-identity generic PV data, setting descriptions, bounded history and raw evidence |
 | DESSMonitor API | Active correlation | Temporary protected shadow route | Bounded `ctrlDevice` probes under explicit consent | Exact post-action local-write evidence |
 
 DESSMonitor's [official API](https://api.dessmonitor.com/chapter5/ctrlDevice.html)
@@ -74,9 +75,40 @@ Read-only DESSMonitor analysis remains a separate engine. Selecting it never
 opens the route or calls `ctrlDevice`, and its result still cannot create an
 entity, activate a control, or write a device-scoped overlay.
 
+SmartClient is a separate API source within the EyeBond credential realm, not
+an alias for the SmartESS parser. The native SmartClient 3.48.8.0 login uses
+`auth` without `source` in its signed suffix; subsequent requests use `source=0`
+and `com.eybond.smartclient`. SmartESS/DESSMonitor retain their `authSource` /
+`source=1` profiles. Only the pure SHA-1 signing primitive is shared.
+
+The passive client permits six documented queries: collector devices, exact
+device information, latest generic readings, control-field descriptions,
+latest raw data, and one day of history. `ctrlDevice`, `queryDeviceCtrlValue`,
+collector commands, remote protocol execution and cross-source login retries
+are excluded. HTTPS hosts are pinned and redirects are rejected so signed
+session URLs cannot be forwarded to an unselected server. Response size, field
+count and daily rows are bounded; optional failures retain other evidence but
+authentication/identity failures abort. Passwords/session material are never
+part of the evidence record.
+
+Discovery must resolve one exact PN/SN/devcode/devaddr tuple. An ambiguous
+multi-device collector fails closed instead of selecting the first inverter.
+Raw packets remain opaque evidence. Export keeps only their hash, length,
+timestamp and provider validity flag, not Base64 payloads whose unknown binary
+layout could bypass support-archive identifier masking. Neither cloud field IDs
+nor raw bytes create a local map. Device-local history is normalized only with that exact
+device's cloud timezone. Otherwise it remains unaligned archive data. The
+read-only engine cannot enable controls; an authorized real-account test is
+still needed to verify the new source against a particular PV inverter.
+
+API shape references: [collector devices](https://api.shinemonitor.com/en/chapter4/queryCollectorDevices.html),
+[daily data](https://api.shinemonitor.com/en/chapter5/queryDeviceDataOneDay.html),
+[control descriptions](https://api.shinemonitor.com/en/chapter5/queryDeviceCtrlField.html),
+[raw data](https://api.shinemonitor.com/en/chapter5/queryDeviceLastRawData.html).
+
 ## Semantic hints are not register bindings
 
-The SmartESS and DESSMonitor adapters classify each normalized field through the shared
+The read-only source adapters classify each normalized field through the shared
 provider-neutral semantic-title catalog. A typed report records the observed
 title/value/unit, its source action, and one closed verdict:
 
@@ -116,7 +148,7 @@ or old coverage records fail closed and the review falls back to the original
 
 ## Typed local register observations
 
-Both read-only engines declare optional local-register evidence capabilities.
+The read-only engines declare optional local-register evidence capabilities.
 Before
 the cloud fetch, the runtime may ask the currently selected inverter driver for
 one bounded live snapshot. The driver — not the cloud adapter, options flow, or

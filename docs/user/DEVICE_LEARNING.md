@@ -136,6 +136,7 @@ The currently implemented method/source combinations are:
 |---|---:|---:|
 | SmartESS API | Yes | Yes |
 | DESSMonitor API | Yes | Yes |
+| SmartClient / ShineMonitor | Yes | No |
 | ValueCloud API | No | Yes |
 
 For active verification, the options flow shows only sources compatible with
@@ -146,13 +147,24 @@ even when the same credentials work with both. Home Assistant uses only the
 source selected for that run; it does not silently retry through another
 service.
 
+If you use **SmartClient** or **ShineMonitor**, select that exact source under
+**Analyze device data**. Use the account that owns this collector. Home Assistant
+downloads the readings, setting descriptions and available history. It also
+records the size, timestamp and fingerprint of the latest raw cloud packet,
+but not its contents: an unknown binary layout cannot be reliably anonymized.
+An unavailable optional API does not discard the other
+results. This is a support-data collection step, not an automatic inverter driver:
+setting names and cloud field IDs alone do not prove local register addresses.
+Save the Support Archive after the check so the maintainer can review the data.
+SmartClient active control verification is not available yet.
+
 The goal is to learn what the device supports without permanently changing inverter settings.
 
 If the safe learning path is not ready, the integration stops instead of continuing.
 
 For read-only analysis, Home Assistant signs in, verifies that the
 cloud device has the same collector PN, and downloads bounded device metadata
-and available daily sensor history. SmartESS and DESSMonitor can provide
+and available daily sensor history. SmartESS, DESSMonitor and SmartClient can provide
 history for this workflow. Home Assistant may then offer a separate background
 observation of five local snapshots over roughly 20 minutes so timestamped
 local samples can be compared with the cloud series. You may close the options
@@ -160,6 +172,11 @@ dialog while that observation runs and return later to see its status. This
 background step appears only when the selected source supplied usable
 timestamped history. It does not redirect the collector, send a control action,
 add an entity automatically, or claim a local register mapping.
+
+For SmartClient, history comparison additionally requires a timezone supplied
+by the cloud for that exact device. Without it, the history is kept in the
+archive but is not treated as time-aligned local evidence. Do not change your
+Home Assistant timezone to work around this.
 
 ## Review screen
 

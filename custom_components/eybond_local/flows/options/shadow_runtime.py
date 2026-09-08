@@ -166,6 +166,10 @@ class ShadowLearningRuntimeMixin:
         engine = self._control_discovery_learning_engine(coordinator)
         source_id = engine.source.source_id
         labels = {
+            "smartclient": self._tr(
+                "common.dynamic.cloud_learning_source_smartclient",
+                "SmartClient / ShineMonitor",
+            ),
             "smartess": self._tr(
                 "common.dynamic.cloud_learning_source_smartess",
                 "SmartESS API",
@@ -199,6 +203,8 @@ class ShadowLearningRuntimeMixin:
 
     def _control_discovery_cloud_provider_label(self, coordinator) -> str:
         engine = self._control_discovery_learning_engine(coordinator)
+        if engine.available and engine.source.source_id == "smartclient":
+            return engine.source.label
         provider = (
             engine.source.provider_id
             if engine.available
@@ -212,6 +218,8 @@ class ShadowLearningRuntimeMixin:
 
     def _control_discovery_cloud_app_label(self, coordinator) -> str:
         engine = self._control_discovery_learning_engine(coordinator)
+        if engine.available and engine.source.source_id == "smartclient":
+            return "SmartClient"
         provider = (
             engine.source.provider_id
             if engine.available

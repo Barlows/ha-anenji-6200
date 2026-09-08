@@ -29,6 +29,8 @@ _ALLOWED_SYNTHETIC_TOKENS = {
     "E5000020000000",
     "E50000200000000001000001",
     "E50000200000009777",
+    # Invented I300 stand-in for collector-only ValueCloud support readiness.
+    "I30000200000000001",
     # Donor corpus stand-ins used by contribution tests.
     "E5000025000005",
     # Generic fixture PNs.

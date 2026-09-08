@@ -47,6 +47,21 @@ class SupportAcquisitionReadinessTests(unittest.TestCase):
         self.assertTrue(readiness.proxy_capture.can_start)
         self.assertTrue(readiness.active_control_learning.can_start)
 
+    def test_valuecloud_collector_without_driver_keeps_proxy_capture(self) -> None:
+        from custom_components.eybond_local.metadata.collector_cloud_profile_catalog_loader import resolve_collector_cloud_provider
+        from custom_components.eybond_local.support.cloud_evidence_providers import cloud_evidence_provider_supported
+
+        provider = resolve_collector_cloud_provider("valuecloud_at")
+        self.assertEqual(provider, "valuecloud")
+        readiness = self._resolve(
+            collector_pn="I30000200000000001",
+            cloud_provider=provider,
+            cloud_provider_supported=cloud_evidence_provider_supported(provider),
+        )
+        self.assertFalse(readiness.inverter_identified)
+        self.assertTrue(readiness.proxy_capture.visible)
+        self.assertTrue(readiness.proxy_capture.can_start)
+
     def test_metadata_read_does_not_require_resolved_provider_or_cloud_route(self) -> None:
         readiness = self._resolve(
             cloud_provider="",

@@ -13,6 +13,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from .cloud_signing import password_signature, session_signature
 from .metadata.smartess_semantic_catalog_loader import (
     resolve_smartess_cloud_classification,
     resolve_smartess_cloud_entry,
@@ -286,7 +287,7 @@ def build_login_url(
         language=language,
     )
     salt = _salt_millis()
-    sign = _sha1_lower(salt + _sha1_lower(password) + action)
+    sign = password_signature(salt, password, action)
     return f"{_normalize_base_url(base_url)}?sign={sign}&salt={salt}{action}"
 
 
@@ -363,7 +364,7 @@ def build_signed_action_url(
         app_version=app_version,
     )
     salt = _salt_millis()
-    sign = _sha1_lower(salt + session.secret + session.token + base_action)
+    sign = session_signature(salt, session.secret, session.token, base_action)
     return (
         f"{_normalize_base_url(base_url)}?sign={sign}"
         f"&salt={salt}"

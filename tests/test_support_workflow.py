@@ -189,9 +189,10 @@ class SupportWorkflowTests(unittest.TestCase):
         )
 
         self.assertEqual(workflow["level"], "smartess_pending")
-        self.assertEqual(workflow["level_label"], "SmartESS collector evidence")
+        self.assertEqual(workflow["level_label"], "Collector protocol metadata")
         self.assertEqual(workflow["primary_action"], "create_support_package")
-        self.assertIn("SmartESS app support", workflow["next_action"])
+        self.assertIn("manufacturer's app", workflow["next_action"])
+        self.assertNotIn("SmartESS", " ".join(workflow.values()))
         self.assertIn("collector evidence", workflow["step_3"])
 
     def test_known_runtime_owner_without_live_inverter_counts_as_pending(self) -> None:

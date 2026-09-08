@@ -2363,7 +2363,7 @@ class HubWriteBlockerTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 ValueError,
-                r"illegal_data_value:max_ac_charge_current:.*Allowed profile range:",
+                r"illegal_data_value:max_ac_charge_current:.*Profile UI range:",
             ):
                 await hub.async_write_capability("max_ac_charge_current", 0)
 

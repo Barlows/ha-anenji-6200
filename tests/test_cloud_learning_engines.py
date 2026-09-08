@@ -211,11 +211,11 @@ class CloudLearningModelTests(unittest.TestCase):
         sources = supported_cloud_learning_sources()
         self.assertEqual(
             tuple(source.source_id for source in sources),
-            ("dessmonitor", "smartess", "valuecloud"),
+            ("dessmonitor", "smartclient", "smartess", "valuecloud"),
         )
         self.assertEqual(
             tuple(source.source_id for source in compatible_cloud_learning_sources("smartess")),
-            (LEARNING_SOURCE_DESSMONITOR, LEARNING_SOURCE_SMARTESS),
+            (LEARNING_SOURCE_DESSMONITOR, "smartclient", LEARNING_SOURCE_SMARTESS),
         )
         self.assertEqual(
             default_cloud_learning_source_for_method(
@@ -287,6 +287,10 @@ class CloudLearningModelTests(unittest.TestCase):
                 ),
                 CloudLearningSelection(
                     method_id=LEARNING_METHOD_READ_ONLY_EVIDENCE,
+                    source_id="smartclient",
+                ),
+                CloudLearningSelection(
+                    method_id=LEARNING_METHOD_READ_ONLY_EVIDENCE,
                     source_id="smartess",
                 ),
             ),
@@ -308,7 +312,7 @@ class CloudLearningModelTests(unittest.TestCase):
                     LEARNING_METHOD_READ_ONLY_EVIDENCE
                 )
             ),
-            ("dessmonitor", "smartess"),
+            ("dessmonitor", "smartess", "smartclient"),
         )
         self.assertEqual(
             default_cloud_learning_source_for_method_any_provider(
@@ -324,7 +328,7 @@ class CloudLearningModelTests(unittest.TestCase):
                     LEARNING_METHOD_READ_ONLY_EVIDENCE,
                 )
             ),
-            ("dessmonitor", "smartess"),
+            ("dessmonitor", "smartess", "smartclient"),
         )
         self.assertEqual(
             compatible_cloud_learning_methods("smartess"),
@@ -438,6 +442,12 @@ class CloudLearningModelTests(unittest.TestCase):
 
     def test_batch_one_preserves_the_existing_source_runner_matrix(self) -> None:
         expected = {
+            (LEARNING_METHOD_READ_ONLY_EVIDENCE, "smartclient"): (
+                LEARNING_METHOD_READ_ONLY_EVIDENCE,
+                "ReadOnlyEvidenceWorkflowRunner",
+                False,
+                False,
+            ),
             (LEARNING_METHOD_ACTIVE_CORRELATION, "dessmonitor"): (
                 LEARNING_METHOD_ACTIVE_CORRELATION,
                 "ActiveCorrelationWorkflowRunner",

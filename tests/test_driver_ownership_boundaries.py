@@ -208,6 +208,24 @@ class ModbusClassificationSemanticsGuard(unittest.TestCase):
         self.assertIsInstance(c.user_error, ValueError)
         self.assertIn("illegal_data_value:test_capability", str(c.user_error))
 
+    def test_code_3_does_not_claim_ui_bounds_are_device_limits(self) -> None:
+        for bounds in (
+            {"minimum": 0, "maximum": 700},
+            {"minimum": 0},
+            {"maximum": 700},
+            {},
+        ):
+            with self.subTest(bounds=bounds):
+                verdict = self._classify(3, divisor=10, **bounds)
+                message = str(verdict.user_error)
+                self.assertIn("Modbus exception 03", message)
+                self.assertIn("request format", message)
+                self.assertNotIn("as out of range", message)
+                self.assertNotIn("Allowed profile", message)
+                self.assertIsNone(verdict.blocker)
+        message = str(self._classify(3, divisor=10, minimum=0, maximum=700).user_error)
+        self.assertIn("Profile UI range: 0.0 to 70.0", message)
+
     def test_code_7_mode_restricted_when_unsafe_running(self) -> None:
         c = self._classify(7, unsafe_while_running=True, safe_operating_modes=("Standby",))
         self.assertEqual(c.blocker.code, "mode_restricted")

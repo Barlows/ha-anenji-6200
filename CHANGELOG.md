@@ -9,6 +9,12 @@ the GitHub release body should be rendered from the matching version section her
 
 ### Added
 
+- Added a separate **SmartClient / ShineMonitor** source for read-only device
+  analysis. It collects exact-identity cloud readings, setting descriptions,
+  available daily history and raw-packet fingerprints without changing the collector
+  endpoint or sending control commands. Existing SmartESS/DESSMonitor defaults
+  and active learning are unchanged; this source does not yet offer active
+  verification or a built-in map for previously unsupported PV inverters.
 - Added protocol-level fallback profiles for unknown SMG models reporting
   protocol 1, 2, or 11. Protocols 1 and 11 expose 30 compatible basic controls;
   the July 2024 GM6200 protocol-2 document supplies a separate 54-capability
@@ -68,6 +74,15 @@ the GitHub release body should be rendered from the matching version section her
 
 ### Fixed
 
+- Collector protocol hints no longer label SmartClient/SmartValue devices as
+  SmartESS merely because they expose the same metadata fields. Cloud source
+  selection remains explicit and independent of those hints.
+- Device-learning credentials preserve intentional password whitespace before
+  cloud authentication.
+- Modbus exception `03` no longer claims that a rejected write was necessarily
+  outside the inverter's allowed setting range. Diagnostics distinguish the
+  profile's UI bounds from the device's unexplained rejection; write validation
+  and confirmation behavior are unchanged.
 - Schema-driven Modbus polling now reports a failed cycle when every runtime
   block fails, instead of publishing an empty successful snapshot. Cached
   settings cannot hide the failure; valid partial telemetry remains available,

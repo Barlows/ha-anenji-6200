@@ -319,7 +319,7 @@ class AffectedValidationSelectionTests(unittest.TestCase):
             }.issubset(selected)
         )
 
-    def test_neutral_cloud_history_selects_both_provider_adapters(self) -> None:
+    def test_neutral_cloud_history_selects_all_read_only_source_adapters(self) -> None:
         selected = self._selected(
             "custom_components/eybond_local/support/cloud_history_evidence.py"
         )
@@ -327,6 +327,7 @@ class AffectedValidationSelectionTests(unittest.TestCase):
         self.assertTrue(
             {
                 "test_cloud_history_evidence.py",
+                "test_smartclient_learning.py",
                 "test_smartess_history.py",
                 "test_smartess_read_only.py",
                 "test_dessmonitor_learning.py",
@@ -335,6 +336,13 @@ class AffectedValidationSelectionTests(unittest.TestCase):
                 "test_cloud_evidence_architecture.py",
             }.issubset(selected)
         )
+
+    def test_shared_signing_selects_each_cloud_profile(self) -> None:
+        selected = self._selected("custom_components/eybond_local/cloud_signing.py")
+        self.assertTrue({
+            "test_smartclient_cloud.py", "test_smartess_cloud_probe.py",
+            "test_dessmonitor_cloud.py",
+        }.issubset(selected))
 
     def test_history_representability_selects_context_and_archive_boundaries(
         self,
