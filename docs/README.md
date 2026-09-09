@@ -8,6 +8,7 @@ release work; they are not required to use the integration.
 ## User guides
 
 - [Main README](../README.md) — installation, setup, connection settings, troubleshooting, and support flow
+- [Known cloud telemetry issue](../README.md#known-cloud-telemetry-issue) — cloud updates may pause while local readings continue; current status and useful support evidence
 - [Testing the unreleased main branch](../README.md#testing-the-unreleased-main-branch) — manual installation of a maintainer-requested test build
 - [Setup and Discovery](user/SETUP_AND_DISCOVERY.md) — collector-first setup, scan results, address confirmation, background discovery, and manual setup
 - [Runtime Detection and Entities](user/RUNTIME_AND_INVERTER.md) — driver detection, Fast and Full protocol checks, polling, controls, and entity availability

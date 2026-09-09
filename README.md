@@ -22,6 +22,8 @@ It reads live inverter data over your local network. On supported models it can 
 
 > **Note:** The integration is actively developed. Some inverters work fully, some work in read-only mode, and some need a Support Archive before support can be added.
 
+> **Known issue:** On some setups, vendor-cloud updates can pause while Home Assistant readings continue. This is under investigation; see [Known cloud telemetry issue](#known-cloud-telemetry-issue).
+
 ---
 
 ## Is this integration for my inverter?
@@ -50,9 +52,9 @@ cloud. See the full, always-current list in the
   owned runtime connection.
 - Reads inverter, battery, PV, load, and grid data locally.
 - Creates normal Home Assistant sensors, numbers, selects, switches, and buttons.
-- Keeps the vendor app working alongside Home Assistant by default, or lets you
-  point a collector at Home Assistant only — a reversible, explicit action that
-  is never done silently.
+- Keeps the collector's vendor-cloud endpoint by default for use alongside Home
+  Assistant, or lets you point it at Home Assistant only — a reversible, explicit
+  action that is never done silently.
 - Lets you choose control access:
   - **Read-only** — monitoring only.
   - **Auto** — enable verified controls when the device match is confident.
@@ -315,12 +317,34 @@ Use these issue templates:
 | Manual setup cannot verify the collector | Keep the setup flow open and retry with the collector reachable. For an inbound collector, enable background discovery and continue when its identified session appears. |
 | Only the collector device appears | Runtime detection has not identified the inverter yet. Check **Poll Context** and follow [Runtime Detection and Entities](docs/user/RUNTIME_AND_INVERTER.md); create a Support Archive if no driver binds. |
 | Sensors stay unavailable | Check that the collector and Home Assistant are on the same network and that the collector has stable Wi-Fi. |
-| Vendor app stopped showing live data | If you pointed the collector at Home Assistant only, that disconnects it from its cloud by design. Use **Restore previous collector endpoint** to bring the vendor app back. |
+| Vendor app stopped showing live data | Check the connection profile: **Home Assistant only** intentionally disconnects the cloud. If you still use **Cloud + Home Assistant**, see the [known cloud telemetry issue](#known-cloud-telemetry-issue) below. |
 | Vendor app works, but Home Assistant says unavailable | The collector may have reconnected to its cloud faster than it reconnected locally. Wait a few minutes and check Wi-Fi stability. |
 | A setting changes back immediately | The inverter rejected the value or did not confirm it. Check diagnostics, avoid changing the same setting from the vendor app at the same time, and retry after the collector is stable. |
 | Remote setup is needed | Use [Remote / NAT setup guide](docs/user/REMOTE_SETUP.md). Prefer VPN over public port forwarding when possible. |
 | Controls are missing | Keep **Auto** mode for normal use. If monitoring works but controls are missing, run device learning if offered, or create a Support Archive. Use **Full Control** only if you understand the risk. |
 | An unconfigured collector connects later | Enable the persistent **EyeBond Local — Discovery** entry. It publishes identified, unconfigured collector sessions without creating a placeholder device. |
+
+### Known cloud telemetry issue
+
+Some users report that, in **Cloud + Home Assistant**, the vendor app stops
+updating or shows the collector offline while local Home Assistant readings
+continue. Cloud updates may return on their own. This is a known issue under
+investigation; we have not yet confirmed its cause or a general fix.
+
+This is different from **Home Assistant only**, where cloud disconnection is
+intentional. Neither a longer polling interval nor a restart is a confirmed
+general fix for the intermittent problem.
+
+If it happens, create a [Support Archive](docs/user/SUPPORT_ARCHIVE.md) during
+the outage, before restarting or switching modes if possible. Add it to
+[issue #13](https://github.com/groove-max/ha-eybond-local/issues/13) or your
+existing support issue, together with:
+
+- the installed version and, for a manual test build, its commit;
+- when the problem started, your time zone, and the cloud's last data timestamp;
+- whether Home Assistant readings still change and when cloud updates resume.
+
+You do not need to delete the integration or reset the collector to report this.
 
 ---
 

@@ -183,12 +183,23 @@ the GitHub release body should be rendered from the matching version section her
 
 ### Docs
 
+- Documented the unresolved intermittent cloud-telemetry issue in both READMEs,
+  including how to distinguish it from intentional HA-only operation and what
+  evidence to collect during an outage.
 - Added safe instructions for manually testing the unreleased `main` branch
   without creating a tag or GitHub release.
 - Updated device-learning and proxy-capture guides for the current menu names,
   trust boundaries, and recovery behavior.
 - Added a Kevolt / Deye-compatible advanced-controls guide covering explicit
   opt-in, read-back guarantees, and deliberately excluded service operations.
+
+### Known issues
+
+- Intermittent vendor-cloud telemetry gaps remain under investigation on some
+  **Cloud + Home Assistant** setups, even while local readings continue. The
+  fixes above do not establish that these gaps are resolved; see the
+  [README guidance](https://github.com/groove-max/ha-eybond-local/blob/main/README.md#known-cloud-telemetry-issue) and
+  [issue #13](https://github.com/groove-max/ha-eybond-local/issues/13).
 
 ## [0.3.0-beta.4] - 2026-08-25
 
