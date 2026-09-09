@@ -14,7 +14,13 @@ from .common import (
 
 
 class LinkCloudRoutesMixin:
-    """Methods owned by LinkCloudRoutesMixin."""
+    """Own temporary routes, not the primary callback listener's lifecycle.
+
+    Startup failures propagate to the cloud-tool transaction after releasing
+    the temporary resources. They must not change primary listener diagnostics:
+    a failed auxiliary bind/upstream connection does not stop that listener,
+    and marking it as failed would suppress callback-based endpoint recovery.
+    """
 
     async def async_start_proxy_capture_route(
         self,
@@ -83,11 +89,8 @@ class LinkCloudRoutesMixin:
                 handler=handler.handle_client,
             )
             await route.start()
-            self._proxy_capture_handler = handler
-            self._proxy_capture_route = route
             await self._set_route_lease_state(normalized_owner_id, "running")
-        except BaseException as exc:
-            self._record_listener_error(exc)
+        except BaseException:
             try:
                 if route is not None:
                     await route.stop()
@@ -101,6 +104,9 @@ class LinkCloudRoutesMixin:
                         owner_id=normalized_owner_id,
                     )
             raise
+        # Publish only after every fallible/awaited startup step has succeeded.
+        self._proxy_capture_handler = handler
+        self._proxy_capture_route = route
 
     async def async_start_shadow_learning_route(
         self,
@@ -159,8 +165,8 @@ class LinkCloudRoutesMixin:
                 handler=handler.handle_client,
             )
             await route.start()
-        except Exception as exc:
-            self._record_listener_error(exc)
+            await self._set_route_lease_state(normalized_owner_id, "running")
+        except BaseException:
             try:
                 if route is not None:
                     await route.stop()
@@ -176,7 +182,6 @@ class LinkCloudRoutesMixin:
             raise
         self._shadow_learning_handler = handler
         self._shadow_learning_route = route
-        await self._set_route_lease_state(normalized_owner_id, "running")
 
     async def async_stop_proxy_capture_route(
         self,

@@ -112,6 +112,20 @@ collector/cloud handshake. Baseline sessions and sockets whose observed wire
 shape cannot belong to the transparent route remain available to their normal
 owners. Unregistering the lease releases this reservation.
 
+Temporary proxy/shadow startup does not own the primary callback listener's
+health state. A failed auxiliary bind, upstream connection, or cancelled startup
+must release the temporary handler/route/lease and propagate the error to the
+cloud-tool transaction without calling the primary listener's error recorder.
+Otherwise a healthy primary listener would stop issuing callback requests and
+could not verify endpoint restoration. A successful temporary-route retry must
+not clear an actual primary-listener error either. Only the primary lifecycle
+changes that status. Route/handler references are published only after all
+awaited startup steps succeed, including the lease's transition to `running`.
+`test_cloud_route_failures_preserve_primary_listener_and_callback_recovery`
+covers both cloud tools, failure stages, cancellation, retry and callback
+suppression while a temporary route is active; a separate primary-bind failure
+regression keeps genuine listener failures visible.
+
 ## Session registry owns identity
 
 `connection/session_registry.py` (`CallbackSessionRegistry`) is the single object

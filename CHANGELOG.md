@@ -74,6 +74,10 @@ the GitHub release body should be rendered from the matching version section her
 
 ### Fixed
 
+- A failed temporary proxy or cloud-learning connection no longer disables
+  normal collector callback recovery. Auxiliary port conflicts and upstream
+  failures preserve the primary listener's status; cancelled cloud-route
+  startup also releases its resources and ownership before a retry.
 - Collector protocol hints no longer label SmartClient/SmartValue devices as
   SmartESS merely because they expose the same metadata fields. Cloud source
   selection remains explicit and independent of those hints.

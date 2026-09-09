@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 from pathlib import Path
 import subprocess
 import sys
@@ -67,6 +68,7 @@ if str(REPO_ROOT) not in sys.path:
 
 
 from custom_components.eybond_local.collector.discovery import DiscoveryProbeResult
+from custom_components.eybond_local.collector.transport.common import CollectorListenerBindError
 from custom_components.eybond_local.collector.session_identity_negotiator import (
     ExactSessionIdentityResult,
     NEGOTIATION_IDENTIFIED,
@@ -1103,6 +1105,120 @@ class RuntimeLinkManagerTests(unittest.TestCase):
                 )
                 self.assertEqual(manager.route_lease.owner_id, "shadow-owner")
                 await manager.async_stop_shadow_learning_route(owner_id="shadow-owner")
+
+        asyncio.run(_run())
+
+    def test_cloud_route_failures_preserve_primary_listener_and_callback_recovery(self) -> None:
+        """Temporary route failures cannot poison (or heal) the primary listener."""
+
+        async def _run(mode, stage, cancelled, primary_ready) -> None:
+            manager = self._build_manager()
+            manager._started = primary_ready
+            manager._listener_status = "listening" if primary_ready else "error"
+            manager._listener_last_error = "" if primary_ready else "primary_bind_failed"
+            manager.set_reverse_discovery_enabled(True)
+            before = (manager.listener_status, manager._listener_last_error)
+            if cancelled:
+                failure = asyncio.CancelledError()
+            elif stage == "listener":
+                failure = CollectorListenerBindError(
+                    "0.0.0.0", 18899, OSError(errno.EADDRINUSE, "Address already in use")
+                )
+            else:
+                failure = ConnectionError("temporary_route_start_failed")
+            handler = types.SimpleNamespace(
+                start=AsyncMock(side_effect=failure if stage == "upstream" else None),
+                stop=AsyncMock(),
+                handle_client=AsyncMock(),
+            )
+            route = types.SimpleNamespace(
+                start=AsyncMock(side_effect=failure if stage == "listener" else None),
+                stop=AsyncMock(),
+            )
+            set_state = AsyncMock(
+                wraps=manager._set_route_lease_state,
+                side_effect=failure if stage == "lease_state" else None,
+            )
+            connect = AsyncMock(return_value=True)
+            arguments = dict(
+                owner_id="test-owner", entry_id="entry-1",
+                collector_ip="192.168.1.14", expected_session_protocol="at_text",
+                listen_port=18899, upstream_host="cloud.example", upstream_port=18899,
+                output_path=Path("unused-cloud-route-test.jsonl"),
+            )
+            if mode == "shadow_learning":
+                arguments["seed"] = object()
+            start = getattr(manager, f"async_start_{mode}_route")
+            stop = getattr(manager, f"async_stop_{mode}_route")
+            with patch(
+                "custom_components.eybond_local.runtime.link.cloud_routes.InProcessProxyCaptureHandler",
+                return_value=handler,
+            ), patch(
+                "custom_components.eybond_local.runtime.link.cloud_routes.InProcessFailClosedShadowProxyHandler",
+                return_value=handler,
+            ), patch(
+                "custom_components.eybond_local.runtime.link.cloud_routes.SharedProxyCaptureRoute",
+                return_value=route,
+            ), patch.object(manager, "_set_route_lease_state", set_state), patch.object(
+                manager, "_async_callback_connect_within_causality", connect,
+            ):
+                with self.assertRaises(type(failure)) as caught:
+                    await start(**arguments)
+                self.assertIs(caught.exception, failure)
+                self.assertIsNone(manager.route_lease)
+                self.assertIsNone(getattr(manager, f"_{mode}_handler"))
+                self.assertIsNone(getattr(manager, f"_{mode}_route"))
+                handler.stop.assert_awaited_once()
+                self.assertEqual(route.stop.await_count, int(stage != "upstream"))
+                self.assertEqual((manager.listener_status, manager._listener_last_error), before)
+                self.assertEqual(await manager.async_try_connect(timeout=0.1), primary_ready)
+                self.assertEqual(connect.await_count, int(primary_ready))
+
+                # Clearing the auxiliary failure permits a retry, but neither
+                # failure nor success may overwrite the primary lifecycle state.
+                handler.start.side_effect = None
+                route.start.side_effect = None
+                set_state.side_effect = None
+                await start(**arguments)
+                self.assertEqual(manager.route_lease.state, "running")
+                self.assertIs(getattr(manager, f"_{mode}_handler"), handler)
+                self.assertIs(getattr(manager, f"_{mode}_route"), route)
+                self.assertFalse(await manager.async_try_connect(timeout=0.1))
+                self.assertEqual(connect.await_count, int(primary_ready))
+                await stop(owner_id="test-owner")
+                self.assertIsNone(manager.route_lease)
+                self.assertEqual((manager.listener_status, manager._listener_last_error), before)
+                self.assertEqual(await manager.async_try_connect(timeout=0.1), primary_ready)
+                self.assertEqual(connect.await_count, 2 * int(primary_ready))
+
+        for mode in ("proxy_capture", "shadow_learning"):
+            for stage in ("upstream", "listener", "lease_state"):
+                for cancelled in (False, True):
+                    for primary_ready in (False, True):
+                        with self.subTest(
+                            mode=mode, stage=stage, cancelled=cancelled, primary_ready=primary_ready,
+                        ):
+                            asyncio.run(_run(mode, stage, cancelled, primary_ready))
+
+    def test_primary_listener_start_failure_still_blocks_callback(self) -> None:
+        """The isolation rule must not hide an actual primary-listener failure."""
+
+        async def _run() -> None:
+            manager = self._build_manager()
+            failure = CollectorListenerBindError(
+                "0.0.0.0", 8899, OSError(errno.EADDRINUSE, "Address already in use")
+            )
+            with patch.object(manager, "_rebuild_if_server_ip_changed", AsyncMock()), patch.object(
+                manager, "_start_all_transports", AsyncMock(side_effect=failure),
+            ), patch.object(manager, "_stop_all_transports", AsyncMock()) as cleanup:
+                with self.assertRaises(CollectorListenerBindError) as caught:
+                    await manager.async_start()
+                self.assertIs(caught.exception, failure)
+                cleanup.assert_awaited_once()
+            self.assertFalse(manager._started)
+            self.assertEqual(manager.listener_status, "error")
+            self.assertEqual(manager._listener_last_error, str(failure.error))
+            self.assertFalse(manager._callback_listener_ready())
 
         asyncio.run(_run())
 
