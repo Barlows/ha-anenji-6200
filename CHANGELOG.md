@@ -7,6 +7,8 @@ the GitHub release body should be rendered from the matching version section her
 
 ## [Unreleased]
 
+## [0.3.0-beta.5] - 2026-09-09
+
 ### Added
 
 - Added a separate **SmartClient / ShineMonitor** source for read-only device
