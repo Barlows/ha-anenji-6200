@@ -573,9 +573,7 @@ class SmgModbusDriver(ModbusWriteErrorMixin, InverterDriver):
         output_power = values.get("output_power")
         rated_power = inverter.details.get("rated_power") or values.get("rated_power")
         if isinstance(output_power, int):
-            if output_power < 0:
-                values.pop("output_power", None)
-            elif output_power >= 65532:
+            if output_power >= 65532:
                 values.pop("output_power", None)
             elif isinstance(rated_power, int) and rated_power > 0 and output_power > int(rated_power * 1.2):
                 values.pop("output_power", None)
