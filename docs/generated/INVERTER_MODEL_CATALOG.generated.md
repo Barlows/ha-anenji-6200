@@ -76,6 +76,7 @@ Runtime descriptors with no specific commercial model record. These are generic 
 | `pi30_smartess_0925_compatible` | pi30 | pi30_default_full | full | no |
 | `pi30_smartess_query_0925_compatible` | pi30 | pi30_default_full | full | no |
 | `pi41_family` | pi30 | pi41_full | full | no |
+| `smg_6200_fw7904` | modbus_smg | anenji_op2_6200_full | full | no |
 | `smg_variant_4200` | modbus_smg | smg_variant_4200_full | full | no |
 | `solis_esinv_family` | modbus_catalog | solis_esinv_read_only | partial | yes |
 
