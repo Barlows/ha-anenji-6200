@@ -73,7 +73,7 @@
       "provenance": "doc_backed",
       "note": "SMG config register 338; the vendor cloud writes it on this model (shadow-learning capture, 2026-06-20).",
       "change_summary": "Enables automatic mains output switching.",
-      "support_notes": "Local write test (2026-07-20): the write succeeds on hardware, but the integration previously raised a false write_not_confirmed error due to a type mismatch (bool vs the enum-decoded string readback). Root cause understood; fix not yet reapplied.",
+      "support_notes": "Local write test (2026-07-20): the write succeeds on hardware, but the integration raises a false write_not_confirmed error due to a type mismatch (bool vs the enum-decoded string readback). A choices-based fix was tried and deliberately reverted; known issue, not being pursued.",
       "enabled_default": true
     },
     {
