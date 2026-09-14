@@ -214,7 +214,7 @@ def build_proxy_capture_overview(
         return ProxyCaptureOverview(
             status="blocked",
             status_label=_status_label("blocked"),
-            summary="The current collector callback endpoint is not available yet.",
+            summary="The collector's current server address has not been read yet.",
             blocking_reason="current_endpoint_unavailable",
             can_start=False,
             can_stop=False,

@@ -158,6 +158,12 @@ setting names and cloud field IDs alone do not prove local register addresses.
 Save the Support Archive after the check so the maintainer can review the data.
 SmartClient active control verification is not available yet.
 
+You can finish this analysis even if Home Assistant has identified only the
+collector, not the inverter. Cloud readings and setting descriptions are kept
+for support; comparison with existing local sensors is skipped until a local
+driver is available. A failed check also records its source and workflow stage
+in the Support Archive, without saving your cloud password.
+
 The goal is to learn what the device supports without permanently changing inverter settings.
 
 If the safe learning path is not ready, the integration stops instead of continuing.

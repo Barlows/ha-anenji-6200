@@ -395,6 +395,16 @@ class ShadowLearningRuntimeMixin:
                     "reason": str(discovery.get("reason") or ""),
                     "preflight": dict(state.get("preflight") or {}),
                 }
+        # A late failure must also be recorded when a successful provider
+        # result was already published; retain that result as partial evidence.
+        discovery = state.get("discovery")
+        if isinstance(discovery, dict) and discovery.get("status") == "error":
+            diagnostics = discovery.get("diagnostics")
+            if isinstance(diagnostics, dict):
+                orchestration["failure"] = {
+                    "reason": str(discovery.get("reason") or ""),
+                    **diagnostics,
+                }
         correlation = orchestration.get("correlation")
         if not isinstance(correlation, dict):
             correlation = {}

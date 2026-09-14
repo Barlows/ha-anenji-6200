@@ -167,17 +167,43 @@ async def test_options_flow_entry_is_not_loaded_requirement(
 
 
 @pytest.mark.parametrize("provider", ["smartess", ""])
-async def test_smartclient_read_only_source_reaches_credentials_without_inverter(
-    hass: HomeAssistant, collector_entry: MockConfigEntry, provider: str,
+async def test_smartclient_read_only_analysis_completes_without_inverter(
+    hass: HomeAssistant, collector_entry: MockConfigEntry, provider: str, monkeypatch,
 ) -> None:
-    """Real HA selectors offer SmartClient even before local driver detection."""
+    """Real HA completes collector-only analysis, not just source selection."""
 
     from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from custom_components.eybond_local.models import RuntimeSnapshot
+    from custom_components.eybond_local.smartclient_cloud import SmartClientEvidence, SmartClientIdentity
+    from custom_components.eybond_local.support import smartclient_learning
+    from custom_components.eybond_local.support.package import build_shadow_learning_runtime_values
+
+    snapshot = RuntimeSnapshot(connected=True)
+
+    def publish(**kwargs):
+        values = build_shadow_learning_runtime_values(**kwargs)
+        snapshot.values.update(values)
+        return values["shadow_learning_artifacts"]
+
+    bundle = SmartClientEvidence(
+        identity=SmartClientIdentity(SYNTHETIC_COLLECTOR_PN, "SYNTHETIC", 567, 1),
+        telemetry=({"field_id": "2", "title": "PV Voltage", "unit": "V", "value": "220.5"},),
+        controls=({"field_id": "boot", "title": "Startup", "unit": "", "choices": []},),
+        device_info={}, history={}, raw_packet={}, unavailable_actions=(), action_errors=(),
+        fetched_at="2026-09-09T09:00:00+00:00",
+    )
+    monkeypatch.setattr(smartclient_learning, "fetch_read_only_evidence", lambda **_kwargs: bundle)
+    start_route, stop_route = AsyncMock(), AsyncMock()
 
     collector_entry.runtime_data = SimpleNamespace(
-        data=SimpleNamespace(values={}),
+        data=snapshot,
         cloud_evidence_provider=provider,
         smartess_collector_pn=SYNTHETIC_COLLECTOR_PN,
+        publish_shadow_learning_artifacts=publish,
+        async_start_shadow_learning=start_route,
+        async_stop_shadow_learning=stop_route,
     )
     before_data = dict(collector_entry.data)
     before_options = dict(collector_entry.options)
@@ -204,6 +230,27 @@ async def test_smartclient_read_only_source_reaches_credentials_without_inverter
     assert result["step_id"] == "shadow_learning_credentials"
     assert result.get("errors") in (None, {})
     assert "SmartClient" in str(result["description_placeholders"])
+    result = await hass.config_entries.options.async_configure(
+        flow_id, user_input={"username": "synthetic-user", "password": "synthetic-secret"},
+    )
+    assert result["type"] is FlowResultType.SHOW_PROGRESS
+    await hass.async_block_till_done()
+    result = await hass.config_entries.options.async_configure(flow_id)
+    if result["type"] is FlowResultType.SHOW_PROGRESS_DONE:
+        result = await hass.config_entries.options.async_configure(flow_id)
+    assert result["step_id"] == "shadow_learning_review"
+    orchestration = snapshot.values["shadow_learning_orchestration"]
+    assert orchestration["source"] == "smartclient"
+    assert orchestration["metadata_field_count"] == 2
+    assert orchestration["planned_write_count"] == 0
+    evidence = orchestration["metadata_evidence"]
+    assert evidence["semantic_report"]["read_candidate_count"] > 0
+    assert "local_coverage" not in evidence
+    assert len(evidence["control_fields"]) == 1
+    assert "synthetic-user" not in str(snapshot.values)
+    assert "synthetic-secret" not in str(snapshot.values)
+    start_route.assert_not_awaited()
+    stop_route.assert_not_awaited()
     assert collector_entry.data == before_data
     assert collector_entry.options == before_options
     hass.config_entries.options.async_abort(flow_id)

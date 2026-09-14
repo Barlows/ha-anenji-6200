@@ -121,7 +121,7 @@
       "proxy_capture_blocking_collector_control_disabled": "обраний режим керування зараз не дозволяє зміни колектора",
       "proxy_capture_blocking_collector_not_connected": "колектор не підключений",
       "proxy_capture_blocking_target_endpoint_unavailable": "адреса Home Assistant для захоплення поки недоступна",
-      "proxy_capture_blocking_current_endpoint_unavailable": "поточна адреса зворотного підключення колектора поки невідома",
+      "proxy_capture_blocking_current_endpoint_unavailable": "ще не вдалося прочитати поточну адресу сервера, до якого підключається колектор",
       "proxy_capture_blocking_session_active": "сеанс захоплення вже запущено",
       "proxy_capture_blocking_operating_profile_requires_cloud_and_ha": "перед запуском операції перейдіть до профілю «Хмара + Home Assistant»",
       "proxy_capture_blocking_transparent_wire_incompatible": "прозоре захоплення недоступне: колектор і хмара використовують різні протоколи",

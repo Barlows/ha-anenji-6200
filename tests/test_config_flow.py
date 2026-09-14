@@ -9787,6 +9787,12 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
         from custom_components.eybond_local.support import smartclient_learning
 
         coordinator = self._RunnerCoordinator(ready=False)
+        # Real collector-only RuntimeSnapshot has a typed empty frame, not a
+        # missing telemetry attribute. Recognized cloud fields must not require
+        # a local driver (issue #23).
+        coordinator.effective_profile_name = ""
+        coordinator.effective_register_schema_name = ""
+        coordinator.data.telemetry = TypedTelemetryFrame(driver_key="", points=())
         options = self._runner_options_flow(coordinator)
         options._shadow_learning_state.update(
             {"wizard_method": LEARNING_METHOD_READ_ONLY_EVIDENCE, "wizard_source": "smartclient"}
@@ -9804,9 +9810,60 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(coordinator.published)
         self.assertEqual(options._shadow_learning_state["discovery"]["status"], "ok")
         self.assertEqual(options._shadow_learning_state["cloud_metadata"]["source"], "smartclient")
+        self.assertNotIn("local_coverage", options._shadow_learning_state["cloud_metadata"])
+        self.assertGreater(
+            options._shadow_learning_state["cloud_metadata"]["semantic_report"]["read_candidate_count"], 0
+        )
         self.assertNotIn("demo@example.com", str(coordinator.published))
         self.assertNotIn("wizard_credentials", str(coordinator.published))
         self.assertEqual(options._shadow_learning_state.get("overlay", {}), {})
+
+    def test_cloud_coverage_drops_stale_driver_report_without_local_driver(self) -> None:
+        from custom_components.eybond_local.flows.options.shadow_run import _metadata_with_local_coverage
+
+        evidence = {"source": "smartclient", "local_coverage": {"driver_key": "smg"}}
+        for telemetry in (None, TypedTelemetryFrame(driver_key="", points=())):
+            with self.subTest(telemetry=telemetry):
+                enriched = _metadata_with_local_coverage(evidence, telemetry)
+                self.assertNotIn("local_coverage", enriched)
+                self.assertEqual(enriched["source"], "smartclient")
+                self.assertIn("local_coverage", evidence)
+
+    async def test_cloud_learning_failure_exports_phase_without_exception_secrets(self) -> None:
+        for partial_result in (False, True):
+            with self.subTest(partial_result=partial_result):
+                coordinator = self._RunnerCoordinator(ready=False)
+                options = self._runner_options_flow(coordinator)
+                options._shadow_learning_state.update({
+                    "wizard_method": LEARNING_METHOD_READ_ONLY_EVIDENCE,
+                    "wizard_source": "smartclient",
+                    "progress": {"stage": "building", "fraction": 0.82},
+                })
+                if partial_result:
+                    options._shadow_learning_state["orchestration"] = {
+                        "source": "smartclient", "metadata_only": True,
+                        "metadata_evidence": {"telemetry_fields": [{"title": "PV Voltage"}]},
+                    }
+                with (
+                    patch.object(
+                        options, "_async_execute_control_discovery",
+                        new=AsyncMock(side_effect=ValueError("https://private.invalid/?password=cloud-secret")),
+                    ),
+                    self.assertLogs("custom_components.eybond_local.flows.options.shadow_run", level="ERROR") as logs,
+                ):
+                    await options._async_run_control_discovery()
+                artifact = coordinator.published[-1]["orchestration"]
+                self.assertEqual(artifact["failure"], {
+                    "reason": "control_discovery_failure_generic",
+                    "learning_source": "smartclient", "stage": "building",
+                    "exception_category": "ValueError",
+                })
+                if partial_result:
+                    self.assertIn("metadata_evidence", artifact)
+                self.assertNotIn("private.invalid", str(coordinator.published) + str(logs.output))
+                self.assertNotIn("cloud-secret", str(coordinator.published) + str(logs.output))
+                self.assertEqual(coordinator.started, [])
+                self.assertEqual(coordinator.stopped, [])
 
     async def test_dessmonitor_runner_records_typed_local_semantic_coverage(self) -> None:
         coordinator = self._RunnerCoordinator(ready=False)

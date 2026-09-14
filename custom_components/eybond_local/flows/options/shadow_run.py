@@ -68,6 +68,10 @@ def _metadata_with_local_coverage(
     """Attach exact typed local evidence without minting cloud bindings."""
 
     detached = dict(metadata_evidence)
+    # Coverage belongs to the current local driver, not to the cloud source or
+    # an earlier run. Collector-only entries have a valid empty telemetry frame
+    # but no driver against which semantic presence can be checked.
+    detached.pop("local_coverage", None)
     if (
         type(local_register_snapshot) is LocalRegisterSnapshot
         and type(expected_collector_pn) is str
@@ -94,7 +98,11 @@ def _metadata_with_local_coverage(
     semantic_report = CloudSemanticEvidenceReport.from_record(
         detached.get("semantic_report")
     )
-    if semantic_report is None or type(telemetry) is not TypedTelemetryFrame:
+    if (
+        semantic_report is None
+        or type(telemetry) is not TypedTelemetryFrame
+        or not telemetry.driver_key
+    ):
         return detached
     detached["local_coverage"] = build_cloud_local_coverage_report(
         semantic_report,
@@ -617,6 +625,24 @@ class ShadowLearningRunMixin:
             self._shadow_learning_state["discovery"] = {
                 "status": "error",
                 "reason": failure_reason,
+                # Keep workflow-owned context in the archive too, not only in
+                # the Core log. Never persist exception text, request URLs or
+                # arbitrary provider attributes (which may contain credentials).
+                "diagnostics": {
+                    "learning_source": source_id,
+                    "stage": str(progress.get("stage") or "unknown"),
+                    "exception_category": next(
+                        (
+                            error_type.__name__
+                            for error_type in (
+                                TimeoutError, ConnectionError, ValueError,
+                                TypeError, RuntimeError,
+                            )
+                            if isinstance(exc, error_type)
+                        ),
+                        "Exception",
+                    ),
+                },
             }
             self._shadow_learning_state["status"] = self._tr(
                 "common.dynamic.control_discovery_failed",

@@ -7,6 +7,17 @@ the GitHub release body should be rendered from the matching version section her
 
 ## [Unreleased]
 
+### Fixed
+
+- Read-only cloud analysis now retains its results for collector-only entries
+  with no local inverter driver. Recognized cloud readings no longer cause the
+  result-building step to fail while checking local sensor coverage (#23).
+  Failure artifacts now also include the selected source, workflow stage and
+  exception category without exception messages or credentials.
+- Proxy-capture guidance now distinguishes the collector's configured server
+  address from Home Assistant's callback address (#43). Capture still requires
+  a connected collector and a known endpoint that can be safely restored.
+
 ## [0.3.0-beta.5] - 2026-09-09
 
 ### Added

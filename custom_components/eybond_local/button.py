@@ -399,7 +399,7 @@ class EybondToolingButton(CoordinatorEntity[EybondLocalCoordinator], ButtonEntit
             if overview.blocking_reason == "target_endpoint_unavailable":
                 return "Proxy target endpoint is not available."
             if overview.blocking_reason == "current_endpoint_unavailable":
-                return "Current collector callback endpoint is not available yet."
+                return "The collector's current server address has not been read yet."
             if overview.blocking_reason == "session_active":
                 return "Proxy capture session is already active."
             return "Proxy capture is not ready."
