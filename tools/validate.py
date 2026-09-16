@@ -133,6 +133,11 @@ _FAMILY_TESTS: tuple[tuple[str, tuple[str, ...]], ...] = (
 # these entries prevent a cheap ``affected`` run from silently missing a typed
 # boundary or neutral wire contract.
 _EXACT_TESTS: dict[str, tuple[str, ...]] = {
+    "custom_components/eybond_local/support/masking.py": (
+        "test_support_masking.py", "test_support_package.py", "test_support_bundle.py",
+        "test_proxy_trace.py", "test_diagnostic_export.py",
+        "test_shadow_learning_support_package.py",
+    ),
     "custom_components/eybond_local/payload/short_ascii_mppt.py": (
         "test_short_ascii_mppt.py",
     ),

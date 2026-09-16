@@ -18,6 +18,15 @@ import re
 _NUMERIC_IDENTIFIER_RE = re.compile(r"(?<!\d)(\d{10,})(?!\d)")
 _NUMERIC_IDENTIFIER_BYTES_RE = re.compile(rb"(?<!\d)(\d{10,})(?!\d)")
 
+# These existing evidence fields explicitly contain encoded wire bytes, not
+# decimal serials. Keep this allowlist narrow: an arbitrary *_hex name is not
+# sufficient to bypass the conservative text policy.
+_WIRE_HEX_FIELDS = frozenset({
+    "response_hex", "raw_response_hex", "payload_hex", "raw_payload_hex",
+    "frame_hex", "chunk_hex", "remaining_hex", "buffer_hex", "raw_hex",
+    "command_hex",
+})
+
 
 def mask_identifier_token(token: str) -> str:
     if len(token) <= 4:
@@ -31,16 +40,33 @@ def mask_numeric_identifiers(value):
     if isinstance(value, dict):
         # Keys are masked too: a PN/serial used as a mapping key would
         # otherwise leave the artifact unmasked.
-        return {
-            (mask_numeric_identifiers(key) if isinstance(key, str) else key): (
-                mask_numeric_identifiers(item)
-            )
-            for key, item in value.items()
-        }
+        masked = {}
+        for key, item in value.items():
+            masked_key = mask_numeric_identifiers(key) if isinstance(key, str) else key
+            if key in _WIRE_HEX_FIELDS and isinstance(item, str):
+                masked[masked_key] = _mask_string(item, wire_hex=True)
+            elif key == "responses_hex" and isinstance(item, dict):
+                # A command -> hex reply map. Context applies to its scalar
+                # replies only, never to keys or unexpected nested metadata.
+                masked[masked_key] = {
+                    mask_numeric_identifiers(command): (
+                        _mask_string(reply, wire_hex=True) if isinstance(reply, str)
+                        else mask_numeric_identifiers(reply)
+                    )
+                    for command, reply in item.items()
+                }
+            else:
+                masked[masked_key] = mask_numeric_identifiers(item)
+        return masked
     if isinstance(value, list):
         return [mask_numeric_identifiers(item) for item in value]
     if not isinstance(value, str):
         return value
+    return _mask_string(value)
+
+
+def _mask_string(value: str, *, wire_hex: bool = False) -> str:
+    """Mask decoded ASCII identifiers, not the digits encoding binary data."""
 
     # Hex blobs FIRST: an ASCII-encoded identifier inside hex is itself a
     # long run of decimal characters ("E50..." becomes "4535303030..."), so
@@ -66,6 +92,10 @@ def mask_numeric_identifiers(value):
             )
             if redacted != raw:
                 return redacted.hex()
+            if wire_hex:
+                # Bytes such as 00 01 02... become a long decimal-looking
+                # string when hex-encoded. They are not a textual identifier.
+                return value
             # No embedded ASCII identifier — fall through to text masking:
             # a bare decimal serial ("92632500000001") is also valid hex,
             # and returning it untouched would leak it.

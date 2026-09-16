@@ -14,6 +14,14 @@ from tools.validate import affected_test_files
 
 
 class AffectedValidationSelectionTests(unittest.TestCase):
+    def test_support_masking_selects_archive_and_wire_export_regressions(self) -> None:
+        selected = self._selected("custom_components/eybond_local/support/masking.py")
+        self.assertTrue({
+            "test_support_masking.py", "test_support_package.py", "test_support_bundle.py",
+            "test_proxy_trace.py", "test_diagnostic_export.py",
+            "test_shadow_learning_support_package.py",
+        }.issubset(selected))
+
     def test_mppt_decoder_tool_and_wire_codec_select_offline_semantics_tests(self) -> None:
         for path in (
             "custom_components/eybond_local/payload/short_ascii_mppt.py",

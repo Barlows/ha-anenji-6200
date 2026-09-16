@@ -28,6 +28,12 @@ the GitHub release body should be rendered from the matching version section her
 
 ### Fixed
 
+- Support archives preserve numeric-looking hex sequences in explicitly typed
+  wire-evidence fields instead of replacing their bytes with identifier masks.
+  Embedded ASCII identifiers remain masked. Short-ASCII archive creation and
+  authenticated download are covered for successful, partial, malformed and
+  offline reads through real Home Assistant.
+
 - Retired collector readers can no longer deliver buffered replies, identity
   observations or read errors to a replacement connection during slow socket
   shutdown. Auxiliary read results also retain their original session owner.
