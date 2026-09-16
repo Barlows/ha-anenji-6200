@@ -26,6 +26,15 @@ model/field semantics and optional-data expiry remain separate work before
 user-facing support. Normal connections keep their existing grammar until an
 explicit auxiliary read is requested.
 
+Ordinary framed, AT-management and raw-payload sends also pin their physical
+writer and run epoch before waiting for request/write locks. `SocketSendOwner`
+checks ownership again after bootstrap/spacing and before publishing replies;
+an old command cannot resume on a successor. `collector_session_changed` is an
+ownership failure, not a command to reconnect or replay a write. A reply that
+completed before that same peer closed remains valid if no successor exists.
+Disconnect-failed futures are consumed even if a queued write never reached
+its response wait. These rules do not select an auxiliary grammar or enable PV.
+
 ### Qualified short-ASCII baseline
 
 `eybond_short_ascii` is a separate read-only FC4 payload driver. It does not call

@@ -66,6 +66,7 @@ _FAMILY_TESTS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "test_shared_transport.py",
             "test_collector_binary_framing.py",
             "test_collector_auxiliary_session.py",
+            "test_collector_send_ownership.py",
             "test_transport_module_boundaries.py",
             "test_runtime_silent_identity_bootstrap.py",
         ),

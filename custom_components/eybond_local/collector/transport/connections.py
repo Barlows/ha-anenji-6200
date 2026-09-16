@@ -27,6 +27,7 @@ from ..protocol import (
     parse_heartbeat_pn,
 )
 from .auxiliary_session import AuxiliaryReadSession
+from .send_ownership import SocketSendOwner, finish_request_future
 from .binary_framing import (
     BinaryFramingError, BinaryGrammar, async_read_binary_frame,
 )
@@ -215,13 +216,10 @@ class _CollectorConnection:
         collector_addr: int = 1,
         request_timeout: float,
     ) -> tuple[EybondHeader, bytes]:
-        if not self.connected or not self._writer:
-            raise ConnectionError("collector_not_connected")
+        owner = SocketSendOwner.capture(self)
 
         async with self._request_lock:
-            writer = self._writer
-            if writer is None or writer.is_closing():
-                raise ConnectionError("collector_not_connected")
+            owner.check(self)
 
             tid = self._tid.next()
             frame = build_collector_request(
@@ -237,7 +235,7 @@ class _CollectorConnection:
             self._pending[tid] = future
 
             try:
-                await self._async_write(frame)
+                await self._async_write(frame, owner=owner)
                 logger.debug(
                     "TX collector remote=%s tid=%d fc=%d devcode=0x%04X devaddr=0x%02X payload=%s",
                     self._collector.remote_ip,
@@ -247,10 +245,13 @@ class _CollectorConnection:
                     collector_addr,
                     payload.hex(),
                 )
-                return await asyncio.wait_for(future, timeout=request_timeout)
+                response = await asyncio.wait_for(future, timeout=request_timeout)
+                owner.check_reply(self)
+                return response
             finally:
                 if self._pending.get(tid) is future:
                     self._pending.pop(tid, None)
+                finish_request_future(future)
 
     async def async_send_auxiliary_read(
         self, payload: bytes, *, request_timeout: float,
@@ -267,19 +268,21 @@ class _CollectorConnection:
         )
 
     async def async_query(self, command: str, *, request_timeout: float) -> CollectorAtResponse:
-        if not self.connected or not self._writer:
-            raise ConnectionError("collector_not_connected")
+        owner = SocketSendOwner.capture(self)
 
         async with self._request_lock:
+            owner.check(self)
             loop = asyncio.get_running_loop()
             future: asyncio.Future[CollectorAtResponse] = loop.create_future()
             self._pending_at_response = future
             try:
-                await self._async_write(build_at_query(command))
+                await self._async_write(build_at_query(command), owner=owner)
                 response = await asyncio.wait_for(future, timeout=request_timeout)
+                owner.check_reply(self)
             finally:
                 if self._pending_at_response is future:
                     self._pending_at_response = None
+                finish_request_future(future)
             self._apply_at_response_metadata(response)
             return response
 
@@ -290,19 +293,21 @@ class _CollectorConnection:
         *,
         request_timeout: float,
     ) -> CollectorAtResponse:
-        if not self.connected or not self._writer:
-            raise ConnectionError("collector_not_connected")
+        owner = SocketSendOwner.capture(self)
 
         async with self._request_lock:
+            owner.check(self)
             loop = asyncio.get_running_loop()
             future: asyncio.Future[CollectorAtResponse] = loop.create_future()
             self._pending_at_response = future
             try:
-                await self._async_write(build_at_write(command, value))
+                await self._async_write(build_at_write(command, value), owner=owner)
                 response = await asyncio.wait_for(future, timeout=request_timeout)
+                owner.check_reply(self)
             finally:
                 if self._pending_at_response is future:
                     self._pending_at_response = None
+                finish_request_future(future)
             self._apply_at_response_metadata(response)
             return response
 
@@ -383,15 +388,17 @@ class _CollectorConnection:
         except Exception as exc:
             logger.debug("Heartbeat loop stopped for %s: %s", self._collector.remote_ip, exc)
 
-    async def _async_write(self, frame: bytes) -> None:
+    async def _async_write(self, frame: bytes, *, owner: SocketSendOwner | None = None) -> None:
+        owner = owner or SocketSendOwner.capture(self)
         async with self._write_lock:
-            writer = self._writer
-            if writer is None or writer.is_closing():
-                raise ConnectionError("collector_not_connected")
+            owner.check(self)
+            writer = owner.writer
             writer.write(frame)
             try:
                 await asyncio.wait_for(writer.drain(), timeout=self._write_timeout)
+                owner.check_reply(self)
             except asyncio.TimeoutError as exc:
+                owner.check_reply(self)
                 raise ConnectionError("collector_write_timeout") from exc
 
     def _apply_at_response_metadata(self, response: CollectorAtResponse) -> None:
@@ -773,13 +780,14 @@ class _CollectorAtConnection:
         )
 
     async def async_query(self, command: str, *, request_timeout: float) -> CollectorAtResponse:
-        if not self.connected or not self._writer:
-            raise ConnectionError("collector_not_connected")
+        owner = SocketSendOwner.capture(self)
 
         async with self._request_lock:
+            owner.check(self)
             return await self._async_query_locked(
                 build_at_query(command),
                 request_timeout=request_timeout,
+                owner=owner,
             )
 
     async def async_send_raw_payload(
@@ -796,16 +804,18 @@ class _CollectorAtConnection:
         Modbus RTU) directly to the same TCP stream after the AT bootstrap.
         """
 
-        if not self.connected or not self._writer:
-            raise ConnectionError("collector_not_connected")
+        owner = SocketSendOwner.capture(self)
 
         async with self._request_lock:
+            owner.check(self)
             if self._auxiliary_session.enabled:
                 raise ConnectionError("auxiliary_session_raw_route_conflict")
             total_started = asyncio.get_running_loop().time()
             await self._async_bootstrap_raw_passthrough_locked(
                 request_timeout=min(float(request_timeout), 2.0),
+                owner=owner,
             )
+            owner.check(self)
             loop = asyncio.get_running_loop()
             future: asyncio.Future[bytes] = loop.create_future()
             self._pending_raw_response = future
@@ -823,12 +833,14 @@ class _CollectorAtConnection:
                     payload,
                 )
                 spacing_wait_ms = await self._async_wait_raw_passthrough_spacing_locked()
+                owner.check(self)
                 response_started = asyncio.get_running_loop().time()
-                await self._async_write(payload)
+                await self._async_write(payload, owner=owner)
                 self._raw_passthrough_last_write_monotonic = (
                     asyncio.get_running_loop().time()
                 )
                 response = await asyncio.wait_for(future, timeout=request_timeout)
+                owner.check_reply(self)
                 finished = asyncio.get_running_loop().time()
                 self._collector.raw_response_count += 1
                 self._collector.inverter_forward_mode = "raw_serial"
@@ -869,6 +881,7 @@ class _CollectorAtConnection:
                 if self._pending_raw_response is future:
                     self._pending_raw_response = None
                     self._pending_raw_protocol = ""
+                finish_request_future(future)
 
     async def async_send_bridge_identity_probe(
         self,
@@ -906,6 +919,7 @@ class _CollectorAtConnection:
     ) -> bytes:
         """Forward one inverter payload as FC=4 on this exact AT socket."""
 
+        owner = SocketSendOwner.capture(self)
         _header, response = await self._async_send_mixed_frame(
             fcode=FC_FORWARD_TO_DEVICE,
             payload=payload,
@@ -913,6 +927,7 @@ class _CollectorAtConnection:
             collector_addr=collector_addr,
             request_timeout=request_timeout,
         )
+        owner.check_reply(self)
         if response:
             self._collector.inverter_forward_mode = "eybond_fc4"
         return response
@@ -928,13 +943,10 @@ class _CollectorAtConnection:
     ) -> tuple[EybondHeader, bytes]:
         """Send one TID-correlated EyeBond frame on the AT-primary stream."""
 
-        if not self.connected or not self._writer:
-            raise ConnectionError("collector_not_connected")
+        owner = SocketSendOwner.capture(self)
 
         async with self._request_lock:
-            writer = self._writer
-            if writer is None or writer.is_closing():
-                raise ConnectionError("collector_not_connected")
+            owner.check(self)
 
             tid = self._tid.next()
             frame = build_collector_request(
@@ -949,14 +961,16 @@ class _CollectorAtConnection:
             self._pending_framed_response[tid] = future
             self._pending_framed_fcode[tid] = int(fcode)
             try:
-                await self._async_write(frame)
+                await self._async_write(frame, owner=owner)
                 response = await asyncio.wait_for(future, timeout=request_timeout)
+                owner.check_reply(self)
                 self._mixed_frame_observed = True
                 return response
             finally:
                 if self._pending_framed_response.get(tid) is future:
                     self._pending_framed_response.pop(tid, None)
                     self._pending_framed_fcode.pop(tid, None)
+                finish_request_future(future)
 
     async def _async_wait_raw_passthrough_spacing_locked(self) -> int:
         interval = self._raw_passthrough_min_interval
@@ -975,16 +989,21 @@ class _CollectorAtConnection:
         payload: bytes,
         *,
         request_timeout: float,
+        owner: SocketSendOwner | None = None,
     ) -> CollectorAtResponse:
+        owner = owner or SocketSendOwner.capture(self)
+        owner.check(self)
         loop = asyncio.get_running_loop()
         future: asyncio.Future[CollectorAtResponse] = loop.create_future()
         self._pending_response = future
         try:
-            await self._async_write(payload)
+            await self._async_write(payload, owner=owner)
             response = await asyncio.wait_for(future, timeout=request_timeout)
+            owner.check_reply(self)
         finally:
             if self._pending_response is future:
                 self._pending_response = None
+            finish_request_future(future)
         self._apply_response_metadata(response)
         return response
 
@@ -995,16 +1014,19 @@ class _CollectorAtConnection:
         *,
         request_timeout: float,
     ) -> CollectorAtResponse:
-        if not self.connected or not self._writer:
-            raise ConnectionError("collector_not_connected")
+        owner = SocketSendOwner.capture(self)
 
         async with self._request_lock:
+            owner.check(self)
             return await self._async_query_locked(
                 build_at_write(command, value),
                 request_timeout=request_timeout,
+                owner=owner,
             )
 
-    async def _async_bootstrap_raw_passthrough_locked(self, *, request_timeout: float) -> None:
+    async def _async_bootstrap_raw_passthrough_locked(
+        self, *, request_timeout: float, owner: SocketSendOwner | None = None,
+    ) -> None:
         """Mirror SmartESS AT bootstrap before direct inverter ASCII traffic.
 
         Legacy dtu_ess collectors send PI30 traffic as raw serial bytes on the
@@ -1013,6 +1035,8 @@ class _CollectorAtConnection:
         to forward raw inverter bytes reliably until this step is performed.
         """
 
+        owner = owner or SocketSendOwner.capture(self)
+        owner.check(self)
         if self._raw_passthrough_bootstrapped:
             return
         if self._raw_passthrough_bootstrap == "none":
@@ -1023,6 +1047,7 @@ class _CollectorAtConnection:
             response = await self._async_query_locked(
                 build_at_query("UART"),
                 request_timeout=request_timeout,
+                owner=owner,
             )
             uart_value = str(response.value or "").strip()
             if not _looks_like_uart_passthrough_value(uart_value):
@@ -1036,6 +1061,7 @@ class _CollectorAtConnection:
             await self._async_query_locked(
                 build_at_write("UART", uart_value),
                 request_timeout=request_timeout,
+                owner=owner,
             )
         except Exception as exc:
             logger.debug(
@@ -1043,8 +1069,10 @@ class _CollectorAtConnection:
                 self._collector.remote_ip,
                 exc,
             )
-        finally:
-            self._raw_passthrough_bootstrapped = True
+        # A failed bootstrap may be optional, but its result can never qualify
+        # a replacement session or allow the old raw payload to migrate there.
+        owner.check(self)
+        self._raw_passthrough_bootstrapped = True
 
     async def run(
         self,
@@ -1111,15 +1139,17 @@ class _CollectorAtConnection:
     async def disconnect(self) -> None:
         await self._disconnect(reason="manual_disconnect")
 
-    async def _async_write(self, payload: bytes) -> None:
+    async def _async_write(self, payload: bytes, *, owner: SocketSendOwner | None = None) -> None:
+        owner = owner or SocketSendOwner.capture(self)
         async with self._write_lock:
-            writer = self._writer
-            if writer is None or writer.is_closing():
-                raise ConnectionError("collector_not_connected")
+            owner.check(self)
+            writer = owner.writer
             writer.write(payload)
             try:
                 await asyncio.wait_for(writer.drain(), timeout=self._write_timeout)
+                owner.check_reply(self)
             except asyncio.TimeoutError as exc:
+                owner.check_reply(self)
                 raise ConnectionError("collector_write_timeout") from exc
 
     async def _read_loop(

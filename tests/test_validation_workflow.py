@@ -75,10 +75,18 @@ class AffectedValidationSelectionTests(unittest.TestCase):
                 "test_shared_transport.py",
                 "test_collector_binary_framing.py",
                 "test_collector_auxiliary_session.py",
+                "test_collector_send_ownership.py",
                 "test_transport_module_boundaries.py",
                 "test_runtime_silent_identity_bootstrap.py",
             }.issubset(selected)
         )
+
+    def test_socket_send_owner_selects_queued_command_regressions(self) -> None:
+        for path in ("connections.py", "send_ownership.py", "shared_framed.py", "shared_at.py"):
+            with self.subTest(path=path):
+                self.assertIn("test_collector_send_ownership.py", self._selected(
+                    f"custom_components/eybond_local/collector/transport/{path}",
+                ))
 
     def test_collector_entity_scope_selects_runtime_reconciliation_tests(self) -> None:
         selected = self._selected(

@@ -24,6 +24,11 @@ the GitHub release body should be rendered from the matching version section her
 
 ### Fixed
 
+- Queued collector commands now stay bound to the TCP session on which they
+  started. A reconnect cannot redirect an old read, write or UART bootstrap
+  to the replacement socket. A confirmed reply followed by normal peer closure
+  remains a valid result.
+
 - Closing an old collector socket no longer clears requests that already belong
   to its replacement connection. This covers both framed and AT sessions when
   socket shutdown is delayed.
