@@ -39,6 +39,11 @@ from ..protocol import (
     decode_header,
     parse_heartbeat_pn,
 )
+from .binary_framing import (
+    MAX_EYBOND_PAYLOAD_SIZE,
+    RUNTIME_EYBOND_FCODES,
+    runtime_eybond_header_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -216,16 +221,8 @@ def _short_ascii(value: bytes, *, limit: int = 160) -> str:
 
 _AT_TEXT_MIXED_FRAME_READ_TIMEOUT = 0.05
 _AT_TEXT_RESPONSE_IDLE_TIMEOUT = 0.2
-_AT_TEXT_MAX_MIXED_FRAME_PAYLOAD_LEN = 4096
-_AT_TEXT_MIXED_FRAME_FCODES = {
-    FC_HEARTBEAT,
-    FC_QUERY_COLLECTOR,
-    FC_SET_COLLECTOR,
-    FC_FORWARD_TO_DEVICE,
-    FC_TRIGGER_QUERY_REAL_TIME,
-    FC_SET_DEVICE_REG,
-    FC_TRIGGER_QUERY_HISTORY,
-}
+_AT_TEXT_MAX_MIXED_FRAME_PAYLOAD_LEN = MAX_EYBOND_PAYLOAD_SIZE
+_AT_TEXT_MIXED_FRAME_FCODES = RUNTIME_EYBOND_FCODES
 
 
 def _runtime_eybond_header_error(header: EybondHeader) -> str:
@@ -239,13 +236,7 @@ def _runtime_eybond_header_error(header: EybondHeader) -> str:
     pseudo-frame and consume every valid frame that follows it.
     """
 
-    if header.payload_len < 0:
-        return "collector_frame_length_invalid"
-    if header.payload_len > _AT_TEXT_MAX_MIXED_FRAME_PAYLOAD_LEN:
-        return "collector_frame_payload_too_large"
-    if header.fcode not in _AT_TEXT_MIXED_FRAME_FCODES:
-        return "collector_frame_function_invalid"
-    return ""
+    return runtime_eybond_header_error(header)
 
 
 def _mask_identity_token(value: str) -> str:
