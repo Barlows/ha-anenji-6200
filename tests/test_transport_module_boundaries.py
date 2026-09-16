@@ -64,12 +64,29 @@ class TransportModuleBoundaryTests(unittest.TestCase):
 
     def test_original_definition_multiset_is_preserved_exactly_once(self) -> None:
         definitions = [item for path in _FAMILY for item in _definitions(path)]
+        # Explicit extension, not a relaxation of the decomposition baseline.
+        extension = ("AsyncFunctionDef", "async_send_auxiliary_read")
+        self.assertEqual(definitions.count(extension), 2)
+        definitions = [item for item in definitions if item != extension]
         payload = "\n".join(
             f"{kind}:{name}" for kind, name in sorted(definitions)
         ).encode()
         self.assertEqual(len(definitions), 264)
         self.assertEqual(len(set(definitions)), 204)
         self.assertEqual(hashlib.sha256(payload).hexdigest(), _ORIGINAL_DEFINITION_DIGEST)
+
+    def test_auxiliary_reads_are_owned_by_both_socket_implementations(self) -> None:
+        owners = []
+        for node in _tree(_TRANSPORT / "connections.py").body:
+            if isinstance(node, ast.ClassDef):
+                for child in node.body:
+                    if isinstance(child, ast.AsyncFunctionDef):
+                        if child.name == "async_send_auxiliary_read":
+                            owners.append(node.name)
+        self.assertEqual(owners, ["_CollectorConnection", "_CollectorAtConnection"])
+        source = (_TRANSPORT / "auxiliary_session.py").read_text(encoding="utf-8")
+        for forbidden in ("...models", "...drivers", "...metadata", "...payload"):
+            self.assertNotIn(forbidden, source)
 
     def test_concrete_authorities_have_one_owner_module(self) -> None:
         expected = {

@@ -1,7 +1,7 @@
 """Bounded binary framing, independent of inverter metadata and live waiters.
 
 This codec is an internal building block for the short-ASCII auxiliary channel.
-It does not negotiate a collector protocol or enable that channel in runtime.
+It does not negotiate a collector protocol or admit that channel itself.
 The session owner supplies the admitted grammar, never a future's done() state.
 """
 

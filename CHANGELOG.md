@@ -9,6 +9,10 @@ the GitHub release body should be rendered from the matching version section her
 
 ### Fixed
 
+- Closing an old collector socket no longer clears requests that already belong
+  to its replacement connection. This covers both framed and AT sessions when
+  socket shutdown is delayed.
+
 - Callback identity checks now return their borrowed shared-listener reference
   even if sending the trigger fails or the operation is cancelled before waiting
   for a session. Existing session ownership and callback retry timing are unchanged

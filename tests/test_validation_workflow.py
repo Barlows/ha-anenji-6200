@@ -53,6 +53,7 @@ class AffectedValidationSelectionTests(unittest.TestCase):
             {
                 "test_shared_transport.py",
                 "test_collector_binary_framing.py",
+                "test_collector_auxiliary_session.py",
                 "test_transport_module_boundaries.py",
                 "test_runtime_silent_identity_bootstrap.py",
             }.issubset(selected)
