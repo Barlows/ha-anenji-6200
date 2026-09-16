@@ -88,10 +88,34 @@ and connection flags, and **Battery Reference Voltage**. That last reading is
 the protocol's single-block reference, not the voltage of the complete battery
 pack; do not use it as a replacement for a 24/48 V pack measurement.
 
-This baseline does not provide PV power, full-pack battery readings, grid
+Some compatible devices also answer optional requests for **BMS Battery Voltage**,
+**Battery State of Charge**, BMS temperatures, cell voltages, cycle count,
+protection limits, charge/discharge path flags and rated values. These entities
+are disabled by default: open the inverter's entity list and enable the ones
+you need. A charge-path flag means the path is enabled, not that the battery is
+currently charging. BMS voltage is separate from Battery Reference Voltage;
+neither reading is calculated from the other.
+
+BMS is requested no more often than every 30 seconds, rated values every
+15 minutes, with at most one extra request per normal poll. A longer poll
+interval can delay them further. Failed or invalid responses immediately
+remove the old values for that group. At each refresh, BMS samples aged
+60 seconds or more and rated values aged 15 minutes or more are discarded.
+If the device returns the known
+no-data BMS reply, **BMS Data Available** turns off and its measurements become
+unavailable, even if some fields still contain old numbers. This does not
+prove the physical battery is disconnected.
+
+After four failed optional requests while basic telemetry still responds,
+that request is skipped. Use **Re-check supported commands** to try it again,
+for example after connecting a BMS. Missing optional data does not prevent
+basic inverter monitoring.
+
+This profile does not provide PV power, BMS currents, battery power, grid
 frequency or inverter controls. Selecting **Full Control** does not add
 undocumented settings. If readings are missing or implausible, create a
-Support Archive for review; do not select a similar retail model by guesswork.
+Support Archive for review; it can include the optional raw replies. Do not
+select a similar retail model by guesswork.
 
 ## Control mode
 

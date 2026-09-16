@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import math
+import time
 from typing import Any
 
 from ..metadata.compiled_detection_catalog import load_compiled_detection_catalog
@@ -17,6 +19,7 @@ from .base import InverterDriver
 from .catalog_probe import async_probe_ascii_catalog, catalog_model_name
 from .read_result import DriverReadMode, DriverReadResult
 from .support_marker import DriverSupportMarker
+from .short_ascii_optional import optional_reads_for
 
 
 _PARSERS = {"short_ascii.md": parse_md, "short_ascii.mp": parse_mp, "short_ascii.q1": parse_q1}
@@ -102,11 +105,26 @@ class EybondShortAsciiDriver(InverterDriver):
         poll_interval: float | None = None,
         now_monotonic: float | None = None,
     ) -> DriverReadResult:
-        values = parse_q1(await self._session(transport, inverter.probe_target).request("Q1"))
-        values.pop("short_ascii_q1_length")
-        # Q1 is the ENTIRE baseline live surface; failure raises, never an empty
-        # success and never detection-time fallback. No optional cache exists.
-        return DriverReadResult(values=values, mode=DriverReadMode.FULL)
+        started = time.monotonic()
+        now = started if now_monotonic is None else float(now_monotonic)
+        if not math.isfinite(now):
+            raise ValueError("short_ascii_clock_invalid")
+        clock = lambda: now + max(0, time.monotonic() - started)
+        state = runtime_state if runtime_state is not None else {}
+        optional = optional_reads_for(state, transport, inverter, now)
+        session = self._session(transport, inverter.probe_target)
+        try:
+            values = parse_q1(await session.request("Q1"))
+            values.pop("short_ascii_q1_length")
+            extra, diagnostics = await optional.refresh_one(session, state, clock)
+        except BaseException:
+            # No previous optional sample may reappear after a failed/cancelled
+            # mandatory cycle, reconnect or new inverter binding.
+            optional.clear()
+            raise
+        # FULL absence invalidates expired/failed optional fields in the hub.
+        # Q1 and RB have distinct owners: reference V is never pack/BMS V.
+        return DriverReadResult(values=values | extra, mode=DriverReadMode.FULL, diagnostics=diagnostics)
 
     async def async_capture_support_evidence(self, transport, inverter):
         session = self._session(transport, inverter.probe_target)

@@ -22,26 +22,39 @@ async def test_family_telemetry_reload_and_read_failure_without_guessed_identity
 
     class Transport:
         fail = False
+        connected = True
+        clock = 0.0
+        rb = b"NAK\r"
 
         async def async_send_payload(self, payload, *, route, request_timeout=None):
             if self.fail:
                 raise TimeoutError("synthetic_read_timeout")
             assert route.devcode == 767 and route.collector_addr == 255
             assert payload[-2:] == b"\x01\r"
+            if payload[:-2] == b"RB" and isinstance(self.rb, Exception):
+                raise self.rb
             body = b"230.0 04 03 115.0 013 60.0 13.2 35.0 1000010" + bytes(3)
             return {
                 b"MP": b"\x01" + bytes(range(36)) + b"\r",
                 b"MD": b"S2-8127-260101-V7.00  \x00\r",
                 b"Q1": b"\x01" + body + sum(body).to_bytes(2, "big") + b"\r",
-            }[payload[:-2]]
+                b"RB": self.rb,
+                b"F": b"#115.0 105 48.00 60.0\r",
+            }.get(payload[:-2], b"NAK\r")
 
     driver, transport = EybondShortAsciiDriver(), Transport()
     inverter = await driver.async_probe(transport, ProbeTarget(767, 255, 1))
     assert inverter is not None
 
     async def refresh(self, *, poll_interval=None):
+        if not hasattr(self, "short_ascii_state"):
+            self.short_ascii_state = {}
+        transport.clock += 1
         try:
-            read = await driver.async_read_values(transport, inverter)
+            read = await driver.async_read_values(
+                transport, inverter, runtime_state=self.short_ascii_state,
+                now_monotonic=transport.clock,
+            )
         except TimeoutError:
             # The real hub converts an exhausted transport recovery into an
             # offline snapshot; reproduce that boundary, not HA internals.
@@ -115,7 +128,8 @@ async def test_family_telemetry_reload_and_read_failure_without_guessed_identity
                 if entity.device_id == device_id]
     assert all(entity.domain not in {"select", "number", "switch", "text", "time"} for entity in entities)
     assert not any(entity.unique_id.endswith("_sync_inverter_clock") for entity in entities)
-    for key in ("battery_voltage", "battery_soc", "grid_frequency", "output_power", "pv_power", "serial_number"):
+    assert registry.async_get(sensor_id("battery_soc")).disabled_by is er.RegistryEntryDisabler.INTEGRATION
+    for key in ("battery_voltage", "grid_frequency", "output_power", "pv_power", "serial_number"):
         assert sensor_id(key) is None, key
 
     assert await hass.config_entries.async_reload(entry.entry_id)
@@ -142,5 +156,45 @@ async def test_family_telemetry_reload_and_read_failure_without_guessed_identity
     await hass.async_block_till_done()
     for key, value in expected.items():
         assert hass.states.get(identities[key]).state == value, key
+
+    # Optional BMS entities are opt-in; exercise their real HA availability
+    # without replacing the driver or turning a missing RB into a Q1 failure.
+    def bms_reply(voltage, soc):
+        body = bytearray(37)
+        body[:2] = voltage.to_bytes(2, "big")
+        body[2] = soc
+        body[17:19] = (333).to_bytes(2, "big")
+        body[23:25] = b"\x01\x01"
+        return b"\x01" + body + bytes([sum(body) & 255]) + b"\r"
+
+    bms_keys = ("battery_soc", "bms_total_voltage", "bms_min_cell_voltage")
+    bms_ids = {key: sensor_id(key) for key in bms_keys}
+    available_id = registry.async_get_entity_id(
+        "binary_sensor", DOMAIN, f"{entry.entry_id}_binary_sensor_short_ascii_bms_data_available",
+    )
+    for entity_id in (*bms_ids.values(), available_id):
+        registry.async_update_entity(entity_id, disabled_by=None)
+    transport.rb = bms_reply(520, 80)
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    async def check_bms(reply, availability, values):
+        transport.rb = reply
+        transport.clock += 31
+        # At most one optional query per cycle; allow the other group its turn.
+        for _ in range(2):
+            await entry.runtime_data.async_refresh()
+            await hass.async_block_till_done()
+        assert hass.states.get(available_id).state == availability
+        for key, state in zip(bms_keys, values, strict=True):
+            assert hass.states.get(bms_ids[key]).state == state, key
+        assert hass.states.get(identities["grid_voltage"]).state == "230.0"
+
+    await check_bms(bms_reply(520, 80), "on", ("80", "52.0", "3.33"))
+    await check_bms(bms_reply(0, 0), "off", ("unavailable",) * 3)
+    await check_bms(b"NAK\r", "unavailable", ("unavailable",) * 3)
+    await check_bms(TimeoutError(), "unavailable", ("unavailable",) * 3)
+    await check_bms(bms_reply(520, 0), "on", ("0", "52.0", "3.33"))
+    assert {key: sensor_id(key) for key in bms_keys} == bms_ids
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()

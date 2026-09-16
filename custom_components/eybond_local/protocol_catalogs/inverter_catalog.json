@@ -1083,7 +1083,7 @@
   },
   "eybond_short_ascii": {
    "ranges": [],
-   "notes": ["Bounded read-only MP/Q1/MD FC4 evidence only. No raw UART, auxiliary query or write command."]
+   "notes": ["Bounded read-only MP/Q1/MD/F/RB FC4 evidence only. F/RB are optional runtime reads, not detection prerequisites. No raw UART, auxiliary query or write command."]
   },
   "eybond_g_ascii": {
    "ranges": [],

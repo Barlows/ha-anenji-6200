@@ -19,20 +19,42 @@
     {"key": "battery_reference_voltage", "name": "Battery Reference Voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement", "diagnostic": true},
     {"key": "temperature", "name": "Inverter Temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement"},
     {"key": "short_ascii_status_flags", "name": "Inverter Status Flags", "diagnostic": true, "enabled_default": false},
-    {"key": "short_ascii_fault_code", "name": "Inverter Fault Code", "diagnostic": true}
+    {"key": "short_ascii_fault_code", "name": "Inverter Fault Code", "diagnostic": true},
+    {"key": "short_ascii_rated_voltage", "name": "Rated Voltage", "unit": "V", "device_class": "voltage", "diagnostic": true, "enabled_default": false},
+    {"key": "short_ascii_rated_current", "name": "Rated Current", "unit": "A", "device_class": "current", "diagnostic": true, "enabled_default": false},
+    {"key": "short_ascii_rated_battery_voltage", "name": "Rated Battery Voltage", "unit": "V", "device_class": "voltage", "diagnostic": true, "enabled_default": false},
+    {"key": "short_ascii_rated_frequency", "name": "Rated Frequency", "unit": "Hz", "device_class": "frequency", "diagnostic": true, "enabled_default": false},
+    {"key": "bms_total_voltage", "name": "BMS Battery Voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement", "enabled_default": false},
+    {"key": "battery_soc", "name": "Battery State of Charge", "unit": "%", "device_class": "battery", "state_class": "measurement", "enabled_default": false},
+    {"key": "bms_cell_temperature", "name": "BMS Cell Temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement", "diagnostic": true, "enabled_default": false},
+    {"key": "bms_cycle_count", "name": "BMS Cycle Count", "state_class": "measurement", "diagnostic": true, "enabled_default": false},
+    {"key": "bms_internal_temperature", "name": "BMS Ambient Temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement", "diagnostic": true, "enabled_default": false},
+    {"key": "bms_mos_temperature", "name": "BMS MOS Temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement", "diagnostic": true, "enabled_default": false},
+    {"key": "bms_max_cell_voltage", "name": "BMS Maximum Cell Voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement", "diagnostic": true, "enabled_default": false},
+    {"key": "bms_min_cell_voltage", "name": "BMS Minimum Cell Voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement", "diagnostic": true, "enabled_default": false},
+    {"key": "bms_low_protection_voltage", "name": "BMS Low Voltage Protection", "unit": "V", "device_class": "voltage", "diagnostic": true, "enabled_default": false},
+    {"key": "bms_charge_cutoff_voltage", "name": "BMS Charge Cutoff Voltage", "unit": "V", "device_class": "voltage", "diagnostic": true, "enabled_default": false},
+    {"key": "short_ascii_optional_status", "name": "Optional Read Status", "diagnostic": true, "enabled_default": false},
+    {"key": "short_ascii_rb_age_seconds", "name": "BMS Sample Age", "unit": "s", "diagnostic": true, "enabled_default": false},
+    {"key": "short_ascii_f_age_seconds", "name": "Rated Values Sample Age", "unit": "s", "diagnostic": true, "enabled_default": false}
   ],
   "binary_sensor_descriptions": [
     {"key": "inverter_fault", "name": "Inverter Fault", "device_class": "problem", "diagnostic": true},
     {"key": "grid_available", "name": "Grid Available", "device_class": "power"},
     {"key": "short_ascii_mains_input_connected", "name": "Mains Input Connected", "diagnostic": true},
     {"key": "battery_low", "name": "Battery Low", "device_class": "battery"},
-    {"key": "pv_controller_present", "name": "PV Controller Present", "diagnostic": true}
+    {"key": "pv_controller_present", "name": "PV Controller Present", "diagnostic": true},
+    {"key": "short_ascii_bms_data_available", "name": "BMS Data Available", "diagnostic": true, "enabled_default": false},
+    {"key": "short_ascii_bms_charge_path_enabled", "name": "BMS Charge Path Enabled", "diagnostic": true, "enabled_default": false},
+    {"key": "short_ascii_bms_discharge_path_enabled", "name": "BMS Discharge Path Enabled", "diagnostic": true, "enabled_default": false}
   ],
   "notes": [
     "Baseline FC4 payloads: MP 38 bytes, Q1 51 bytes, MD 24 bytes; no retail-model or serial-number inference.",
     "Q1 has fixed columns and an unsigned additive 16-bit checksum. Missing columns, truncation and shifted replies are rejected.",
     "Battery Reference Voltage is the vendor's single-battery value, not an inferred whole-pack voltage.",
     "Output frequency is not grid frequency. The Q1 trailing output word has unresolved semantics and stays in raw support evidence.",
-    "Optional F/RB/AABB fields and all controls are intentionally absent from this baseline."
+    "Optional F and qualified 40-byte RB replies are sampled after detection, with bounded cache lifetime and immediate invalidation on failure. They are disabled-by-default entities because support varies by device.",
+    "RB current scaling depends on RH configuration and is not inferred. RB zero voltage plus zero SOC withdraws all BMS measurements, including trailing retained fields.",
+    "Auxiliary AABB/PV fields and all controls remain absent. Ratings are not a source of measured power."
   ]
 }

@@ -5,6 +5,8 @@ import subprocess
 from pathlib import Path
 import sys
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -82,19 +84,20 @@ def _is_synthetic_mac(mac: str) -> bool:
         return False
 
 
-def _iter_tracked_text_files() -> list[Path]:
-    """Return every tracked text file in the repo (gitignored .local excluded).
+def _iter_repository_text_files() -> list[Path]:
+    """Scan tracked and new non-ignored text files; never inspect private .local.
 
-    Driven by `git ls-files` so the scan covers ALL tracked surfaces that can
+    Driven by `git ls-files` so the scan covers ALL public surfaces that can
     hold user data (custom_components, tests, catalog, tools, docs, .github,
     root) rather than a hand-maintained root allowlist. Falls back to a repo
-    walk when git is unavailable.
+    walk when git is unavailable. Including untracked candidates is important:
+    a pre-commit gate must not silently skip newly written test files.
     """
 
     paths: list[Path]
     try:
         listing = subprocess.run(
-            ["git", "ls-files", "-z"],
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
             cwd=REPO_ROOT,
             capture_output=True,
             check=True,
@@ -118,7 +121,7 @@ class NoRealIdentifiersTest(unittest.TestCase):
     def test_only_allowlisted_pn_shaped_tokens_present(self) -> None:
         offenders: list[str] = []
         allowed_upper = {token.upper() for token in _ALLOWED_SYNTHETIC_TOKENS}
-        for path in _iter_tracked_text_files():
+        for path in _iter_repository_text_files():
             try:
                 text = path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
@@ -140,7 +143,7 @@ class NoRealIdentifiersTest(unittest.TestCase):
 
     def test_only_synthetic_macs_present(self) -> None:
         offenders: list[str] = []
-        for path in _iter_tracked_text_files():
+        for path in _iter_repository_text_files():
             try:
                 text = path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
@@ -162,7 +165,7 @@ class NoRealIdentifiersTest(unittest.TestCase):
         # Guard the guard: the scanner must see a meaningful file set, including
         # the contributor-facing surfaces (tools/, docs/, .github/) that the old
         # 4-root allowlist missed, and the known synthetic PN family must occur.
-        files = _iter_tracked_text_files()
+        files = _iter_repository_text_files()
         self.assertGreater(len(files), 200)
         relative = {str(path.relative_to(REPO_ROOT)) for path in files}
         joined = "\n".join(sorted(relative))
@@ -180,6 +183,18 @@ class NoRealIdentifiersTest(unittest.TestCase):
             except (OSError, UnicodeDecodeError):
                 continue
         self.assertGreater(hits, 5)
+
+    def test_scan_requests_new_files_and_still_excludes_private_context(self) -> None:
+        with (
+            patch("subprocess.run", return_value=SimpleNamespace(
+                stdout=b"tests/new_case.py\0.local/private_context.md\0",
+            )) as run,
+            patch.object(Path, "is_file", return_value=True),
+        ):
+            self.assertEqual(_iter_repository_text_files(), [REPO_ROOT / "tests/new_case.py"])
+        command = run.call_args.args[0]
+        for flag in ("--cached", "--others", "--exclude-standard"):
+            self.assertIn(flag, command)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,12 @@ the GitHub release body should be rendered from the matching version section her
   separately from full-pack voltage. No retail model, serial number, PV power
   or inverter controls are inferred.
 
+- Short-ASCII devices can also expose documented BMS and rated readings through
+  optional read-only RB/F queries. These entities are disabled by default.
+  Missing, invalid or expired BMS samples remove their old values without
+  interrupting basic telemetry. BMS current scaling and PV remain unqualified;
+  this is not full device or control support (#45).
+
 ### Fixed
 
 - Closing an old collector socket no longer clears requests that already belong

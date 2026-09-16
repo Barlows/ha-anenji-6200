@@ -39,7 +39,7 @@ def _responses(firmware=b"S2-8127-260101-V7.00"):
 
 class _Transport:
     connected = True
-    collector_info = CollectorInfo(collector_pn="I2000000000001")
+    collector_info = CollectorInfo(collector_pn="I30000200000000001")
 
     def __init__(self, responses=None):
         self.responses = _responses() if responses is None else responses
@@ -50,7 +50,7 @@ class _Transport:
         assert route.devcode == 0x02FF and route.collector_addr == 255
         assert payload[-2:] == b"\x01\r"
         self.requests.append(payload)
-        result = self.responses[payload[:-2].decode("ascii")]
+        result = self.responses.get(payload[:-2].decode("ascii"), b"NAK\r")
         if isinstance(result, BaseException):
             raise result
         return result
@@ -61,11 +61,11 @@ class _Transport:
 
 class ShortAsciiPayloadTests(unittest.TestCase):
     def test_only_documented_read_queries_and_exact_address(self):
-        for command in ("MP", "Q1", "MD"):
+        for command in ("MP", "Q1", "MD", "F", "RB"):
             for address in (0, 1, 255):
                 self.assertEqual(build_short_ascii_request(command, address),
                                  command.encode() + bytes([address]) + b"\r")
-        for command in ("", "QPI", "F", "RB", "SON", "SOFF", "W", "Q1\r", "Q1\x01", None):
+        for command in ("", "QPI", "RH", "SON", "SOFF", "W", "Q1\r", "Q1\x01", None):
             with self.assertRaises(ShortAsciiError):
                 build_short_ascii_request(command, 1)
         for address in (-1, 256, "1", 1.0, True, None):
@@ -197,13 +197,13 @@ class ShortAsciiDriverTests(unittest.IsolatedAsyncioTestCase):
         self.transport.responses["Q1"] = b"230 04 03 115 013 60 13 35 1000010\r"
         self.assertFalse(await self.driver.async_probe_signature(self.transport, self.target))
 
-    async def test_poll_is_one_current_snapshot_without_detection_or_optional_cache(self):
+    async def test_poll_keeps_current_q1_when_optional_rb_is_unsupported(self):
         inverter = await self.driver.async_probe(self.transport, self.target)
         self.transport.requests.clear()
         state = {"previous": {"battery_soc": 80, "battery_voltage": 53.2, "pv_power": 4000}}
         result = await self.driver.async_read_values(self.transport, inverter, runtime_state=state)
         self.assertEqual(result.mode, DriverReadMode.FULL)
-        self.assertEqual(self.transport.requests, [b"Q1\x01\r"])
+        self.assertEqual(self.transport.requests, [b"Q1\x01\r", b"RB\x01\r"])
         self.assertNotIn("short_ascii_q1_length", result.values)
         self.assertNotIn("battery_soc", result.values)
         self.assertNotIn("battery_voltage", result.values)
@@ -271,14 +271,14 @@ class ShortAsciiDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(selection.profile_metadata)
         self.assertEqual(selection.register_schema_name, inverter.register_schema_name)
 
-    async def test_support_capture_keeps_binary_trailers_but_sends_no_optional_commands(self):
+    async def test_support_capture_keeps_binary_trailers_and_only_bounded_read_queries(self):
         inverter = await self.driver.async_probe(self.transport, self.target)
         self.transport.requests.clear()
         capture = await self.driver.async_capture_support_evidence(self.transport, inverter)
         self.assertEqual(capture["responses_hex"]["MP"], _responses()["MP"].hex())
         self.assertEqual(capture["responses_hex"]["Q1"], _q1().hex())
         self.assertEqual(capture["failures"], {})
-        self.assertEqual(self.transport.requests, [b"MP\x01\r", b"Q1\x01\r", b"MD\x01\r"])
+        self.assertEqual(self.transport.requests, [b"MP\x01\r", b"Q1\x01\r", b"MD\x01\r", b"F\x01\r", b"RB\x01\r"])
         # Generic support sweeps select raw routes on some AT devices; this
         # driver deliberately doesn't advertise a query through that API.
         self.assertEqual(self.driver.support_probe_plan(), ())
@@ -293,14 +293,14 @@ class ShortAsciiDriverTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await self.driver.async_read_values(self.transport, inverter)
 
-    async def test_raw_uart_route_and_auxiliary_query_are_not_selected(self):
+    async def test_raw_uart_route_and_unqualified_query_are_not_selected(self):
         raw = ShortAsciiSession(self.transport, RawSerialLinkRoute(), 1)
         with self.assertRaisesRegex(ShortAsciiError, "requires_fc4"):
             await raw.request("Q1")
         self.assertEqual(self.transport.requests, [])
         session = ShortAsciiSession(self.transport, self.target.link_route, 1)
         with self.assertRaises(ShortAsciiError):
-            await session.request("RB")
+            await session.request("RH")
         self.assertEqual(self.transport.requests, [])
 
     def test_registration_preserves_existing_driver_order(self):

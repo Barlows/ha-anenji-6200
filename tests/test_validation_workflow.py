@@ -31,6 +31,16 @@ class AffectedValidationSelectionTests(unittest.TestCase):
             for path in affected_test_files((Path(production_path),))
         }
 
+    def test_optional_short_ascii_changes_select_freshness_regressions(self) -> None:
+        for path in (
+            "payload/short_ascii.py", "drivers/eybond_short_ascii.py",
+            "drivers/short_ascii_optional.py", "drivers/command_support.py",
+            "protocol_catalogs/register_schemas/eybond_short_ascii/base.json",
+        ):
+            with self.subTest(path=path):
+                self.assertIn("test_short_ascii_optional.py",
+                              self._selected(f"custom_components/eybond_local/{path}"))
+
     def test_smg_metadata_and_driver_select_compatible_protocol_replays(self) -> None:
         for path in (
             "protocol_catalogs/profiles/modbus_smg/protocols/communication_protocol_11.json",
