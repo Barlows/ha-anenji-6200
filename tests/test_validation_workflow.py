@@ -14,6 +14,15 @@ from tools.validate import affected_test_files
 
 
 class AffectedValidationSelectionTests(unittest.TestCase):
+    def test_mppt_decoder_tool_and_wire_codec_select_offline_semantics_tests(self) -> None:
+        for path in (
+            "custom_components/eybond_local/payload/short_ascii_mppt.py",
+            "custom_components/eybond_local/collector/transport/binary_framing.py",
+            "tools/decode_short_ascii_mppt.py",
+        ):
+            with self.subTest(path=path):
+                self.assertIn("test_short_ascii_mppt.py", self._selected(path))
+
     def test_short_ascii_wire_driver_and_schema_select_read_only_regressions(self) -> None:
         for path in (
             "payload/short_ascii.py", "drivers/eybond_short_ascii.py",

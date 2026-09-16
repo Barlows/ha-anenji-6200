@@ -9,6 +9,10 @@ the GitHub release body should be rendered from the matching version section her
 
 ### Added
 
+- Added an offline MPPT-frame inspector for maintainers, with strict runtime
+  decoding and explicit warnings about overlapping wire formats. This does not
+  enable live PV polling or create additional Home Assistant entities.
+
 - Added a generic read-only **EyeBond Short-ASCII family** profile for the
   captured MP/Q1/MD dialect seen on some Anern and Maxinn devices (#45).
   It provides grid/output voltage, load percentage, output frequency,

@@ -46,6 +46,17 @@ lifetime guard is active even when auxiliary parsing is disabled. Keep all new
 parser awaits inside that guard; do not wrap only the inner socket read of a
 `wait_for`, which can itself race with cancellation.
 
+`payload/short_ascii_mppt.py` now decodes an explicitly framed AABB/0200 sample
+into an immutable, unit-labelled value object. It does not choose the grammar,
+send requests, supply a register schema or populate live telemetry. Settings
+0202 are rejected. MPPT voltage/temperature/DC load current remain distinct
+from BMS/reference voltage, main-inverter temperature and AC load power.
+Unknown enums remain raw codes; zero/maximum words are decoded wire values,
+not a proved availability or sentinel policy. The sample has no timestamp or
+freshness claim. See the [offline inspector](../../tools/README.md#inspect-a-short-ascii-mppt-frame-offline)
+for capture analysis; enabling live PV still requires the admission contract
+and per-session optional-sample expiry/invalidation described above.
+
 ### Qualified short-ASCII baseline
 
 `eybond_short_ascii` is a separate read-only FC4 payload driver. It does not call

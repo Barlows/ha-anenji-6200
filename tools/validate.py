@@ -67,6 +67,7 @@ _FAMILY_TESTS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "test_collector_binary_framing.py",
             "test_collector_auxiliary_session.py",
             "test_collector_send_ownership.py",
+            "test_short_ascii_mppt.py",
             "test_transport_module_boundaries.py",
             "test_runtime_silent_identity_bootstrap.py",
         ),
@@ -132,6 +133,10 @@ _FAMILY_TESTS: tuple[tuple[str, tuple[str, ...]], ...] = (
 # these entries prevent a cheap ``affected`` run from silently missing a typed
 # boundary or neutral wire contract.
 _EXACT_TESTS: dict[str, tuple[str, ...]] = {
+    "custom_components/eybond_local/payload/short_ascii_mppt.py": (
+        "test_short_ascii_mppt.py",
+    ),
+    "tools/decode_short_ascii_mppt.py": ("test_short_ascii_mppt.py",),
     "custom_components/eybond_local/payload/short_ascii.py": (
         "test_eybond_short_ascii.py", "test_short_ascii_optional.py",
     ),
@@ -547,6 +552,9 @@ def affected_test_files(paths: tuple[Path, ...]) -> tuple[Path, ...]:
         if value.startswith("tests/test_") and path.suffix == ".py":
             selected.add(TEST_ROOT / path.name)
             continue
+        # Explicit mappings also cover offline tools; they need not be part of
+        # the HA integration package to have a load-bearing behavioral test.
+        selected.update(TEST_ROOT / name for name in _EXACT_TESTS.get(value, ()))
         if not value.startswith("custom_components/eybond_local/"):
             continue
 
@@ -554,9 +562,6 @@ def affected_test_files(paths: tuple[Path, ...]) -> tuple[Path, ...]:
         direct = TEST_ROOT / f"test_{path.stem}.py"
         if direct.is_file():
             selected.add(direct)
-        selected.update(
-            TEST_ROOT / name for name in _EXACT_TESTS.get(value, ())
-        )
         for prefix, test_names in _FAMILY_TESTS:
             if value.startswith(prefix):
                 selected.update(TEST_ROOT / name for name in test_names)
