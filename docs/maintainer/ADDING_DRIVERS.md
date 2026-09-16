@@ -35,6 +35,17 @@ completed before that same peer closed remains valid if no successor exists.
 Disconnect-failed futures are consumed even if a queued write never reached
 its response wait. These rules do not select an auxiliary grammar or enable PV.
 
+The same post-reply owner check applies to auxiliary reads, including failures
+after replacement. Receive-side retirement is synchronous: disconnect detaches
+the old requests, closes that session's lifetime token and writer, and cancels
+its reader before awaiting bounded cleanup. Every parser wait is fenced by the
+captured session's `read` guard, including the outer timeout and error result;
+cancellation alone is not ownership proof. This prevents late AT, framed or
+raw bytes and old EOF/timeout diagnostics from changing successor state. The
+lifetime guard is active even when auxiliary parsing is disabled. Keep all new
+parser awaits inside that guard; do not wrap only the inner socket read of a
+`wait_for`, which can itself race with cancellation.
+
 ### Qualified short-ASCII baseline
 
 `eybond_short_ascii` is a separate read-only FC4 payload driver. It does not call

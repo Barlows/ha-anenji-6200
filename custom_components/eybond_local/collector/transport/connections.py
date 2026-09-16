@@ -258,14 +258,18 @@ class _CollectorConnection:
     ) -> bytes:
         """Internal read-only side channel; never inferred by device discovery."""
 
-        writer = self._writer
-        if writer is None or not self.connected:
-            raise ConnectionError("collector_not_connected")
-        return await self._auxiliary_session.send(
-            payload, writer=writer, reader_task=self._reader_task,
-            request_lock=self._request_lock, write_lock=self._write_lock,
-            write_timeout=self._write_timeout, request_timeout=request_timeout,
-        )
+        owner = SocketSendOwner.capture(self)
+        try:
+            response = await self._auxiliary_session.send(
+                payload, writer=owner.writer, reader_task=self._reader_task,
+                request_lock=self._request_lock, write_lock=self._write_lock,
+                write_timeout=self._write_timeout, request_timeout=request_timeout,
+            )
+        except Exception:
+            owner.check_reply(self)
+            raise
+        owner.check_reply(self)
+        return response
 
     async def async_query(self, command: str, *, request_timeout: float) -> CollectorAtResponse:
         owner = SocketSendOwner.capture(self)
@@ -456,18 +460,19 @@ class _CollectorConnection:
         if not isinstance(reader, _PrefixedAsyncReader):
             reader = _PrefixedAsyncReader(reader)
         auxiliary = self._auxiliary_session
+        read = auxiliary.read
         try:
-            while True:
+            while not auxiliary.closed:
                 auxiliary.at_boundary = True
-                first = await reader.readexactly(1)
+                first = await read(reader.readexactly(1))
                 auxiliary.at_boundary = False
                 frame_started = asyncio.get_running_loop().time()
                 auxiliary_claim = auxiliary.claim
                 try:
-                    prefix = first + await asyncio.wait_for(
+                    prefix = first + await read(asyncio.wait_for(
                         reader.readexactly(2),
                         timeout=_FRAMED_HEADER_COMPLETION_TIMEOUT,
-                    )
+                    ))
                 except asyncio.TimeoutError:
                     self._collector.last_disconnect_reason = (
                         "collector_frame_header_timeout"
@@ -480,16 +485,16 @@ class _CollectorConnection:
                     )
                     return
                 if prefix == b"AT+":
-                    line = prefix + await reader.read_at_response()
+                    line = prefix + await read(reader.read_at_response())
                     self._handle_at_response(line)
                     continue
 
                 if auxiliary.enabled:
-                    frame = await async_read_binary_frame(
+                    frame = await read(async_read_binary_frame(
                         reader, prefix=prefix, grammar=BinaryGrammar.MIXED,
                         started_at=frame_started,
                         timeout=_FRAMED_PAYLOAD_COMPLETION_TIMEOUT,
-                    )
+                    ))
                     if frame.grammar is BinaryGrammar.AABB:
                         auxiliary.accept(frame, auxiliary_claim)
                         continue
@@ -498,10 +503,10 @@ class _CollectorConnection:
                     payload = frame.wire[HEADER_SIZE:]
                 else:
                     try:
-                        header_bytes = prefix + await asyncio.wait_for(
+                        header_bytes = prefix + await read(asyncio.wait_for(
                             reader.readexactly(HEADER_SIZE - len(prefix)),
                             timeout=_FRAMED_HEADER_COMPLETION_TIMEOUT,
-                        )
+                        ))
                     except asyncio.TimeoutError:
                         self._collector.last_disconnect_reason = (
                             "collector_frame_header_timeout"
@@ -534,10 +539,10 @@ class _CollectorConnection:
                     payload = b""
                     if header.payload_len > 0:
                         try:
-                            payload = await asyncio.wait_for(
+                            payload = await read(asyncio.wait_for(
                                 reader.readexactly(header.payload_len),
                                 timeout=_FRAMED_PAYLOAD_COMPLETION_TIMEOUT,
-                            )
+                            ))
                         except asyncio.TimeoutError:
                             self._collector.last_disconnect_reason = (
                                 "collector_frame_payload_timeout"
@@ -672,6 +677,19 @@ class _CollectorConnection:
         if at_future is not None and not at_future.done():
             at_future.set_exception(ConnectionError("collector_disconnected"))
 
+        # Fence all old I/O before the first cleanup await; wait_closed() can
+        # be slow. The reader's session guard also rejects a completed read
+        # that wins the race with cancellation.
+        if writer:
+            try:
+                writer.close()
+            except Exception:
+                pass
+        if reader_task and reader_task is not skip_task:
+            reader_task.cancel()
+        if heartbeat_task and heartbeat_task is not skip_task:
+            heartbeat_task.cancel()
+
         if heartbeat_task and heartbeat_task is not skip_task:
             await _cancel_and_join_task(heartbeat_task)
 
@@ -770,14 +788,18 @@ class _CollectorAtConnection:
     ) -> bytes:
         """Internal read-only side channel; never inferred by device discovery."""
 
-        writer = self._writer
-        if writer is None or not self.connected:
-            raise ConnectionError("collector_not_connected")
-        return await self._auxiliary_session.send(
-            payload, writer=writer, reader_task=self._reader_task,
-            request_lock=self._request_lock, write_lock=self._write_lock,
-            write_timeout=self._write_timeout, request_timeout=request_timeout,
-        )
+        owner = SocketSendOwner.capture(self)
+        try:
+            response = await self._auxiliary_session.send(
+                payload, writer=owner.writer, reader_task=self._reader_task,
+                request_lock=self._request_lock, write_lock=self._write_lock,
+                write_timeout=self._write_timeout, request_timeout=request_timeout,
+            )
+        except Exception:
+            owner.check_reply(self)
+            raise
+        owner.check_reply(self)
+        return response
 
     async def async_query(self, command: str, *, request_timeout: float) -> CollectorAtResponse:
         owner = SocketSendOwner.capture(self)
@@ -1159,28 +1181,29 @@ class _CollectorAtConnection:
         if not isinstance(reader, _PrefixedAsyncReader):
             reader = _PrefixedAsyncReader(reader)
         auxiliary = self._auxiliary_session
+        read = auxiliary.read
         try:
             buffered_prefix = b""
-            while True:
+            while not auxiliary.closed:
                 auxiliary.at_boundary = not buffered_prefix
                 if buffered_prefix:
                     first = buffered_prefix[:1]
                     buffered_prefix = buffered_prefix[1:]
                 else:
-                    first = await reader.readexactly(1)
+                    first = await read(reader.readexactly(1))
 
                 auxiliary.at_boundary = False
                 frame_started = asyncio.get_running_loop().time()
                 auxiliary_claim = auxiliary.claim
                 if first == b"A":
                     tail = reader.readexactly(2)
-                    prefix = first + (
-                        await asyncio.wait_for(
+                    prefix = first + await read(
+                        asyncio.wait_for(
                             tail, timeout=_FRAMED_PAYLOAD_COMPLETION_TIMEOUT,
-                        ) if auxiliary.enabled else await tail
+                        ) if auxiliary.enabled else tail
                     )
                     if prefix == b"AT+":
-                        line = prefix + await reader.read_at_response()
+                        line = prefix + await read(reader.read_at_response())
                         self._handle_at_response_line(line)
                         continue
                     buffered_prefix = prefix + buffered_prefix
@@ -1195,7 +1218,7 @@ class _CollectorAtConnection:
                     prefix = buffered_prefix or first
                     buffered_prefix = b""
                     if len(prefix) < 3:
-                        prefix += await reader.readexactly(3 - len(prefix))
+                        prefix += await read(reader.readexactly(3 - len(prefix)))
                     frame_length = _modbus_rtu_response_length(prefix[:3])
                     if frame_length is None or len(prefix) > frame_length:
                         self._record_unhandled_raw_fragment(
@@ -1205,7 +1228,7 @@ class _CollectorAtConnection:
                         continue
                     frame = prefix
                     if len(frame) < frame_length:
-                        frame += await reader.readexactly(frame_length - len(frame))
+                        frame += await read(reader.readexactly(frame_length - len(frame)))
                     self._collector.raw_last_parser = "raw_modbus_rtu"
                     raw_future.set_result(frame)
                     continue
@@ -1222,10 +1245,10 @@ class _CollectorAtConnection:
                     )
                 ):
                     if buffered_prefix:
-                        line = buffered_prefix + await reader.readuntil(b"\r")
+                        line = buffered_prefix + await read(reader.readuntil(b"\r"))
                         buffered_prefix = b""
                     else:
-                        line = first + await reader.readuntil(b"\r")
+                        line = first + await read(reader.readuntil(b"\r"))
                     self._handle_raw_ascii_line(line, parser="raw_pending_or_plain_line")
                     continue
 
@@ -1237,10 +1260,10 @@ class _CollectorAtConnection:
                     buffered_prefix = buffered_prefix[3:]
                 else:
                     tail = reader.readexactly(3 - len(buffered_prefix))
-                    prefix = buffered_prefix + (
-                        await asyncio.wait_for(
+                    prefix = buffered_prefix + await read(
+                        asyncio.wait_for(
                             tail, timeout=_FRAMED_PAYLOAD_COMPLETION_TIMEOUT,
-                        ) if auxiliary.enabled else await tail
+                        ) if auxiliary.enabled else tail
                     )
                     buffered_prefix = b""
                 if not auxiliary.enabled and prefix.startswith((b"(", b"^")):
@@ -1249,12 +1272,12 @@ class _CollectorAtConnection:
                         line = prefix[: terminator + 1]
                         buffered_prefix = prefix[terminator + 1 :] + buffered_prefix
                     else:
-                        line = prefix + await reader.readuntil(b"\r")
+                        line = prefix + await read(reader.readuntil(b"\r"))
                     self._handle_raw_ascii_line(line, parser="raw_prefix_ascii")
                     continue
 
                 if not auxiliary.enabled and prefix in {b"NAK", b"NOA", b"ERC"}:
-                    line = prefix + await reader.readuntil(b"\r")
+                    line = prefix + await read(reader.readuntil(b"\r"))
                     self._handle_raw_ascii_line(line, parser="raw_negative")
                     continue
 
@@ -1263,17 +1286,17 @@ class _CollectorAtConnection:
                     and self._raw_passthrough_frame_format == "plain_line"
                     and prefix.startswith(b"BL")
                 ):
-                    line = prefix + await reader.readuntil(b"\r")
+                    line = prefix + await read(reader.readuntil(b"\r"))
                     self._handle_raw_ascii_line(line, parser="raw_plain_line_bare_token")
                     continue
 
                 if prefix != b"AT+":
                     if auxiliary.enabled:
-                        frame = await async_read_binary_frame(
+                        frame = await read(async_read_binary_frame(
                             reader, prefix=prefix, grammar=BinaryGrammar.MIXED,
                             started_at=frame_started,
                             timeout=_FRAMED_PAYLOAD_COMPLETION_TIMEOUT,
-                        )
+                        ))
                         if frame.grammar is BinaryGrammar.AABB:
                             auxiliary.accept(frame, auxiliary_claim)
                             continue
@@ -1281,10 +1304,10 @@ class _CollectorAtConnection:
                         header = frame.header
                         payload = frame.wire[HEADER_SIZE:]
                     else:
-                        header_tail = await self._read_mixed_frame_tail(
+                        header_tail = await read(self._read_mixed_frame_tail(
                             reader,
                             HEADER_SIZE - len(prefix),
-                        )
+                        ))
                         if header_tail is None:
                             self._record_unhandled_raw_fragment(
                                 prefix,
@@ -1299,10 +1322,10 @@ class _CollectorAtConnection:
                                 and _looks_like_plain_raw_response_start(header_bytes[:1])
                             ):
                                 try:
-                                    line = header_bytes + await asyncio.wait_for(
+                                    line = header_bytes + await read(asyncio.wait_for(
                                         reader.readuntil(b"\r"),
                                         timeout=_AT_TEXT_MIXED_FRAME_READ_TIMEOUT,
-                                    )
+                                    ))
                                 except asyncio.TimeoutError:
                                     self._record_unhandled_raw_fragment(
                                         header_bytes,
@@ -1318,10 +1341,10 @@ class _CollectorAtConnection:
                             continue
                         payload = b""
                         if header.payload_len > 0:
-                            payload = await self._read_mixed_frame_tail(
+                            payload = await read(self._read_mixed_frame_tail(
                                 reader,
                                 header.payload_len,
-                            )
+                            ))
                             if payload is None:
                                 self._record_unhandled_raw_fragment(
                                     header_bytes,
@@ -1365,7 +1388,7 @@ class _CollectorAtConnection:
                         )
                     continue
 
-                line = prefix + await reader.readuntil(b"\n")
+                line = prefix + await read(reader.readuntil(b"\n"))
                 try:
                     response = parse_at_response(line)
                 except Exception:
@@ -1544,6 +1567,14 @@ class _CollectorAtConnection:
                 framed_future.set_exception(ConnectionError("collector_disconnected"))
         self._pending_framed_response.clear()
         self._pending_framed_fcode.clear()
+
+        if writer:
+            try:
+                writer.close()
+            except Exception:
+                pass
+        if reader_task and reader_task is not skip_task:
+            reader_task.cancel()
 
         if writer:
             await _close_writer_bounded(writer)

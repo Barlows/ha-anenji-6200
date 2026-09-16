@@ -11,10 +11,12 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import math
+from typing import Awaitable, TypeVar
 
 from .binary_framing import BinaryFrame, BinaryFramingError, BinaryGrammar
 from .common import _cancel_and_join_task, _close_writer_bounded
 
+_T = TypeVar("_T")
 
 _READ_QUERIES = {
     b"\x5a\xa5\x02\x00" + bytes(16) + b"\x02": b"\x02\x00",
@@ -48,6 +50,21 @@ class AuxiliaryReadSession:
         self.closed = True
         if self.claim is not None and not self.claim.future.done():
             self.claim.future.set_exception(ConnectionError("collector_disconnected"))
+
+    async def read(self, operation: Awaitable[_T]) -> _T:
+        """Fence parser awaits against this physical session's retirement.
+
+        Cancellation alone is insufficient: a completed read/wait_for may win
+        that race. Check after the ENTIRE parser wait (including its timeout),
+        before bytes or errors can update connection-wide state. This lifetime
+        guard also applies when the optional auxiliary grammar is disabled.
+        """
+
+        try:
+            return await operation
+        finally:
+            if self.closed:
+                raise asyncio.CancelledError
 
     def accept(self, frame: BinaryFrame, claim: AuxiliaryReadClaim | None) -> None:
         """Deliver only to the owner present when this frame started arriving."""

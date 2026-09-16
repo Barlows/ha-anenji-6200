@@ -24,6 +24,10 @@ the GitHub release body should be rendered from the matching version section her
 
 ### Fixed
 
+- Retired collector readers can no longer deliver buffered replies, identity
+  observations or read errors to a replacement connection during slow socket
+  shutdown. Auxiliary read results also retain their original session owner.
+
 - Queued collector commands now stay bound to the TCP session on which they
   started. A reconnect cannot redirect an old read, write or UART bootstrap
   to the replacement socket. A confirmed reply followed by normal peer closure
