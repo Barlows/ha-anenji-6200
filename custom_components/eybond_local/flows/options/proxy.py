@@ -258,11 +258,15 @@ class ProxyCaptureOptionsMixin:
                     ),
                 )
             )
-        if overview.can_start:
+        can_reconnect = bool(getattr(overview, "can_reconnect_for_start", False))
+        if overview.can_start or can_reconnect:
             options.append(
                 SelectOptionDict(
                     value="start",
                     label=self._tr(
+                        "common.dynamic.proxy_capture_action_reconnect_start",
+                        "Reconnect and start capture",
+                    ) if can_reconnect else self._tr(
                         "common.dynamic.proxy_capture_action_start",
                         "Start proxy capture",
                     ),
@@ -419,6 +423,11 @@ class ProxyCaptureOptionsMixin:
 
     def _proxy_capture_user_plan(self, values: dict[str, Any]) -> str:
         blocking_reason = self._localized_proxy_capture_blocking_reason(values)
+        if values.get("proxy_capture_can_reconnect_for_start"):
+            return self._tr(
+                "common.dynamic.proxy_capture_plan_reconnect_start",
+                "The last check found no collector connection. Choose Reconnect and start capture to try again. Home Assistant will first connect to the collector and read its current server address, then temporarily redirect traffic through Home Assistant. If those checks fail, capture will not start and the address will not be changed.",
+            )
         if values.get("proxy_capture_can_stop"):
             expires_at = self._format_proxy_capture_session_expires_at(
                 values.get("proxy_capture_session_expires_at")

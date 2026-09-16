@@ -9,6 +9,14 @@ the GitHub release body should be rendered from the matching version section her
 
 ### Fixed
 
+- Callback identity checks now return their borrowed shared-listener reference
+  even if sending the trigger fails or the operation is cancelled before waiting
+  for a session. Existing session ownership and callback retry timing are unchanged
+  (#45).
+- Proxy capture now offers an explicit reconnect-and-start attempt when only
+  the last connection snapshot is offline and the route is known. The existing
+  live endpoint checks still run before any redirect; inverter identification
+  is not required (#43).
 - Read-only cloud analysis now retains its results for collector-only entries
   with no local inverter driver. Recognized cloud readings no longer cause the
   result-building step to fail while checking local sensor coverage (#23).

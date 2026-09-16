@@ -2534,6 +2534,10 @@ class CoordinatorCloudToolsMixin:
                 self.support_acquisition_readiness.proxy_capture.can_start
             ),
             collector_cloud_family=self.collector_cloud_family,
+            collector_session_protocol=self.collector_session_protocol,
+            cloud_session_protocol=resolve_collector_cloud_session_protocol(
+                self.collector_cloud_family
+            ),
             current_endpoint=str(
                 current_endpoint
                 or runtime_values.get("collector_server_endpoint")
@@ -2552,6 +2556,7 @@ class CoordinatorCloudToolsMixin:
             "proxy_capture_summary": overview.summary,
             "proxy_capture_blocking_reason": overview.blocking_reason,
             "proxy_capture_can_start": overview.can_start,
+            "proxy_capture_can_reconnect_for_start": overview.can_reconnect_for_start,
             "proxy_capture_can_stop": overview.can_stop,
             "proxy_capture_critical_phase": overview.critical_phase,
             "proxy_capture_redirect_required": overview.redirect_required,

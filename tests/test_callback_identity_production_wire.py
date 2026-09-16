@@ -65,7 +65,12 @@ from custom_components.eybond_local.const import (
 )
 from custom_components.eybond_local.connection.callback_identity import (
     CallbackIdentityRequest,
+    IDENTITY_TIMEOUT,
+    IDENTITY_TRIGGER_NOT_SENT,
     async_run_callback_identity_transaction,
+)
+from custom_components.eybond_local.connection.callback_ledger import (
+    get_callback_trigger_ledger,
 )
 from fake_collector import FakeCollectorService
 from fake_collector_lib import CollectorProfile, resolve_scenario
@@ -237,6 +242,108 @@ class ProductionWireHarness(unittest.IsolatedAsyncioTestCase):
             if session.session_id == session_id:
                 return session
         raise AssertionError(f"session {session_id} not observed")
+
+
+class CallbackListenerOwnershipTests(ProductionWireHarness):
+    """Even exits BEFORE identity waiting must return the borrowed listener."""
+
+    async def asyncTearDown(self) -> None:
+        # A regression must fail without leaving its socket open for other tests.
+        while self._listener._ref_count > 1:
+            await _release_shared_listener(self._listener)
+        await super().asyncTearDown()
+
+    def _request(self, **overrides):
+        values = {
+            "server_ip": "127.0.0.1",
+            "tcp_port": self._tcp_port,
+            "udp_port": 58899,
+            "target_ip": "127.0.0.1",
+            "session_wait_timeout": 0.01,
+        }
+        values.update(overrides)
+        return CallbackIdentityRequest(**values)
+
+    async def _assert_released(self) -> None:
+        self.assertEqual(self._listener._ref_count, 1)
+        self.assertEqual(self._registry.diagnostics()["claim_count"], 0)
+        self.assertEqual(get_callback_trigger_ledger().causality_owner(), "")
+        # Returning our reference must not shut down another consumer's listener.
+        _reader, writer = await asyncio.wait_for(
+            asyncio.open_connection("127.0.0.1", self._tcp_port), timeout=1.0
+        )
+        writer.close()
+        await writer.wait_closed()
+
+    async def test_incorrect_send_count_returns_borrowed_reference(self) -> None:
+        class Sender:
+            sends = 0
+
+            async def async_send(self, request):
+                for _ in range(self.sends):
+                    get_callback_trigger_ledger().record(
+                        target=request.target_ip, source="test_attempt"
+                    )
+
+        for count in (0, 2):
+            with self.subTest(sends=count):
+                sender = Sender()
+                sender.sends = count
+                outcome = await async_run_callback_identity_transaction(
+                    self._hass, self._request(), sender=sender
+                )
+                self.assertEqual(outcome.result, IDENTITY_TRIGGER_NOT_SENT)
+                await self._assert_released()
+
+    async def test_trigger_exception_returns_borrowed_reference(self) -> None:
+        class Sender:
+            async def async_send(self, request):
+                raise OSError("synthetic UDP failure")
+
+        outcome = await async_run_callback_identity_transaction(
+            self._hass, self._request(), sender=Sender()
+        )
+        self.assertEqual(outcome.result, IDENTITY_TRIGGER_NOT_SENT)
+        await self._assert_released()
+
+    async def test_cancellation_during_send_returns_borrowed_reference(self) -> None:
+        entered = asyncio.Event()
+
+        class Sender:
+            async def async_send(self, request):
+                entered.set()
+                await asyncio.Event().wait()
+
+        task = asyncio.create_task(async_run_callback_identity_transaction(
+            self._hass, self._request(), sender=Sender()
+        ))
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=1.0)
+            self.assertEqual(self._listener._ref_count, 2)
+        finally:
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=1.0)
+        await self._assert_released()
+
+    async def test_snapshot_exception_returns_borrowed_reference(self) -> None:
+        with patch(
+            "custom_components.eybond_local.collector.silent_session_probe."
+            "SilentSessionIdentityProbeChannel.snapshot_silent_session_ids",
+            side_effect=RuntimeError("synthetic snapshot failure"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "snapshot failure"):
+                await async_run_callback_identity_transaction(
+                    self._hass, self._request()
+                )
+        await self._assert_released()
+
+    async def test_inbound_timeout_returns_only_its_reference(self) -> None:
+        outcome = await async_run_callback_identity_transaction(
+            self._hass, self._request(strategy=CONNECTION_STRATEGY_INBOUND)
+        )
+        self.assertEqual(outcome.result, IDENTITY_TIMEOUT)
+        await self._assert_released()
 
 
 class FramedProductionWireTests(ProductionWireHarness):

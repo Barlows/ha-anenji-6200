@@ -57,6 +57,9 @@ class ProxyCaptureOverview:
     masked_endpoint: str
     latest_trace_path: str
     latest_manifest_path: str
+    # A stale disconnected snapshot can offer an explicit live preflight, not
+    # claim that capture is ready or bypass the endpoint transaction's checks.
+    can_reconnect_for_start: bool = False
 
 
 def build_proxy_capture_overview(
@@ -255,6 +258,7 @@ def build_proxy_capture_overview(
             summary="The collector is not connected, so proxy capture cannot start yet.",
             blocking_reason="collector_not_connected",
             can_start=False,
+            can_reconnect_for_start=bool(collector_control_allowed and wire_mode),
             can_stop=False,
             critical_phase=False,
             redirect_required=redirect_required,

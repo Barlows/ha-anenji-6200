@@ -4606,6 +4606,7 @@ class CoordinatorDeviceHierarchyTests(unittest.TestCase):
                     summary="",
                     blocking_reason="",
                     can_start=bool(kwargs["upstream_endpoint"]),
+                    can_reconnect_for_start=False,
                     can_stop=False,
                     critical_phase=False,
                     redirect_required=True,
@@ -7990,6 +7991,30 @@ class CoordinatorDeviceHierarchyTests(unittest.TestCase):
             for patcher in patchers:
                 stack.enter_context(patcher)
             yield coordinator
+
+    def test_proxy_start_failed_live_recheck_never_mutates_endpoint(self) -> None:
+        async def _run() -> None:
+            for error in (
+                RuntimeError("cloud_tool_collector_not_connected"),
+                RuntimeError("cloud_tool_current_endpoint_unavailable"),
+                asyncio.CancelledError(),
+            ):
+                with self.subTest(error=type(error).__name__):
+                    rec = self._fresh_rec()
+
+                    async def _endpoint_context():
+                        raise error
+
+                    with self._proxy_start_env(rec, endpoint_context=_endpoint_context) as coord:
+                        with self.assertRaises(type(error)):
+                            await coord.async_start_proxy_capture(confirm_redirect=True)
+                    self.assertEqual(rec["route"], [])
+                    self.assertEqual(rec["redirect"], [])
+                    self.assertEqual(rec["saved"], [])
+                    self.assertEqual(rec["disconnect"], [])
+                    self.assertFalse(self._authority().is_held("entry-cancel"))
+
+        asyncio.run(_run())
 
     def test_proxy_start_cancel_during_first_persistence_never_restores_endpoint(self) -> None:
         # Same pre-wire boundary for proxy capture: tentative persistence may be

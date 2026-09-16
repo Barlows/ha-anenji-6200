@@ -45,13 +45,21 @@ If you are not sure, stop and create a Support Archive instead.
 7. Reproduce the problem, or follow the developer's instructions.
 8. Stop the capture, or wait for the timer to finish.
 
+If the last check found the collector disconnected but its route is known,
+the screen offers **Reconnect and start capture**. This first reconnects to
+the collector and reads its current server address, without needing to identify
+the inverter. Only after the checks pass does Home Assistant temporarily change
+the endpoint and start relaying traffic. If connection or address checks fail,
+capture does not start and the endpoint is not changed. This is a retry option,
+not a fix for an unstable collector connection.
+
 Duration, start/stop, live status, and the saved result are all managed on this
 screen. Older versions exposed separate proxy entities on the collector device;
 those controls are obsolete and are removed during entity migration.
 
-The option appears only when a new capture can safely start. If a capture is
-already active or needs recovery, the option remains visible until Home
-Assistant finishes stopping it and restoring the collector route.
+The screen shows any conditions that prevent capture from starting. If a capture
+is already active or needs recovery, its status and recovery actions remain
+available until Home Assistant finishes restoring the collector route.
 
 <p align="center"><img src="../images/proxy-capture-running.png" alt="Running proxy capture session with timer and live log" width="720"></p>
 

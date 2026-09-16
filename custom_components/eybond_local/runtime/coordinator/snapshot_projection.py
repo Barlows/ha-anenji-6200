@@ -296,6 +296,7 @@ class CoordinatorSnapshotProjectionMixin:
             "proxy_capture_summary": overview.summary,
             "proxy_capture_blocking_reason": overview.blocking_reason,
             "proxy_capture_can_start": overview.can_start,
+            "proxy_capture_can_reconnect_for_start": overview.can_reconnect_for_start,
             "proxy_capture_can_stop": overview.can_stop,
             "proxy_capture_critical_phase": overview.critical_phase,
             "proxy_capture_redirect_required": overview.redirect_required,

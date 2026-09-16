@@ -19,6 +19,39 @@ from custom_components.eybond_local.support.proxy_capture.trace import build_pro
 
 
 class ProxyCapturePlannerTests(unittest.TestCase):
+    def test_disconnected_known_route_offers_live_recheck_not_ready_state(self) -> None:
+        values = {
+            "control_mode": "auto",
+            "collector_connected": False,
+            "cloud_tools_allowed": True,
+            "collector_session_protocol": "eybond_framed",
+            "cloud_session_protocol": "at_text",
+            "current_endpoint": "cloud.example,18899,TCP",
+            "upstream_endpoint": "cloud.example,18899,TCP",
+            "target_endpoint": "192.0.2.10,18899,TCP",
+        }
+        overview = build_proxy_capture_overview(**values)
+        self.assertFalse(overview.can_start)
+        self.assertFalse(overview.collector_connected)
+        self.assertEqual(overview.blocking_reason, "collector_not_connected")
+        self.assertTrue(overview.can_reconnect_for_start)
+
+        # Retrying a connection is not an escape from route/policy validation.
+        for overrides in (
+            {"collector_control_allowed": False},
+            {"collector_proxy_capture_allowed": False},
+            {"cloud_tools_allowed": False},
+            {"current_endpoint": ""},
+            {"upstream_endpoint": ""},
+            {"target_endpoint": ""},
+            {"collector_session_protocol": ""},
+            {"cloud_session_protocol": ""},
+            {"collector_session_protocol": "", "cloud_session_protocol": ""},
+        ):
+            with self.subTest(overrides=overrides):
+                blocked = build_proxy_capture_overview(**(values | overrides))
+                self.assertFalse(blocked.can_reconnect_for_start)
+
     def test_uses_new_at_cloud_session_not_existing_framed_ha_session(
         self,
     ) -> None:

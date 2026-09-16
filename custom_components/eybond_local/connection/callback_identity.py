@@ -648,7 +648,7 @@ async def _async_run_attempt(
     reader: CallbackIdentityReader | None,
     sender: CallbackTriggerSender | None,
 ) -> CallbackIdentityOutcome:
-    """The attempt body. Owns claim cleanup on every exit path."""
+    """The attempt body. Owns listener and claim cleanup on every exit path."""
 
     registry = _registry(hass)
     if registry is None:
@@ -674,43 +674,45 @@ async def _async_run_attempt(
         host=str(request.server_ip or "").strip() or "0.0.0.0",
         port=int(request.tcp_port or 0),
     )
-    await probe_channel.async_open()
-
-    baseline = frozenset(
-        session["session_id"] for session in _session_views(hass) if session["session_id"]
-    )
-    pending_baseline = probe_channel.snapshot_silent_session_ids()
-
-    # --- 3. exactly one trigger, or none -------------------------------------
-    # The bootstrap CONTINUATION owns no new causal window: the silent socket
-    # was already attributed by the previous attempt's trigger, so this
-    # attempt sends ZERO datagrams and only runs its one read-only query.
-    expected_sends = (
-        1
-        if strategy == CONNECTION_STRATEGY_CALLBACK_ON_DEMAND and bootstrap is None
-        else 0
-    )
-    if expected_sends:
-        try:
-            await (sender or _ProductionTriggerSender()).async_send(request)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.info("Callback trigger could not be sent: %s", exc)
-    if attempt.own_sends != expected_sends:
-        # Honest and specific. inbound declares zero and must have sent zero; a
-        # callback attempt that never got its datagram out is OUR failure, not
-        # somebody else's interference.
-        logger.info(
-            "Callback attempt %s sent %d of %d own triggers",
-            owner,
-            attempt.own_sends,
-            expected_sends,
-        )
-        return CallbackIdentityOutcome(result=IDENTITY_TRIGGER_NOT_SENT)
-
     claimed = False
     try:
+        # Cleanup starts with acquisition, not with session waiting: a cancelled
+        # or failed trigger must also return this channel's listener reference.
+        await probe_channel.async_open()
+
+        baseline = frozenset(
+            session["session_id"] for session in _session_views(hass) if session["session_id"]
+        )
+        pending_baseline = probe_channel.snapshot_silent_session_ids()
+
+        # --- 3. exactly one trigger, or none ---------------------------------
+        # The bootstrap CONTINUATION owns no new causal window: the silent socket
+        # was already attributed by the previous attempt's trigger, so this
+        # attempt sends ZERO datagrams and only runs its one read-only query.
+        expected_sends = (
+            1
+            if strategy == CONNECTION_STRATEGY_CALLBACK_ON_DEMAND and bootstrap is None
+            else 0
+        )
+        if expected_sends:
+            try:
+                await (sender or _ProductionTriggerSender()).async_send(request)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.info("Callback trigger could not be sent: %s", exc)
+        if attempt.own_sends != expected_sends:
+            # Honest and specific. inbound declares zero and must have sent zero; a
+            # callback attempt that never got its datagram out is OUR failure, not
+            # somebody else's interference.
+            logger.info(
+                "Callback attempt %s sent %d of %d own triggers",
+                owner,
+                attempt.own_sends,
+                expected_sends,
+            )
+            return CallbackIdentityOutcome(result=IDENTITY_TRIGGER_NOT_SENT)
+
         # --- 4. wait for a socket -------------------------------------------
         (
             session,

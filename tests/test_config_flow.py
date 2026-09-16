@@ -7196,6 +7196,51 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_proxy_capture_disconnected_offers_explicit_live_preflight(self) -> None:
+        options = self._make_options_flow()
+        overview = types.SimpleNamespace(
+            can_start=False, can_stop=False, critical_phase=False,
+            can_reconnect_for_start=True, redirect_required=True,
+            blocking_reason="collector_not_connected",
+        )
+        calls = []
+
+        async def _start(**kwargs):
+            calls.append(kwargs)
+
+        coordinator = types.SimpleNamespace(
+            proxy_capture_overview=overview,
+            async_start_proxy_capture=_start,
+            data=types.SimpleNamespace(values={}),
+        )
+        options._config_entry.runtime_data = coordinator
+        choices = options._proxy_capture_action_options(coordinator)
+        self.assertEqual([item["value"] for item in choices], ["start", "refresh"])
+        self.assertEqual(choices[0]["label"], "Reconnect and start capture")
+        # Disconnected state must not default to an endpoint-changing operation.
+        self.assertEqual(options._default_proxy_capture_action(coordinator, choices), "refresh")
+
+        with patch.object(options, "_support_acquisition_readiness",
+                          return_value=types.SimpleNamespace(
+                              proxy_capture=types.SimpleNamespace(visible=True))), \
+             patch.object(options, "_diagnostics_placeholders", return_value={}):
+            await options.async_step_proxy_capture()
+            self.assertEqual(calls, [])
+            await options.async_step_proxy_capture({"proxy_capture_action": "start"})
+
+        self.assertEqual(calls, [{
+            "anonymized": True,
+            "confirm_redirect": True,
+            "duration_minutes": DEFAULT_PROXY_CAPTURE_DURATION_MINUTES,
+        }])
+        plan = options._proxy_capture_user_plan({
+            "proxy_capture_can_reconnect_for_start": True,
+            "proxy_capture_blocking_reason": "collector_not_connected",
+        })
+        self.assertIn("read its current server address", plan)
+        self.assertIn("temporarily redirect", plan)
+        self.assertIn("address will not be changed", plan)
+
     async def test_show_proxy_capture_status_step_renders_current_status(self) -> None:
         options = self._make_options_flow()
 
