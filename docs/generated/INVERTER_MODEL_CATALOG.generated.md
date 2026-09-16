@@ -60,6 +60,7 @@ Runtime descriptors with no specific commercial model record. These are generic 
 | `aohai_fsa_family` | modbus_catalog | aohai_fsa_read_only | partial | yes |
 | `deye_lv_family` | modbus_catalog | deye_lv_untested | full | no |
 | `eybond_g_ascii_family` | eybond_g_ascii | eybond_g_ascii_read_only | partial | yes |
+| `eybond_short_ascii_family` | eybond_short_ascii | eybond_short_ascii_read_only | partial | yes |
 | `growatt_spf_family` | modbus_catalog | growatt_spf_untested | full | no |
 | `modbus_smg.protocol_11_family_fallback` | modbus_smg | smg_protocol_11_family_fallback | full | no |
 | `modbus_smg.protocol_1_family_fallback` | modbus_smg | smg_protocol_1_family_fallback | full | no |

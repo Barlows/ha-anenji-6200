@@ -86,7 +86,9 @@ def _snapshot_backed_inverter_metadata(coordinator: Any):
     effective_metadata = getattr(coordinator, "effective_metadata", None)
     profile_metadata = getattr(effective_metadata, "profile_metadata", None)
     register_schema_metadata = getattr(effective_metadata, "register_schema_metadata", None)
-    if profile_metadata is None or register_schema_metadata is None:
+    if register_schema_metadata is None or (
+        getattr(snapshot, "profile_name", "") and profile_metadata is None
+    ):
         return None
 
     driver_key = str(
@@ -94,7 +96,10 @@ def _snapshot_backed_inverter_metadata(coordinator: Any):
         or getattr(profile_metadata, "driver_key", "")
         or ""
     ).strip()
-    protocol_family = str(getattr(profile_metadata, "protocol_family", "") or "").strip()
+    protocol_family = str(
+        getattr(profile_metadata, "protocol_family", "")
+        or getattr(register_schema_metadata, "protocol_family", "") or ""
+    ).strip()
     if not driver_key:
         return None
 

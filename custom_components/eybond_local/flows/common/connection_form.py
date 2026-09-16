@@ -62,6 +62,7 @@ DRIVER_DISPLAY_LABELS: dict[str, str] = {
     "smartess_local": "SmartESS 0925 / Modbus",
     "pi30": "PI30",
     "eybond_g_ascii": "EyeBond G-ASCII",
+    "eybond_short_ascii": "EyeBond Short-ASCII",
     "pi18": "PI18",
 }
 

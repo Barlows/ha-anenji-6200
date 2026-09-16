@@ -26,6 +26,34 @@ model/field semantics and optional-data expiry remain separate work before
 user-facing support. Normal connections keep their existing grammar until an
 explicit auxiliary read is requested.
 
+### Qualified short-ASCII baseline
+
+`eybond_short_ascii` is a separate read-only FC4 payload driver. It does not call
+the auxiliary API above. It uses the existing catalog probe DAG and requires
+all three replies: MP (38 bytes), Q1 (51 bytes with unsigned additive checksum)
+and MD (24 bytes including fixed padding). Every query has a fixed timeout;
+there is no UART-mode change or fallback to a raw-serial route.
+
+The field layout follows vendor 19B4 segment 1 and saved exchanges from two
+devices. Fixed widths, status bits, checksum and envelope are validated before
+publishing a complete Q1 snapshot. A failed read raises rather than returning
+an empty success. Only static protocol/firmware facts enter identity details.
+The MD firmware text and collector PN are not inverter serials or retail
+model identifiers. The schema deliberately separates battery reference voltage,
+does not mirror output frequency as grid frequency, and leaves the unresolved
+Q1 output word in raw support evidence.
+
+The catalog surface is partial/read-only, with no controls profile. Its
+confirmed metadata snapshot may persist only with a current matching catalog,
+candidate revisions, resolution and evidence fingerprint. Reload must restore
+that schema without borrowing default driver controls. Unqualified schema-only
+hints remain invalid.
+
+Optional F/RB and AABB readings are not exposed by this baseline. They need
+separate semantic validation and explicit stale-value removal on timeout or
+loss of support. Do not report full PR/device support based on this baseline
+or on a saved-wire replay alone.
+
 The preferred workflow is:
 
 1. capture or import a local fixture

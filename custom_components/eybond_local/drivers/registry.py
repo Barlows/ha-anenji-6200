@@ -40,6 +40,7 @@ from .smartess_local import SmartEssLocalDriver
 from .smg import SmgModbusDriver
 from .srne import SrneModbusDriver
 from .eybond_g_ascii import EybondGAsciiDriver
+from .eybond_short_ascii import EybondShortAsciiDriver
 
 if TYPE_CHECKING:
     from .support_marker import DriverSupportMarker
@@ -53,6 +54,7 @@ _DRIVERS: tuple[InverterDriver, ...] = (
     EybondGAsciiDriver(),
     SmartEssLocalDriver(),
     Pi18Driver(),
+    EybondShortAsciiDriver(),
 )
 
 _EXPERIMENTAL_REPLAY_DRIVERS: tuple[InverterDriver, ...] = ()

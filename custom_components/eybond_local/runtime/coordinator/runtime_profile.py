@@ -57,11 +57,10 @@ class CoordinatorRuntimeProfileMixin:
             return None
 
         # Persist only when runtime supplied concrete metadata, not driver defaults alone.
-        profile_name = str(getattr(inverter, "profile_name", "") or "").strip()
         register_schema_name = str(
             getattr(inverter, "register_schema_name", "") or ""
         ).strip()
-        if not profile_name or not register_schema_name:
+        if not register_schema_name:
             return None
 
         effective_selection = resolve_effective_metadata_selection(

@@ -101,14 +101,14 @@ class EffectiveMetadataSnapshot:
 
         base_valid = bool(
             self.effective_owner_key
-            and self.profile_name
             and self.register_schema_name
             and self.confidence != "none"
         )
         if not base_valid:
             return False
         if not self.catalog_version:
-            return True
+            # Legacy schema-only hints never establish a runtime surface.
+            return bool(self.profile_name)
         return _catalog_surface_matches(self)
 
     def as_dict(self) -> dict[str, Any]:
@@ -307,6 +307,24 @@ def _catalog_surface_matches(snapshot: EffectiveMetadataSnapshot) -> bool:
         return False
     if surface.driver_key != snapshot.effective_owner_key:
         return False
+    if not snapshot.profile_name:
+        # A read-only runtime is a complete metadata choice, not an incomplete
+        # controls profile. Require a current, exact catalog resolution rather
+        # than trusting a bare schema path or a remembered family display name.
+        if not (
+            surface.read_only
+            and not surface.profile_name
+            and snapshot.resolution_level in {"exact", "family"}
+            and snapshot.evidence_fingerprint
+            and snapshot.candidate_keys
+            and snapshot.descriptor_revisions
+            and all(
+                key in catalog.devices
+                and catalog.devices[key].surface_key == snapshot.surface_key
+                for key in snapshot.candidate_keys
+            )
+        ):
+            return False
     if snapshot.candidate_keys:
         expected_revisions = tuple(
             f"{key}:{catalog.devices[key].revision}"

@@ -24,7 +24,8 @@ from ..metadata.detection_decision_tree import (
 )
 
 
-Parser = Callable[[str], dict[str, Any]]
+# An ASCII command may return a fixed binary or mixed ASCII/binary body.
+Parser = Callable[[str], dict[str, Any]] | Callable[[bytes], dict[str, Any]]
 EvidenceProvider = Callable[[CompiledProbeAction], Awaitable[object]]
 
 

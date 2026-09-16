@@ -244,9 +244,10 @@ class CoordinatorInverterProfileMixin:
     def shadow_learning_effective_metadata(self) -> Any:
         """Return the effective metadata a shadow-learning seed should carry.
 
-        Prefer the persisted snapshot, but the partial / unidentified tier never
-        persists one (it has no controls profile by design), so fall back to the
-        LIVE effective metadata (the family base schema). Without this fallback
+        Prefer a validated persisted snapshot, including catalog-confirmed
+        read-only schemas. Partial / unidentified devices without that catalog
+        evidence cannot persist one, so fall back to LIVE effective metadata
+        (the family base schema). Without this fallback
         the start path blocks with ``missing_effective_metadata_snapshot`` on
         exactly the devices learning exists for. This is the single source of
         truth shared with the config-flow preflight so the preview and the

@@ -20,6 +20,10 @@ HA_TEST_ROOT = REPO_ROOT / "tests_ha"
 
 _FAMILY_TESTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
+        "custom_components/eybond_local/protocol_catalogs/register_schemas/eybond_short_ascii/",
+        ("test_eybond_short_ascii.py", "test_effective_metadata_snapshot.py"),
+    ),
+    (
         "custom_components/eybond_local/protocol_catalogs/profiles/modbus_smg/",
         (
             "test_classic_smg_write_profile.py",
@@ -127,7 +131,21 @@ _FAMILY_TESTS: tuple[tuple[str, tuple[str, ...]], ...] = (
 # these entries prevent a cheap ``affected`` run from silently missing a typed
 # boundary or neutral wire contract.
 _EXACT_TESTS: dict[str, tuple[str, ...]] = {
+    "custom_components/eybond_local/payload/short_ascii.py": ("test_eybond_short_ascii.py",),
+    "custom_components/eybond_local/drivers/eybond_short_ascii.py": ("test_eybond_short_ascii.py",),
+    "custom_components/eybond_local/drivers/catalog_probe.py": (
+        "test_eybond_short_ascii.py", "test_catalog_probe.py",
+    ),
+    "custom_components/eybond_local/drivers/registry.py": (
+        "test_eybond_short_ascii.py", "test_device_catalog.py", "test_config_flow.py",
+    ),
+    "custom_components/eybond_local/metadata/effective_metadata_snapshot.py": (
+        "test_eybond_short_ascii.py", "test_effective_metadata_snapshot.py",
+        "test_effective_metadata.py", "test_coordinator_device_hierarchy.py",
+    ),
     "custom_components/eybond_local/protocol_catalogs/inverter_catalog.json": (
+        "test_eybond_short_ascii.py",
+        "test_effective_metadata_snapshot.py",
         "test_catalog_identity.py",
         "test_compiled_detection_catalog.py",
         "test_device_catalog.py",

@@ -55,7 +55,7 @@ class CoordinatorEntityReloadMixin:
         register_schema_name = str(
             getattr(snapshot, "register_schema_name", "") or ""
         ).strip()
-        if not (variant_key and profile_name and register_schema_name):
+        if not (variant_key and register_schema_name):
             return ("", "", "")
         return (variant_key, profile_name, register_schema_name)
 
@@ -76,11 +76,11 @@ class CoordinatorEntityReloadMixin:
             or getattr(self, "_entity_platforms_loaded_with_driver_fallback", False)
         ):
             return
-        if not all(runtime_signature):
+        if not (runtime_signature[0] and runtime_signature[2]):
             return
 
         first_runtime_signature = not any(setup_signature)
-        if not first_runtime_signature and not all(setup_signature):
+        if not first_runtime_signature and not (setup_signature[0] and setup_signature[2]):
             return
         if not first_runtime_signature and setup_signature == runtime_signature:
             return

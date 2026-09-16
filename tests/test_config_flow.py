@@ -4925,6 +4925,7 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
                 "EyeBond G-ASCII",
                 "SmartESS 0925 / Modbus",
                 "PI18",
+                "EyeBond Short-ASCII",
             ],
         )
 

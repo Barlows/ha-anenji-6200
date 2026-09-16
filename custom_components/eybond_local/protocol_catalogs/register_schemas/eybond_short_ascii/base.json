@@ -1,0 +1,38 @@
+{
+  "schema_key": "eybond_short_ascii_urtu1920_checksum",
+  "title": "EyeBond Short-ASCII / Read-only protocol family",
+  "driver_key": "eybond_short_ascii",
+  "protocol_family": "eybond_short_ascii",
+  "blocks": [
+    {"key": "status", "start": 0, "count": 0},
+    {"key": "serial", "start": 0, "count": 0},
+    {"key": "live", "start": 0, "count": 0},
+    {"key": "config", "start": 0, "count": 0}
+  ],
+  "measurement_descriptions": [
+    {"key": "protocol_id", "name": "Protocol ID", "diagnostic": true, "live": false},
+    {"key": "short_ascii_firmware", "name": "Inverter Firmware", "diagnostic": true, "live": false},
+    {"key": "grid_voltage", "name": "Grid Voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
+    {"key": "output_voltage", "name": "Output Voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
+    {"key": "load_percent", "name": "Load Percent", "unit": "%", "state_class": "measurement", "icon": "mdi:gauge"},
+    {"key": "output_frequency", "name": "Output Frequency", "unit": "Hz", "device_class": "frequency", "state_class": "measurement"},
+    {"key": "battery_reference_voltage", "name": "Battery Reference Voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement", "diagnostic": true},
+    {"key": "temperature", "name": "Inverter Temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement"},
+    {"key": "short_ascii_status_flags", "name": "Inverter Status Flags", "diagnostic": true, "enabled_default": false},
+    {"key": "short_ascii_fault_code", "name": "Inverter Fault Code", "diagnostic": true}
+  ],
+  "binary_sensor_descriptions": [
+    {"key": "inverter_fault", "name": "Inverter Fault", "device_class": "problem", "diagnostic": true},
+    {"key": "grid_available", "name": "Grid Available", "device_class": "power"},
+    {"key": "short_ascii_mains_input_connected", "name": "Mains Input Connected", "diagnostic": true},
+    {"key": "battery_low", "name": "Battery Low", "device_class": "battery"},
+    {"key": "pv_controller_present", "name": "PV Controller Present", "diagnostic": true}
+  ],
+  "notes": [
+    "Baseline FC4 payloads: MP 38 bytes, Q1 51 bytes, MD 24 bytes; no retail-model or serial-number inference.",
+    "Q1 has fixed columns and an unsigned additive 16-bit checksum. Missing columns, truncation and shifted replies are rejected.",
+    "Battery Reference Voltage is the vendor's single-battery value, not an inferred whole-pack voltage.",
+    "Output frequency is not grid frequency. The Q1 trailing output word has unresolved semantics and stays in raw support evidence.",
+    "Optional F/RB/AABB fields and all controls are intentionally absent from this baseline."
+  ]
+}

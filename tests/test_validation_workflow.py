@@ -14,6 +14,17 @@ from tools.validate import affected_test_files
 
 
 class AffectedValidationSelectionTests(unittest.TestCase):
+    def test_short_ascii_wire_driver_and_schema_select_read_only_regressions(self) -> None:
+        for path in (
+            "payload/short_ascii.py", "drivers/eybond_short_ascii.py",
+            "drivers/catalog_probe.py", "drivers/registry.py",
+            "protocol_catalogs/register_schemas/eybond_short_ascii/base.json",
+            "protocol_catalogs/inverter_catalog.json",
+        ):
+            with self.subTest(path=path):
+                self.assertIn("test_eybond_short_ascii.py",
+                              self._selected(f"custom_components/eybond_local/{path}"))
+
     def _selected(self, production_path: str) -> set[str]:
         return {
             path.name

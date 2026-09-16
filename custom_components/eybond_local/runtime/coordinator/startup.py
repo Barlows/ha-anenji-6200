@@ -21,7 +21,9 @@ from ...const import (
     DRIVER_HINT_AUTO,
 )
 from ...drivers.registry import get_driver
-from ...metadata.compiled_detection_catalog import resolve_unique_persisted_model_surface
+from ...metadata.compiled_detection_catalog import (
+    load_compiled_detection_catalog, resolve_unique_persisted_model_surface,
+)
 from ...metadata.profile_loader import load_driver_profile
 from ...metadata.register_schema_loader import load_register_schema
 from ...models import DetectedInverter, ProbeTarget, RuntimeSnapshot
@@ -261,7 +263,15 @@ class CoordinatorStartupIdentityMixin:
             driver_key = str(
                 self.config_entry.data.get(CONF_DETECTED_DRIVER) or ""
             ).strip()
-        if not getattr(snapshot, "is_valid", False):
+        if getattr(snapshot, "is_valid", False) and not profile_name:
+            # Schema-only snapshots pass an explicit current read-only catalog
+            # check. Do not replace this choice with driver-default controls.
+            catalog_surface = load_compiled_detection_catalog().surfaces[snapshot.surface_key]
+            if driver_key not in {"", DRIVER_HINT_AUTO, catalog_surface.driver_key}:
+                return None
+            driver_key = catalog_surface.driver_key
+            catalog_identity_source = "persisted_catalog_surface"
+        elif not getattr(snapshot, "is_valid", False):
             if self.detection_confidence != "high" or not detected_model:
                 return None
             catalog_resolution = resolve_unique_persisted_model_surface(detected_model)
@@ -301,7 +311,7 @@ class CoordinatorStartupIdentityMixin:
         if driver is None:
             return None
 
-        if not profile_name:
+        if not profile_name and catalog_surface is None:
             profile_name = str(getattr(driver, "profile_name", "") or "").strip()
         if not register_schema_name:
             register_schema_name = str(
@@ -352,7 +362,7 @@ class CoordinatorStartupIdentityMixin:
             details={
                 "runtime_detection_status": (
                     "persisted_model_probe_degraded"
-                    if catalog_identity_source
+                    if catalog_identity_source == "persisted_detected_model"
                     else "startup_persisted_identity"
                 ),
                 "detection_confidence": self.detection_confidence,

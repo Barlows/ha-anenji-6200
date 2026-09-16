@@ -83,7 +83,7 @@ def resolve_effective_metadata_selection(
     profile_name = _normalized_name(getattr(inverter, "profile_name", ""))
     if not profile_name and snapshot_profile_metadata is not None:
         profile_name = _normalized_name(getattr(snapshot_profile_metadata, "source_name", ""))
-    if not profile_name and inverter is None:
+    if not profile_name and inverter is None and snapshot_register_schema_metadata is None:
         # An EMPTY profile on a *detected* inverter is authoritative: the
         # catalog binds partial / unidentified tiers to profile_name="" on
         # purpose (base reads, controls locked until learning). Only synthesize
@@ -139,7 +139,7 @@ def resolve_effective_metadata_selection(
         register_schema_metadata = load_register_schema(register_schema_name)
 
     effective_owner_key = _normalized_name(getattr(inverter, "driver_key", ""))
-    if not effective_owner_key and snapshot_profile_metadata is not None:
+    if not effective_owner_key and snapshot_register_schema_metadata is not None:
         effective_owner_key = _normalized_name(persisted_snapshot.effective_owner_key)
     if not effective_owner_key:
         effective_owner_key = _normalized_name(getattr(driver, "key", ""))
@@ -535,7 +535,7 @@ def _resolve_snapshot_metadata(
     if snapshot is None or not snapshot.is_valid:
         return None, None
     try:
-        profile_metadata = load_driver_profile(snapshot.profile_name)
+        profile_metadata = load_driver_profile(snapshot.profile_name) if snapshot.profile_name else None
         register_schema_metadata = load_register_schema(snapshot.register_schema_name)
     except FileNotFoundError:
         return None, None

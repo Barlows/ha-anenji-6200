@@ -72,6 +72,27 @@ If utilization remains high, use Automatic mode or increase the manual
 interval. Occasional long cycles during detection or reconnect recovery are not
 the same as continuously overloaded polling.
 
+## EyeBond Short-ASCII family
+
+This read-only profile is included in the unreleased test code. It supports
+one confirmed short-command protocol seen on some Anern and Maxinn inverters;
+the brand name alone does not establish compatibility.
+
+After normal collector setup, keep inverter detection on **Auto**. A matching
+device appears as **EyeBond Short-ASCII family** because the available replies
+do not reliably identify its commercial model or serial number.
+
+Available readings are grid voltage, output voltage, load percentage, output
+frequency and inverter temperature. Diagnostics also include firmware, fault
+and connection flags, and **Battery Reference Voltage**. That last reading is
+the protocol's single-block reference, not the voltage of the complete battery
+pack; do not use it as a replacement for a 24/48 V pack measurement.
+
+This baseline does not provide PV power, full-pack battery readings, grid
+frequency or inverter controls. Selecting **Full Control** does not add
+undocumented settings. If readings are missing or implausible, create a
+Support Archive for review; do not select a similar retail model by guesswork.
+
 ## Control mode
 
 The optional **Write Capabilities** and **Blocked Write Capabilities** diagnostic

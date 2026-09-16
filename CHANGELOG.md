@@ -7,11 +7,24 @@ the GitHub release body should be rendered from the matching version section her
 
 ## [Unreleased]
 
+### Added
+
+- Added a generic read-only **EyeBond Short-ASCII family** profile for the
+  captured MP/Q1/MD dialect seen on some Anern and Maxinn devices (#45).
+  It provides grid/output voltage, load percentage, output frequency,
+  temperature and status diagnostics. Battery Reference Voltage is shown
+  separately from full-pack voltage. No retail model, serial number, PV power
+  or inverter controls are inferred.
+
 ### Fixed
 
 - Closing an old collector socket no longer clears requests that already belong
   to its replacement connection. This covers both framed and AT sessions when
   socket shutdown is delayed.
+
+- Confirmed catalog-backed read-only metadata can now survive an entry reload
+  without a controls profile. Schema-only hints with no matching catalog
+  evidence remain invalid; this change does not enable inverter writes.
 
 - Callback identity checks now return their borrowed shared-listener reference
   even if sending the trigger fails or the operation is cancelled before waiting

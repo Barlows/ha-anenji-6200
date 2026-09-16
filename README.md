@@ -103,6 +103,11 @@ which support level is available:
 
 If your inverter is not listed, it may still work. Add it, create a Support Archive, and open a GitHub issue.
 
+The unreleased test code also includes a limited **EyeBond Short-ASCII family**
+profile for a protocol observed on some Anern and Maxinn units. This identifies
+the protocol, not the commercial model. See its
+[available readings and limits](docs/user/RUNTIME_AND_INVERTER.md#eyebond-short-ascii-family).
+
 ### No factory collector?
 
 If your inverter has no factory collector, you can use the community [ESP EyeBond Collector](https://github.com/groove-max/esp-eybond-collector).
