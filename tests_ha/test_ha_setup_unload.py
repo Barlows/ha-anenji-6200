@@ -285,13 +285,18 @@ async def test_sensor_recategorization_preserves_existing_registry_identity(
     entry = _persisted_anenji_entry(hass)
     registry = er.async_get(hass)
     existing = {}
-    for key in ("battery_voltage", "pv_generation_sum"):
+    for key in (
+        "battery_voltage", "pv_generation_sum", "dcdc_temperature",
+        "grid_frequency", "grid_power", "grid_voltage", "output_current",
+        "output_frequency", "pv_charging_current", "pv_charging_power",
+        "pv_current", "pv_voltage", "battery_average_power", "inverter_current",
+    ):
         entity = registry.async_get_or_create(
             "sensor", DOMAIN, f"{entry.entry_id}_{key}",
             config_entry=entry,
             suggested_object_id=f"my_{key}",
             entity_category=EntityCategory.DIAGNOSTIC,
-            disabled_by=None,
+            disabled_by=er.RegistryEntryDisabler.USER if key == "inverter_current" else None,
         )
         registry.async_update_entity(entity.entity_id, name=f"My {key}")
         existing[key] = entity.entity_id
@@ -303,7 +308,9 @@ async def test_sensor_recategorization_preserves_existing_registry_identity(
         assert entity.unique_id == f"{entry.entry_id}_{key}"
         assert entity.entity_category is None
         assert entity.name == f"My {key}"
-        assert entity.disabled_by is None
+        assert entity.disabled_by is (
+            er.RegistryEntryDisabler.USER if key == "inverter_current" else None
+        )
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
 

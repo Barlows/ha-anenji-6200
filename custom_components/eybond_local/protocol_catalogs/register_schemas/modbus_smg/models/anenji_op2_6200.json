@@ -38,7 +38,7 @@
       "unit": "VA",
       "state_class": "measurement",
       "icon": "mdi:flash-outline",
-      "diagnostic": true,
+      "diagnostic": false,
       "enabled_default": false
     },
     {

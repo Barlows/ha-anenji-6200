@@ -96,6 +96,12 @@ you need. A charge-path flag means the path is enabled, not that the battery is
 currently charging. BMS voltage is separate from Battery Reference Voltage;
 neither reading is calculated from the other.
 
+For example, a Battery Reference Voltage near 12.5 V is not a claim that your
+48 V battery bank has dropped to 12.5 V. If the inverter does not answer the BMS
+request, full-pack voltage remains unavailable; we do not multiply the reference
+by a guessed cell/block count. Temperature is supplied in °C; Home Assistant
+can display °F according to its unit settings or the entity's unit override.
+
 BMS is requested no more often than every 30 seconds, rated values every
 15 minutes, with at most one extra request per normal poll. A longer poll
 interval can delay them further. Failed or invalid responses immediately

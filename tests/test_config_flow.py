@@ -14467,10 +14467,10 @@ class ConnectionStrategyVerificationFlowTests(unittest.IsolatedAsyncioTestCase):
         ):
             result = await flow.async_step_reconfigure(self._manual_input("192.168.1.60"))
 
-        self.assertEqual(result["type"], "form")
-        self.assertEqual(result["step_id"], "reconfigure")
+        self.assertEqual(result["type"], "menu")
+        self.assertEqual(result["step_id"], "reconfigure_confirm")
         self.assertIn(
-            result["errors"]["base"],
+            flow._manual_result.last_error,
             ("callback_timeout", "callback_identity_unverified"),
         )
         self.assertEqual(entry.data.get(CONF_COLLECTOR_PN, ""), "")
@@ -14499,8 +14499,9 @@ class ConnectionStrategyVerificationFlowTests(unittest.IsolatedAsyncioTestCase):
         ):
             result = await flow.async_step_reconfigure(self._manual_input("192.168.1.60"))
 
-        self.assertEqual(result["type"], "form")
-        self.assertEqual(result["errors"]["base"], "callback_identity_ambiguous")
+        self.assertEqual(result["type"], "menu")
+        self.assertEqual(result["step_id"], "reconfigure_confirm")
+        self.assertEqual(flow._manual_result.last_error, "callback_identity_ambiguous")
         self.assertEqual(entry.data.get(CONF_COLLECTOR_PN, ""), "")
         # Neither identity was claimed by this flow.
         self.assertEqual(registry.owner_for_pn(self.FULL_PN), "")

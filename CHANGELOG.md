@@ -28,6 +28,17 @@ the GitHub release body should be rendered from the matching version section her
 
 ### Fixed
 
+- Older entries without a confirmed collector identity can now use the same
+  explicit read-only framed/AT identity check as manual setup. Successful repair
+  updates the existing entry and its selected connection settings in place;
+  failed checks preserve it. Runtime timeout diagnostics no longer imply that
+  no TCP connection arrived when identity was not confirmed (#18, #46).
+
+- SMG live voltage, current, frequency, power and temperature measurements are
+  ordinary sensors instead of diagnostics, including inherited model profiles
+  and OP2 apparent power. Entity IDs, units and default enablement are unchanged;
+  settings, protocol information and fault details remain diagnostic (#38).
+
 - Support archives preserve numeric-looking hex sequences in explicitly typed
   wire-evidence fields instead of replacing their bytes with identifier masks.
   Embedded ASCII identifiers remain masked. Short-ASCII archive creation and

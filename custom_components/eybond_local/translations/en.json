@@ -242,6 +242,16 @@
           "verify_connection_cancel": "Cancel"
         }
       },
+      "reconfigure_confirm": {
+        "title": "Re-verify collector identity",
+        "description": "{failure_explanation}\n\nYour existing entry has not been changed. If a silent-collector option is offered, choose a protocol only when instructed. The next attempt sends one read-only identity query; it does not restart the collector or change inverter settings.",
+        "menu_options": {
+          "manual_probe_again": "Probe again",
+          "manual_edit_settings": "Edit settings",
+          "manual_bootstrap_framed": "Silent collector: query with EyeBond framed protocol",
+          "manual_bootstrap_at": "Silent collector: query with AT command protocol"
+        }
+      },
       "reconfigure": {
         "title": "Re-verify collector identity",
         "description": "This collector entry has no confirmed identity yet, so it cannot claim its callback session and stays offline. Enter the address Home Assistant can reach the collector on; a one-shot callback is triggered to bind the collector's durable identity.",

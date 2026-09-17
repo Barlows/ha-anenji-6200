@@ -129,6 +129,24 @@ These are setup routes. The normal product choice after setup is shown as
 **Cloud + Home Assistant** or **Home Assistant only** under
 **Collector connection and cloud**.
 
+## Repairing an older unidentified entry
+
+If an older installation still shows **EyeBond Setup Pending** or reports that
+the collector identity needs verification, keep the entry. Open its three-dot
+menu under **Devices & Services → EyeBond Local** and choose **Reconfigure**.
+Check the collector address and connection settings, then submit the form.
+
+If the collector connects without identifying itself, the result offers
+**Silent collector: query with EyeBond framed protocol** and **Silent collector:
+query with AT command protocol**. Use the protocol recommended for your case.
+This sends one read-only identity query, without restarting the collector or
+changing inverter settings. It does not automatically try another protocol.
+If that connection has closed, choose **Probe again** to obtain a new result.
+
+A successful check repairs the existing entry and reloads it; it does not add
+a duplicate or change the cloud/control mode. Failure leaves the entry intact.
+Inverter detection starts afterward and is a separate check.
+
 ## Common problems
 
 | Problem | What to try |

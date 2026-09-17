@@ -1525,8 +1525,10 @@ class CallbackOnDemandPhase3Tests(unittest.TestCase):
         diag = manager.callback_trigger_diagnostics()
         self.assertEqual(diag["collector_callback_state"], "callback_timeout")
         # Phase 4: an actionable, user-facing message accompanies the typed state.
-        self.assertIn("did not call back", diag["collector_callback_state_message"])
-        self.assertIn("firewall", diag["collector_callback_state_message"])
+        self.assertIn("identified collector connection", diag["collector_callback_state_message"])
+        self.assertNotIn("did not call back", diag["collector_callback_state_message"])
+        self.assertIn("session diagnostics", diag["collector_callback_state_message"])
+        self.assertLessEqual(len(diag["collector_callback_state_message"]), 255)
 
     def test_callback_on_demand_listener_unavailable(self) -> None:
         manager = self._manager(callback_on_demand=True, collector_pn=self._PN)

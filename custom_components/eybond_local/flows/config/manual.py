@@ -322,8 +322,8 @@ class ManualCollectorFlowMixin:
         cleared here as an additional terminal-path guard. The flow remains open
         with retry/edit actions; no PN-less entry is persisted.
 
-        Reconfigure does not call this helper and remains fail-closed on its own
-        form.
+        Identity repair shares this presentation, but keeps its own in-place
+        commit/retry boundary and can never offer new-entry save or recovery.
         """
 
         reason = str(verification_error or "callback_timeout").strip()
@@ -569,7 +569,8 @@ class ManualCollectorFlowMixin:
         ):
             # Advanced recovery for a genuinely SILENT device: the user (and
             # only the user) may pick the bootstrap protocol for exactly one
-            # read-only identity query on the next attempt's new session.
+            # read-only identity query on the exact offered session. A stale
+            # offer must be renewed, never applied to a replacement socket.
             menu_options.append("manual_bootstrap_framed")
             menu_options.append("manual_bootstrap_at")
         menu_options.extend(
@@ -578,6 +579,16 @@ class ManualCollectorFlowMixin:
                 MANUAL_CONFIRM_ACTION_EDIT_SETTINGS,
             ]
         )
+        if self._repair_entry_id:
+            return self.async_show_menu(
+                step_id="reconfigure_confirm",
+                menu_options=menu_options,
+                description_placeholders={
+                    "failure_explanation": _shared_recovery_failure_explanation(
+                        self._tr, last_error,
+                    ),
+                },
+            )
         if self._can_offer_smartess_cloud_assist(self._manual_result):
             menu_options.append("manual_smartess_cloud_assist")
         if self._manual_entry_ready_to_save():
@@ -610,6 +621,8 @@ class ManualCollectorFlowMixin:
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
         del user_input
+        if self._repair_entry_id:
+            return await self._async_reconfigure_retry()
         if not self._manual_config:
             return await self.async_step_manual()
 
@@ -657,6 +670,8 @@ class ManualCollectorFlowMixin:
         reader, prepared handoff) is the one shared identity transaction.
         """
 
+        if self._repair_entry_id:
+            return await self._async_reconfigure_retry(protocol)
         if not self._manual_config:
             return await self.async_step_manual()
         offer = self._callback_continuation.silent_bootstrap_offer
@@ -685,6 +700,8 @@ class ManualCollectorFlowMixin:
         self._callback_continuation.release_terminal_owner()
         self._manual_defaults = dict(self._manual_config)
         self._manual_result = None
+        if self._repair_entry_id:
+            return await self.async_step_reconfigure()
         return await self.async_step_manual()
 
     async def async_step_manual_save(
@@ -694,6 +711,8 @@ class ManualCollectorFlowMixin:
         """Create a normal collector entry only after durable identity proof."""
 
         del user_input
+        if self._repair_entry_id:
+            return await self.async_step_reconfigure_confirm()
         if not self._manual_config:
             return await self.async_step_manual()
         if not self._manual_entry_ready_to_save():

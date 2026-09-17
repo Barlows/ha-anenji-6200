@@ -88,9 +88,9 @@ _CALLBACK_TRIGGER_TIMEOUT = 0.75
 _CALLBACK_STATE_MESSAGES: dict[str, str] = {
     CALLBACK_STATE_CONNECTED: "The collector connected to Home Assistant.",
     CALLBACK_STATE_TIMEOUT: (
-        "Home Assistant asked the collector to connect but it did not call back "
-        "in time. Check the network path, the endpoint the collector points at, "
-        "and any firewall between the collector and Home Assistant."
+        "Home Assistant could not establish an identified collector connection "
+        "in time. TCP arrival alone is not identity proof. Check session "
+        "diagnostics. For an entry without a confirmed identity, use Reconfigure."
     ),
     CALLBACK_STATE_IDENTITY_MISMATCH: (
         "A collector connected, but it is a different collector than this entry "

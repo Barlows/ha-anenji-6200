@@ -26,6 +26,7 @@ from .flows.config.result_model import (
 from .connection.admission_transaction import (
     CollectorAdmissionTransaction,
 )
+from .connection.callback_identity import OnboardingWireProbeIntent
 from .connection.connection_policy import (
     collector_identity_binding_required,
     resolve_connection_strategy,
@@ -55,6 +56,7 @@ from .const import (
     CONF_DETECTED_SERIAL,
     CONF_DETECTION_CONFIDENCE,
     CONF_DISCOVERY_TARGET,
+    CONF_DRIVER_HINT,
     CONF_DRIVER_DETECTION_STRATEGY,
     CONF_POLL_INTERVAL,
     CONF_POLL_MODE,
@@ -133,6 +135,8 @@ class EntryCommitFlowMixin:
 
         self._repair_entry_id = entry.entry_id
         await self._async_ensure_network_defaults()
+        if not self._manual_config:
+            self._manual_defaults = {**entry.data, **entry.options}
 
         # A PN-less entry has no prior identity to match -> bind ANY freshly
         # triggered strong session. An entry that still carries a (short) PN must
@@ -152,23 +156,59 @@ class EntryCommitFlowMixin:
             )
             if not errors:
                 self._manual_config = dict(flat_input)
-                # Repair is an active callback attempt too: same shared lifecycle
-                # (fresh baseline + ledger generation + probe + matcher + claim),
-                # so a repeated repair can never reuse a previous attempt's proof.
-                verification_error = await self._async_run_manual_callback_attempt(
-                    flat_input
-                )
-                if verification_error:
-                    errors["base"] = verification_error
-                else:
-                    applied = self._async_apply_reconfigure(entry)
-                    if applied is not None:
-                        return applied
-                    # No durable strong PN was bound: refuse to "repair" into
-                    # another doomed PN-less entry; re-prompt.
-                    errors["base"] = "callback_identity_unverified"
+                return await self._async_reconfigure_retry()
 
         return self._async_show_reconfigure_form(user_input, errors)
+
+    async def async_step_reconfigure_confirm(
+        self, user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Serve repair results with the shared explicit identity actions."""
+
+        del user_input
+        if not self._repair_entry_id:
+            return await self.async_step_reconfigure()
+        return await self.async_step_manual_confirm()
+
+    async def _async_reconfigure_retry(
+        self, protocol: str | None = None,
+    ) -> ConfigFlowResult:
+        """Retry identity repair; never enter new-entry save or reboot recovery."""
+
+        entry = self._reconfigure_target_entry()
+        if entry is None or not collector_identity_binding_required(
+            entry.data, entry.options,
+        ):
+            self._replace_manual_callback_continuation()
+            return self.async_abort(reason=(
+                "reconfigure_entry_missing" if entry is None else "reconfigure_not_required"
+            ))
+        if not self._manual_config:
+            return await self.async_step_reconfigure()
+        intent = None
+        if protocol is not None:
+            offer = self._callback_continuation.silent_bootstrap_offer
+            if offer is None:
+                return await self.async_step_manual_confirm()
+            intent = OnboardingWireProbeIntent.for_offer(offer, protocol=protocol)
+        error = await self._async_run_manual_callback_attempt(
+            self._manual_config, bootstrap_probe=intent,
+        )
+        if not error:
+            # Re-check after the await: removal or another repair may have won.
+            current = self._reconfigure_target_entry()
+            if current is None or not collector_identity_binding_required(
+                current.data, current.options,
+            ):
+                self._replace_manual_callback_continuation()
+                return self.async_abort(reason=(
+                    "reconfigure_entry_missing" if current is None else "reconfigure_not_required"
+                ))
+            applied = self._async_apply_reconfigure(current)
+            if applied is not None:
+                return applied
+            error = "callback_identity_unverified"
+        return await self._async_route_after_manual_callback_failure(error)
 
     def _async_show_reconfigure_form(
         self,
@@ -236,8 +276,22 @@ class EntryCommitFlowMixin:
                 return self.async_abort(reason="already_configured")
 
         new_data = dict(entry.data)
+        new_options = dict(entry.options)
+        # Retain the verified route, including an explicitly corrected listener
+        # port. An old option override must not silently restore the broken route
+        # after reload. Identity repair does not change driver/control policy.
+        for key, value in build_manual_entry_settings(
+            self._current_connection_type(), self._manual_config,
+        ).items():
+            if key == CONF_DRIVER_HINT:
+                continue
+            new_data[key] = value
+            if key in new_options:
+                new_options[key] = value
         new_data[CONF_COLLECTOR_PN] = verified_full_pn
         new_data[CONF_COLLECTOR_IP] = collector_ip
+        if CONF_COLLECTOR_IP in new_options:
+            new_options[CONF_COLLECTOR_IP] = collector_ip
         # Identity repair re-binds the durable PN; it does NOT re-decide how the
         # collector connects. The entry's canonical strategy (the user's choice)
         # is preserved untouched. Only an entry from before the canonical axis
@@ -275,6 +329,7 @@ class EntryCommitFlowMixin:
                 entry,
                 unique_id=f"collector:{verified_full_pn}",
                 data=new_data,
+                options=new_options,
             ),
             recovery=self._callback_continuation.terminal_input,
         )

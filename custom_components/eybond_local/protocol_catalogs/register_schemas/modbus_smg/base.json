@@ -945,7 +945,7 @@
       "device_class": "voltage",
       "state_class": "measurement",
       "icon": "mdi:transmission-tower",
-      "diagnostic": true,
+      "diagnostic": false,
       "enabled_default": true
     },
     {
@@ -955,7 +955,7 @@
       "device_class": "frequency",
       "state_class": "measurement",
       "icon": "mdi:sine-wave",
-      "diagnostic": true,
+      "diagnostic": false,
       "enabled_default": true
     },
     {
@@ -965,7 +965,7 @@
       "device_class": "power",
       "state_class": "measurement",
       "icon": "mdi:transmission-tower",
-      "diagnostic": true,
+      "diagnostic": false,
       "enabled_default": true
     },
     {
@@ -982,7 +982,7 @@
       "device_class": "voltage",
       "state_class": "measurement",
       "icon": "mdi:flash-outline",
-      "diagnostic": true,
+      "diagnostic": false,
       "enabled_default": false
     },
     {
@@ -992,7 +992,7 @@
       "device_class": "current",
       "state_class": "measurement",
       "icon": "mdi:current-ac",
-      "diagnostic": true,
+      "diagnostic": false,
       "enabled_default": false
     },
     {
@@ -1002,7 +1002,7 @@
       "device_class": "frequency",
       "state_class": "measurement",
       "icon": "mdi:sine-wave",
-      "diagnostic": true,
+      "diagnostic": false,
       "enabled_default": false
     },
     {
@@ -1012,7 +1012,7 @@
       "device_class": "power",
       "state_class": "measurement",
       "icon": "mdi:flash-outline",
-      "diagnostic": true,
+      "diagnostic": false,
       "enabled_default": false
     },
     {
@@ -1022,7 +1022,7 @@
       "device_class": "power",
       "state_class": "measurement",
       "icon": "mdi:battery-charging-medium",
-      "diagnostic": true,
+      "diagnostic": false,
       "enabled_default": false
     },
     {
@@ -1032,7 +1032,7 @@
       "device_class": "voltage",
       "state_class": "measurement",
       "icon": "mdi:flash",
-      "diagnostic": true,
+      "diagnostic": false,
       "enabled_default": true
     },
     {
@@ -1042,7 +1042,7 @@
       "device_class": "current",
       "state_class": "measurement",
       "icon": "mdi:current-ac",
-      "diagnostic": true,
+      "diagnostic": false,
       "enabled_default": true
     },
     {
@@ -1052,7 +1052,7 @@
       "device_class": "frequency",
       "state_class": "measurement",
       "icon": "mdi:sine-wave",
-      "diagnostic": true,
+      "diagnostic": false,
       "enabled_default": true
     },
     {
@@ -1083,7 +1083,7 @@
       "unit": "VA",
       "state_class": "measurement",
       "icon": "mdi:flash-outline",
-      "diagnostic": true,
+      "diagnostic": false,
       "enabled_default": false
     },
     {
@@ -1118,7 +1118,7 @@
       "device_class": "current",
       "state_class": "measurement",
       "icon": "mdi:battery-arrow-up-outline",
-      "diagnostic": true,
+      "diagnostic": false,
       "enabled_default": true
     },
     {
@@ -1128,7 +1128,7 @@
       "device_class": "current",
       "state_class": "measurement",
       "icon": "mdi:battery-heart-variant",
-      "diagnostic": true,
+      "diagnostic": false,
       "enabled_default": true
     },
     {
@@ -1138,7 +1138,7 @@
       "device_class": "power",
       "state_class": "measurement",
       "icon": "mdi:battery-charging-medium",
-      "diagnostic": true,
+      "diagnostic": false,
       "enabled_default": true
     },
     {
@@ -1218,7 +1218,7 @@
       "device_class": "current",
       "state_class": "measurement",
       "icon": "mdi:current-ac",
-      "diagnostic": true,
+      "diagnostic": false,
       "enabled_default": true
     },
     {
@@ -1228,7 +1228,7 @@
       "device_class": "voltage",
       "state_class": "measurement",
       "icon": "mdi:solar-power",
-      "diagnostic": true,
+      "diagnostic": false,
       "enabled_default": true
     },
     {
@@ -1238,7 +1238,7 @@
       "device_class": "current",
       "state_class": "measurement",
       "icon": "mdi:solar-power",
-      "diagnostic": true,
+      "diagnostic": false,
       "enabled_default": true
     },
     {
@@ -1270,7 +1270,7 @@
       "device_class": "power",
       "state_class": "measurement",
       "icon": "mdi:solar-power-variant",
-      "diagnostic": true,
+      "diagnostic": false,
       "enabled_default": true
     },
     {
@@ -1280,7 +1280,7 @@
       "device_class": "current",
       "state_class": "measurement",
       "icon": "mdi:solar-power-variant-outline",
-      "diagnostic": true,
+      "diagnostic": false,
       "enabled_default": true
     },
     {
@@ -1290,7 +1290,7 @@
       "device_class": "temperature",
       "state_class": "measurement",
       "icon": "mdi:thermometer",
-      "diagnostic": true,
+      "diagnostic": false,
       "enabled_default": true
     },
     {

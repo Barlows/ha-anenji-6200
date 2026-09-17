@@ -138,6 +138,21 @@ class RegisterSchemaLoaderTests(unittest.TestCase):
         self.assertEqual(energy.state_class, "total_increasing")
         self.assertEqual(energy.unit, "kWh")
 
+    def test_smg_live_measurements_are_not_diagnostics(self) -> None:
+        from pathlib import Path
+
+        schema_root = Path(__file__).resolve().parents[1] / "custom_components/eybond_local/protocol_catalogs/register_schemas"
+        for path in (schema_root / "modbus_smg").rglob("*.json"):
+            schema = load_register_schema(str(path.relative_to(schema_root)))
+            for description in schema.measurement_descriptions:
+                if description.state_class == "measurement":
+                    with self.subTest(schema=path.name, key=description.key):
+                        self.assertFalse(description.diagnostic)
+            self.assertTrue(schema.measurement_description("protocol_number").diagnostic)
+        base = load_register_schema("modbus_smg/base.json")
+        self.assertFalse(base.measurement_description("inverter_current").enabled_default)
+        self.assertTrue(base.measurement_description("battery_bulk_voltage").diagnostic)
+
     def test_loads_anenji_op2_model_overlay_schema(self) -> None:
         # Dual-output (OP2) model: the overlay widens the polled live block to
         # cover output-2 telemetry (239-244) and the config block to cover the
