@@ -192,6 +192,26 @@ class LocalMetadataTests(unittest.TestCase):
                     self.assertFalse(helper(outside, real_root))
                     self.assertFalse(helper(outside, alias_root))
 
+    def test_is_within_root_rejects_symlink_escape(self) -> None:
+        """In-root symlink to a path outside root must not count as contained."""
+        helpers = (
+            local_metadata_is_within_root,
+            profile_loader_is_within_root,
+            register_schema_loader_is_within_root,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir).resolve()
+            root = base / "root"
+            root.mkdir()
+            secret = base / "secret"
+            secret.write_text("{}", encoding="utf-8")
+            link_out = root / "link_out"
+            link_out.symlink_to(Path("..") / "secret")
+
+            for helper in helpers:
+                with self.subTest(helper=helper.__module__):
+                    self.assertFalse(helper(link_out, root))
+
     def test_detects_when_one_draft_name_overrides_builtin_metadata(self) -> None:
         self.assertTrue(draft_activates_automatically("smg_modbus.json", None))
         self.assertTrue(draft_activates_automatically("smg_modbus.json", "smg_modbus.json"))
