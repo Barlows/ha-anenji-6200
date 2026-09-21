@@ -12,6 +12,7 @@ manager, platform forwarding, unload) always runs for real.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 import sys
 from typing import Any
@@ -31,6 +32,25 @@ from synthetic import (  # noqa: E402  (needs the sys.path bootstrap above)
     SYNTHETIC_NETWORK,
     SYNTHETIC_SERVER_IP,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolated_listener_loop(monkeypatch):
+    """Model a fresh HA process's lock for each isolated test event loop.
+
+    Production HA uses one loop. Pytest creates a new one for each case while
+    retaining imported modules. A contended module-level asyncio.Lock otherwise
+    stays bound to a previous case's loop. Keep the real lock and registry
+    behavior; do not clear leaked listeners or suppress task errors.
+    """
+    from custom_components.eybond_local.collector.transport import listener
+
+    assert not listener._LISTENERS, "previous HA test leaked a shared listener"
+    lock = asyncio.Lock()
+    monkeypatch.setattr(listener, "_LISTENERS_LOCK", lock)
+    yield
+    assert not lock.locked(), "HA test leaked the shared-listener lock"
+    assert not listener._LISTENERS, "HA test leaked a shared listener"
 
 
 @pytest.fixture(autouse=True)
