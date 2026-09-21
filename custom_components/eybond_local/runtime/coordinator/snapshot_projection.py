@@ -20,7 +20,7 @@ from ...models import RuntimeSnapshot
 from ...schema import build_runtime_ui_schema
 from ...support.bundle import build_support_bundle_payload
 from ...support.collector_registry import get_collector_registry_record
-from ...support.proxy_capture import build_proxy_capture_overview
+from ...support.proxy_capture import build_proxy_capture_overview, proxy_capture_overview_values
 from ...support.proxy_capture.session import inspect_proxy_capture_trace
 from ...support.runtime_projection import (
     build_collector_support_payload,
@@ -291,21 +291,8 @@ class CoordinatorSnapshotProjectionMixin:
             overview.latest_manifest_path
         )
         values: dict[str, Any] = {
-            "proxy_capture_status": overview.status,
-            "proxy_capture_status_label": overview.status_label,
-            "proxy_capture_summary": overview.summary,
-            "proxy_capture_blocking_reason": overview.blocking_reason,
-            "proxy_capture_can_start": overview.can_start,
-            "proxy_capture_can_reconnect_for_start": overview.can_reconnect_for_start,
-            "proxy_capture_can_stop": overview.can_stop,
-            "proxy_capture_critical_phase": overview.critical_phase,
-            "proxy_capture_redirect_required": overview.redirect_required,
+            **proxy_capture_overview_values(overview),
             "proxy_capture_collector_cloud_family": self.collector_cloud_family,
-            "proxy_capture_current_endpoint": overview.current_endpoint,
-            "proxy_capture_target_endpoint": overview.target_endpoint,
-            "proxy_capture_masked_endpoint": overview.masked_endpoint,
-            "proxy_trace_path": overview.latest_trace_path,
-            "proxy_trace_manifest_path": overview.latest_manifest_path,
             "proxy_trace_saved_result_path": manifest_download_path,
             "proxy_trace_saved_result_download_url": manifest_download_url,
             "proxy_trace_manifest_download_url": manifest_download_url,

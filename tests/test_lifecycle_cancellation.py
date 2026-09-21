@@ -30,10 +30,13 @@ def _free_port() -> int:
 class ListenerAcquireCancellationTests(unittest.IsolatedAsyncioTestCase):
     async def test_acquire_shared_listener_no_leak_on_cancel_mid_bind(self) -> None:
         from custom_components.eybond_local.collector import transport
+        from custom_components.eybond_local.collector.transport.tcp_acceptor import (
+            CollectorTcpAcceptor,
+        )
 
         port = _free_port()
         started = asyncio.Event()
-        real_start_server = asyncio.start_server
+        real_start_server = CollectorTcpAcceptor.start
 
         async def _blocking_start_server(*args, **kwargs):
             # Block DURING the bind (after acquire() reserved the refcount), then
@@ -42,7 +45,7 @@ class ListenerAcquireCancellationTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.Event().wait()  # never set -> only a cancel unblocks it
             return await real_start_server(*args, **kwargs)
 
-        with patch("asyncio.start_server", _blocking_start_server):
+        with patch.object(CollectorTcpAcceptor, "start", _blocking_start_server):
             task = asyncio.ensure_future(
                 transport._acquire_shared_listener("127.0.0.1", port)
             )

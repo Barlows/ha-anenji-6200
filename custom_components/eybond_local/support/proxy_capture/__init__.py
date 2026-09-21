@@ -62,6 +62,26 @@ class ProxyCaptureOverview:
     can_reconnect_for_start: bool = False
 
 
+def proxy_capture_overview_values(overview: ProxyCaptureOverview) -> dict[str, object]:
+    """Project one readiness snapshot; never merge stale permission flags into it."""
+    return {
+        "proxy_capture_status": overview.status,
+        "proxy_capture_status_label": overview.status_label,
+        "proxy_capture_summary": overview.summary,
+        "proxy_capture_blocking_reason": overview.blocking_reason,
+        "proxy_capture_can_start": overview.can_start,
+        "proxy_capture_can_reconnect_for_start": overview.can_reconnect_for_start,
+        "proxy_capture_can_stop": overview.can_stop,
+        "proxy_capture_critical_phase": overview.critical_phase,
+        "proxy_capture_redirect_required": overview.redirect_required,
+        "proxy_capture_current_endpoint": overview.current_endpoint,
+        "proxy_capture_target_endpoint": overview.target_endpoint,
+        "proxy_capture_masked_endpoint": overview.masked_endpoint,
+        "proxy_trace_path": overview.latest_trace_path,
+        "proxy_trace_manifest_path": overview.latest_manifest_path,
+    }
+
+
 def build_proxy_capture_overview(
     *,
     control_mode: str,

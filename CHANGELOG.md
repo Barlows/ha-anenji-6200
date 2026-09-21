@@ -28,6 +28,16 @@ the GitHub release body should be rendered from the matching version section her
 
 ### Fixed
 
+- Collector listener shutdown now fences and drains TCP admission before
+  clearing its sessions. Reconnecting during an entry reload no longer enters
+  the `asyncio.Server` accept/close race or leaves a late socket in a retired
+  listener. Collector identity, protocol selection and polling are unchanged.
+
+- Proxy capture now renders its instructions, available actions and default
+  selection from the same current collector state, including after a failed
+  start. A stale poll snapshot can no longer contradict the reconnect/start
+  choice. Live connection and endpoint checks before redirect are unchanged (#43).
+
 - Older entries without a confirmed collector identity can now use the same
   explicit read-only framed/AT identity check as manual setup. Successful repair
   updates the existing entry and its selected connection settings in place;

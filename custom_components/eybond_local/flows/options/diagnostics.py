@@ -31,6 +31,7 @@ from ...metadata.local_metadata import (
     local_register_schema_override_details,
     resolve_local_metadata_rollback_paths,
 )
+from ...support.proxy_capture import ProxyCaptureOverview, proxy_capture_overview_values
 from .shared import (
     _BOOLEAN_SELECTOR,
     _MULTILINE_LOG_TEXT_SELECTOR,
@@ -915,9 +916,15 @@ class DiagnosticsOptionsMixin:
             ),
         }
 
-    def _diagnostics_placeholders(self) -> dict[str, str]:
+    def _diagnostics_placeholders(
+        self, *, proxy_capture_overview: ProxyCaptureOverview | None = None,
+    ) -> dict[str, str]:
         coordinator = self._coordinator()
         values = coordinator.data.values if coordinator is not None else {}
+        if proxy_capture_overview is not None:
+            # Capture's instructions and actions must describe the same current
+            # view. Keep trace/timer evidence, without mutating the poll snapshot.
+            values = {**values, **proxy_capture_overview_values(proxy_capture_overview)}
         proxy_capture_download_url = self._fresh_proxy_capture_download_url(values)
         effective_owner_name = (
             coordinator.effective_owner_name if coordinator is not None else ""

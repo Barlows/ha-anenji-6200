@@ -29,6 +29,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from custom_components.eybond_local.support.proxy_capture import proxy_capture_overview_values
+
 
 def _install_coordinator_stubs() -> None:
     custom_components = ensure_module("custom_components")
@@ -536,6 +538,7 @@ def _install_coordinator_stubs() -> None:
     )
     support_proxy_capture.PROXY_WIRE_TRANSPARENT = "transparent"
     support_proxy_capture.build_proxy_capture_overview = lambda *args, **kwargs: None
+    support_proxy_capture.proxy_capture_overview_values = proxy_capture_overview_values
     support_proxy_capture.resolve_proxy_wire_mode = (
         lambda collector, cloud: (
             "transparent" if collector and cloud in {"at_text", "eybond_framed"} else ""
@@ -9485,6 +9488,16 @@ class CoordinatorDeviceHierarchyTests(unittest.TestCase):
             values["integration_manifest_version"],
             manifest["version"],
         )
+
+    def test_build_diagnostics_report_loaded_backup_path_not_expected_domain_path(self) -> None:
+        """A renamed backup remains visible as the actual source of loaded code."""
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "custom_components" / "eybond_local_backup"
+            module_path = package_dir / "runtime" / "coordinator" / "tooling_projection.py"
+            with patch.object(self.coordinator_tooling_projection_module, "__file__", str(module_path)):
+                values = self.coordinator_module._integration_build_runtime_values()
+        self.assertEqual(Path(values["integration_package_dir"]), package_dir.resolve())
+        self.assertFalse(values["integration_build_info_present"])
 
     def test_bind_apply_persists_inbound_integration_managed(self) -> None:
         # Item 2: a successful bind write makes the entry inbound +

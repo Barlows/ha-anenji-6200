@@ -135,6 +135,12 @@ It is a small ESP8266/ESP32-based bridge that connects directly to the inverter 
 3. Restart Home Assistant.
 4. Add **EyeBond Local** from **Settings → Devices & Services**.
 
+Keep backup copies **outside** `config/custom_components/`. Renaming an old
+copy to `eybond_local_backup` inside that directory does not disable it:
+Home Assistant can discover its unchanged manifest and load the old code.
+Leave only the intended `eybond_local/` copy there, then fully restart Home
+Assistant; reloading the integration is not enough after replacing Python files.
+
 ### Testing the unreleased `main` branch
 
 Use this only when a maintainer asks you to test a fix that is not in a release

@@ -33,6 +33,7 @@ from .shared import (
     _coerce_proxy_capture_duration_minutes,
 )
 from ...support.download import sign_proxy_capture_download_url
+from ...support.proxy_capture import ProxyCaptureOverview
 
 logger = logging.getLogger(__name__)
 
@@ -237,8 +238,11 @@ class ProxyCaptureOptionsMixin:
             )
         return raw_error
 
-    def _proxy_capture_action_options(self, coordinator) -> list[SelectOptionDict]:
-        overview = coordinator.proxy_capture_overview
+    def _proxy_capture_action_options(
+        self, coordinator, *, overview: ProxyCaptureOverview | None = None,
+    ) -> list[SelectOptionDict]:
+        if overview is None:
+            overview = coordinator.proxy_capture_overview
         options: list[SelectOptionDict] = []
         if overview.can_stop:
             options.append(
@@ -284,12 +288,14 @@ class ProxyCaptureOptionsMixin:
         return options
 
     def _default_proxy_capture_action(
-        self, coordinator, options: list[SelectOptionDict]
+        self, coordinator, options: list[SelectOptionDict], *,
+        overview: ProxyCaptureOverview | None = None,
     ) -> str:
         """Return the default proxy-capture action for the current form state."""
 
         option_values = {str(option["value"]) for option in options}
-        overview = coordinator.proxy_capture_overview
+        if overview is None:
+            overview = coordinator.proxy_capture_overview
         if overview.can_start and "start" in option_values:
             return "start"
         if overview.can_stop and "refresh" in option_values:
@@ -304,9 +310,12 @@ class ProxyCaptureOptionsMixin:
         *,
         errors: dict[str, str] | None = None,
     ) -> ConfigFlowResult:
-        options = self._proxy_capture_action_options(coordinator)
-        default_action = self._default_proxy_capture_action(coordinator, options)
-        placeholders = self._diagnostics_placeholders()
+        overview = coordinator.proxy_capture_overview
+        options = self._proxy_capture_action_options(coordinator, overview=overview)
+        default_action = self._default_proxy_capture_action(
+            coordinator, options, overview=overview,
+        )
+        placeholders = self._diagnostics_placeholders(proxy_capture_overview=overview)
         return self.async_show_form(
             step_id="proxy_capture",
             data_schema=vol.Schema(

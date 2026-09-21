@@ -40,6 +40,7 @@ from ...support.download import sign_proxy_capture_download_url
 from ...support.memory_guard import read_available_memory_mib, shadow_learning_memory_blocker
 from ...support.proxy_capture import (
     build_proxy_capture_overview,
+    proxy_capture_overview_values,
     resolve_proxy_wire_mode,
 )
 from ...support.proxy_capture.session import (
@@ -2550,23 +2551,8 @@ class CoordinatorCloudToolsMixin:
             latest_trace_path=self.latest_proxy_trace_path,
             latest_manifest_path=self.latest_proxy_trace_manifest_path,
         )
-        values: dict[str, Any] = {
-            "proxy_capture_status": overview.status,
-            "proxy_capture_status_label": overview.status_label,
-            "proxy_capture_summary": overview.summary,
-            "proxy_capture_blocking_reason": overview.blocking_reason,
-            "proxy_capture_can_start": overview.can_start,
-            "proxy_capture_can_reconnect_for_start": overview.can_reconnect_for_start,
-            "proxy_capture_can_stop": overview.can_stop,
-            "proxy_capture_critical_phase": overview.critical_phase,
-            "proxy_capture_redirect_required": overview.redirect_required,
-            "proxy_capture_collector_cloud_family": self.collector_cloud_family,
-            "proxy_capture_current_endpoint": overview.current_endpoint,
-            "proxy_capture_target_endpoint": overview.target_endpoint,
-            "proxy_capture_masked_endpoint": overview.masked_endpoint,
-            "proxy_trace_path": overview.latest_trace_path,
-            "proxy_trace_manifest_path": overview.latest_manifest_path,
-        }
+        values = proxy_capture_overview_values(overview)
+        values["proxy_capture_collector_cloud_family"] = self.collector_cloud_family
         values.update(self._proxy_capture_timer_runtime_values(active_state))
         if active_state is not None:
             values.update(

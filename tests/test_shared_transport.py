@@ -1373,7 +1373,7 @@ class SharedTransportTests(unittest.IsolatedAsyncioTestCase):
         key = ("127.0.0.1", port)
 
         with patch(
-            "custom_components.eybond_local.collector.transport.listener.asyncio.start_server",
+            "custom_components.eybond_local.collector.transport.listener.CollectorTcpAcceptor.start",
             new=AsyncMock(side_effect=OSError("could not bind on any address")),
         ):
             with self.assertRaises(CollectorListenerBindError):

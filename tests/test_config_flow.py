@@ -786,6 +786,21 @@ def _capture_identity_requests(result=None):
         yield captured
 
 
+def _proxy_overview(**overrides):
+    """Complete readiness DTO, not a partial view with contradictory cache flags."""
+    from custom_components.eybond_local.support.proxy_capture import ProxyCaptureOverview
+    values = dict(status="ready", status_label="Ready", summary="Collector proxy capture is ready.",
+        blocking_reason="", can_start=True, can_stop=False, critical_phase=False,
+        redirect_required=False, collector_connected=True,
+        current_endpoint="collector-cloud.smartess.example,18899,TCP",
+        upstream_endpoint="collector-cloud.smartess.example,18899,TCP",
+        target_endpoint="192.168.1.50,18899,TCP",
+        masked_endpoint="collector-cloud.smartess.example,18899,TCP",
+        latest_trace_path="", latest_manifest_path="")
+    values.update(overrides)
+    return ProxyCaptureOverview(**values)
+
+
 class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         super().setUp()
@@ -7077,7 +7092,7 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             options.hass.config.config_dir = tempdir
             options._config_entry.runtime_data = types.SimpleNamespace(
-                proxy_capture_overview=types.SimpleNamespace(can_start=True, can_stop=False),
+                proxy_capture_overview=_proxy_overview(can_start=True, can_stop=False),
                 effective_owner_name="SMG-family runtime",
                 effective_owner_key="modbus_smg",
                 smartess_family_name="SmartESS 0925",
@@ -7248,7 +7263,7 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             options.hass.config.config_dir = tempdir
             options._config_entry.runtime_data = types.SimpleNamespace(
-                proxy_capture_overview=types.SimpleNamespace(can_start=True, can_stop=False),
+                proxy_capture_overview=_proxy_overview(can_start=True, can_stop=False),
                 effective_owner_name="SMG-family runtime",
                 effective_owner_key="modbus_smg",
                 smartess_family_name="SmartESS 0925",
@@ -7305,7 +7320,9 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             options.hass.config.config_dir = tempdir
             options._config_entry.runtime_data = types.SimpleNamespace(
-                proxy_capture_overview=types.SimpleNamespace(can_start=True, can_stop=False),
+                proxy_capture_overview=_proxy_overview(
+                    status="running", status_label="Running", can_start=False, can_stop=True,
+                ),
                 effective_owner_name="SMG-family runtime",
                 effective_owner_key="modbus_smg",
                 smartess_family_name="SmartESS 0925",
@@ -7352,7 +7369,9 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             options.hass.config.config_dir = tempdir
             options._config_entry.runtime_data = types.SimpleNamespace(
-                proxy_capture_overview=types.SimpleNamespace(can_start=True, can_stop=False),
+                proxy_capture_overview=_proxy_overview(
+                    status="running", status_label="Running", can_start=False, can_stop=True,
+                ),
                 effective_owner_name="SMG-family runtime",
                 effective_owner_key="modbus_smg",
                 smartess_family_name="SmartESS 0925",
@@ -7403,7 +7422,7 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             options.hass.config.config_dir = tempdir
             options._config_entry.runtime_data = types.SimpleNamespace(
-                proxy_capture_overview=types.SimpleNamespace(can_start=True, can_stop=False),
+                proxy_capture_overview=_proxy_overview(can_start=True, can_stop=False),
                 effective_owner_name="SMG-family runtime",
                 effective_owner_key="modbus_smg",
                 smartess_family_name="SmartESS 0925",
@@ -7500,7 +7519,7 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             options.hass.config.config_dir = tempdir
             options._config_entry.runtime_data = types.SimpleNamespace(
-                proxy_capture_overview=types.SimpleNamespace(can_start=True, can_stop=False),
+                proxy_capture_overview=_proxy_overview(can_start=True, can_stop=False),
                 async_start_proxy_capture=_start_proxy_capture,
                 effective_owner_name="SMG-family runtime",
                 effective_owner_key="modbus_smg",
@@ -7540,7 +7559,7 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             options.hass.config.config_dir = tempdir
             options._config_entry.runtime_data = types.SimpleNamespace(
-                proxy_capture_overview=types.SimpleNamespace(can_start=True, can_stop=False, redirect_required=True),
+                proxy_capture_overview=_proxy_overview(can_start=True, can_stop=False, redirect_required=True),
                 async_start_proxy_capture=_start_proxy_capture,
                 effective_owner_name="SMG-family runtime",
                 effective_owner_key="modbus_smg",
@@ -7573,7 +7592,7 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             options.hass.config.config_dir = tempdir
             options._config_entry.runtime_data = types.SimpleNamespace(
-                proxy_capture_overview=types.SimpleNamespace(can_start=False, can_stop=True),
+                proxy_capture_overview=_proxy_overview(can_start=False, can_stop=True, status="running"),
                 async_stop_proxy_capture=_stop_proxy_capture,
                 effective_owner_name="SMG-family runtime",
                 effective_owner_key="modbus_smg",

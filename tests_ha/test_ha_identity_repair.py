@@ -155,6 +155,25 @@ async def test_failed_silent_repair_does_not_guess_another_wire(hass, pending_en
     hass.config_entries.flow.async_abort(result["flow_id"])
 
 
+@pytest.mark.parametrize("reason", ["callback_session_silent", "callback_silent_session_unavailable", "callback_timeout"])
+async def test_closed_or_missing_silent_session_keeps_repair_retry_menu(hass, pending_entry, reason):
+    """No live offer means no protocol query, not a dead-end raw-error form."""
+    original = dict(pending_entry.data)
+    identity = AsyncMock(side_effect=[CallbackIdentityOutcome(result=reason), silent()])
+    with patch(TX, identity):
+        result = await start_repair(hass, pending_entry)
+        assert result["type"] is FlowResultType.MENU
+        assert result["step_id"] == "reconfigure_confirm"
+        assert result["menu_options"] == ["manual_probe_again", "manual_edit_settings"]
+        result = await choose(hass, result, "manual_probe_again")
+        assert "manual_bootstrap_framed" in result["menu_options"]
+        assert "manual_bootstrap_at" in result["menu_options"]
+        assert identity.await_count == 2
+        assert identity.await_args.args[1].bootstrap_probe is None
+    assert pending_entry.data == original
+    hass.config_entries.flow.async_abort(result["flow_id"])
+
+
 async def test_edit_and_cancel_discard_silent_offer(hass, pending_entry):
     identity = AsyncMock(return_value=silent())
     with patch(TX, identity):

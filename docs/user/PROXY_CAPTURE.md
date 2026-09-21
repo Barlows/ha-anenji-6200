@@ -53,6 +53,13 @@ the endpoint and start relaying traffic. If connection or address checks fail,
 capture does not start and the endpoint is not changed. This is a retry option,
 not a fix for an unstable collector connection.
 
+**Start capture** runs the same connection and server-address checks. The label
+reflects the latest known connection state; it is not a separate capture mode.
+If reading the current server address times out, Home Assistant cannot safely
+save the address for restoration and will not redirect the collector. Include
+the error and a Support Archive in your report instead of changing the address
+manually to get past the check.
+
 Duration, start/stop, live status, and the saved result are all managed on this
 screen. Older versions exposed separate proxy entities on the collector device;
 those controls are obsolete and are removed during entity migration.

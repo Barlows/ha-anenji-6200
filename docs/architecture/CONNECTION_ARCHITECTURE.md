@@ -126,6 +126,33 @@ covers both cloud tools, failure stages, cancellation, retry and callback
 suppression while a temporary route is active; a separate primary-bind failure
 regression keeps genuine listener failures visible.
 
+## TCP admission and shutdown
+
+`collector/transport/tcp_acceptor.py` owns only listening sockets and provisional
+stream creation. It uses the event loop's public reader registration and
+socket-to-stream APIs. It does not modify Python's event loop, parse a protocol,
+send a probe or make an identity decision. This avoids the asynchronous
+`asyncio.Server` attachment window in [CPython #109564](https://github.com/python/cpython/issues/109564).
+
+1. Accept and record raw socket ownership synchronously. Up to 100 provisional
+   stream conversions may be in flight; established collectors do not consume
+   these slots. Descriptor-pressure retries belong to this same acceptor.
+2. Transfer an initialized stream to `_SharedEybondListener._handle_connection`
+   only while admission is open. Before transfer, cancellation or failure closes
+   the socket even if its task never started. After transfer, the listener owns
+   the stream and its existing framed/AT/raw sniffing and routing rules apply.
+3. On final listener release, fence admission, remove readiness callbacks and
+   retries, cancel and join provisional handoffs, **then** dispose the listener's
+   pending and routed sessions. Cancellation of the close waiter cannot abandon
+   that drain. Already-queued callbacks cannot repopulate the retired inventory.
+
+`tests_ha/test_ha_tcp_acceptor.py` forces closure between kernel acceptance and
+the stream task's first instruction, during stream creation and during a held
+handoff. It also covers repeated cancellation, bind rollback, resource pressure,
+late readiness callbacks and final shared-listener cleanup with real loopback
+sockets. The HA repair/reload cancellation test remains enabled and unchanged;
+neither expected-error suppression nor sleeps are used to hide the race.
+
 ## Session registry owns identity
 
 `connection/session_registry.py` (`CallbackSessionRegistry`) is the single object

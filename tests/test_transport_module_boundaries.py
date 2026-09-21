@@ -121,6 +121,20 @@ class TransportModuleBoundaryTests(unittest.TestCase):
             source = path.read_text(encoding="utf-8")
             self.assertNotIn("from . import", source, msg=path.name)
 
+    def test_tcp_admission_is_owned_without_interpreter_or_protocol_patches(self) -> None:
+        source = (_TRANSPORT / "tcp_acceptor.py").read_text(encoding="utf-8")
+        for forbidden in (
+            "asyncio.start_server(", "asyncio.Server.", "set_exception_handler(",
+            "._accept_connection2", "._attach(", "from ...drivers", "from ...payload",
+        ):
+            self.assertNotIn(forbidden, source)
+        self.assertIn("self._loop.add_reader(", source)
+        self.assertIn("self._loop.remove_reader(", source)
+        self.assertIn("asyncio.open_connection(sock=client)", source)
+        listener_source = (_TRANSPORT / "listener.py").read_text(encoding="utf-8")
+        self.assertIn("await CollectorTcpAcceptor.start(", listener_source)
+        self.assertNotIn("asyncio.start_server(", listener_source)
+
     def test_facade_exports_the_exact_concrete_types(self) -> None:
         from custom_components.eybond_local.collector import transport
         from custom_components.eybond_local.collector.transport.listener import (

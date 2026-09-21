@@ -36,6 +36,7 @@ from .common import (
     _spawn_tracked_task,
 )
 from .connections import _CollectorAtConnection, _CollectorConnection
+from .tcp_acceptor import CollectorTcpAcceptor
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +155,7 @@ class _SharedEybondListener:
     def __init__(self, *, host: str, port: int) -> None:
         self._host = host
         self._port = int(port)
-        self._server: asyncio.Server | None = None
+        self._server: CollectorTcpAcceptor | None = None
         self._ref_count = 0
         self._connections: dict[str, _CollectorConnection] = {}
         self._at_connections: dict[str, _CollectorAtConnection] = {}
@@ -215,7 +216,7 @@ class _SharedEybondListener:
         self._ref_count += 1
         if self._server is None:
             try:
-                self._server = await asyncio.start_server(
+                self._server = await CollectorTcpAcceptor.start(
                     self._handle_connection,
                     self._host,
                     self._port,
@@ -234,6 +235,13 @@ class _SharedEybondListener:
         self._ref_count = max(0, self._ref_count - 1)
         if self._ref_count != 0:
             return False
+
+        # Stop and join admission FIRST. A socket accepted during session
+        # cleanup must not repopulate an inventory we have already cleared.
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
+            self._server = None
 
         for pending in tuple(self._pending_sockets.values()):
             await self._close_pending_socket(pending)
@@ -260,10 +268,6 @@ class _SharedEybondListener:
         self._exclusive_routes.clear()
         self._session_inventory.clear()
 
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-            self._server = None
         return True
 
     def register_payload_owner(self, collector_ip: str) -> None:
