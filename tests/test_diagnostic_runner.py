@@ -147,6 +147,33 @@ class DriverResolutionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TargetResolutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unbound_support_reads_use_explicit_route_without_binding_driver(self) -> None:
+        # #23: read the documented candidate ranges before selecting any map.
+        # Synthetic replies validate the runner, not Hopewind device support.
+        class ReadOnlyFixture(FixtureTransport):
+            async def async_send_payload(self, payload, *, route):
+                self_test.assertEqual(payload[1], 3)
+                return await super().async_send_payload(payload, route=route)
+
+        self_test = self
+        bank = {register: register for register in range(40500, 40651)}
+        transport = ReadOnlyFixture(registers=bank, command_responses=None, probe_target=ProbeTarget(1, 255, 1))
+        ctx = DiagnosticRuntimeContext(transport=transport, configured_driver_hint="auto", confirm_write=False)
+        result = await run_scenario(
+            "driver modbus_smg\ndevcode 1\ncollector_addr 255\ndevice_addr 1\n"
+            "stop_on_error false\noperation_timeout 8\n"
+            "read 40600 51\nread 40500 71\nread 40571 29\n", ctx,
+        )
+        self.assertTrue(result.success, result.output)
+        self.assertEqual([step["response"]["decimal"] for step in result.results], [
+            list(range(40600, 40651)), list(range(40500, 40571)), list(range(40571, 40600)),
+        ])
+        self.assertEqual(result.context["probe_target"], {"devcode": 1, "collector_addr": 255, "device_addr": 1})
+        self.assertEqual(result.context["driver_source"], "scenario_override")
+        self.assertIsNone(ctx.active_driver_key)
+        self.assertIsNone(ctx.active_probe_target)
+        self.assertEqual(ctx.configured_driver_hint, "auto")
+
     async def test_address_overrides_apply(self) -> None:
         transport = _modbus({10: 1})
         result = await run_scenario(
