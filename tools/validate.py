@@ -314,6 +314,12 @@ _EXACT_TESTS: dict[str, tuple[str, ...]] = {
         "test_cloud_learning_engines.py",
         "test_cloud_evidence_architecture.py",
     ),
+    "custom_components/eybond_local/support/cloud_read_only_workflow.py": (
+        "test_dessmonitor_learning.py",
+        "test_smartclient_learning.py",
+        "test_cloud_learning_engines.py",
+        "test_cloud_evidence_architecture.py",
+    ),
     "custom_components/eybond_local/support/smartclient_learning.py": (
         "test_smartclient_learning.py",
         "test_cloud_learning_engines.py",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 
 from .cloud_learning_runner import CloudLearningOutcome, CloudLearningRunner
@@ -83,6 +84,10 @@ class ReadOnlyEvidenceWorkflowRunner(CloudLearningRunner):
             max_fields=max_fields,
             progress=progress,
         )
+        # An already-completed executor Future may not yield at all. Deliver
+        # source progress posted with call_soon_threadsafe before advancing to
+        # the final stage, rather than letting late fetching updates follow it.
+        await asyncio.sleep(0)
         self._validate_outcome(outcome)
         on_identity(dict(outcome.identity))
         progress(0.82, "building")

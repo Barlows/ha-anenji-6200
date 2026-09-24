@@ -36,6 +36,12 @@ from custom_components.eybond_local.support.dessmonitor_learning import (  # noq
 
 class DessMonitorLearningRunnerTests(unittest.IsolatedAsyncioTestCase):
     async def test_metadata_runner_never_opens_route_or_learning_writer(self) -> None:
+        await self._check_metadata_runner(executor_completes_inline=False)
+
+    async def test_completed_executor_delivers_progress_before_building(self) -> None:
+        await self._check_metadata_runner(executor_completes_inline=True)
+
+    async def _check_metadata_runner(self, *, executor_completes_inline: bool) -> None:
         bundle = DessMonitorEvidenceBundle(
             identity=DessMonitorDeviceIdentity(
                 pn="E50000200000000001",
@@ -78,6 +84,10 @@ class DessMonitorLearningRunnerTests(unittest.IsolatedAsyncioTestCase):
         async def executor(operation):
             nonlocal executor_calls
             executor_calls += 1
+            if executor_completes_inline:
+                # Model an executor Future already done before it is awaited:
+                # awaiting it need not yield to call_soon_threadsafe callbacks.
+                return operation()
             return await asyncio.to_thread(operation)
 
         def fetch_bundle(**kwargs):

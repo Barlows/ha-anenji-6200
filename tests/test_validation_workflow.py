@@ -170,6 +170,17 @@ class AffectedValidationSelectionTests(unittest.TestCase):
             }.issubset(selected)
         )
 
+    def test_read_only_runner_selects_executor_progress_regressions(self) -> None:
+        selected = self._selected(
+            "custom_components/eybond_local/support/cloud_read_only_workflow.py"
+        )
+        self.assertTrue({
+            "test_dessmonitor_learning.py",
+            "test_smartclient_learning.py",
+            "test_cloud_learning_engines.py",
+            "test_cloud_evidence_architecture.py",
+        }.issubset(selected))
+
     def test_neutral_wire_selects_every_direct_behavior_family(self) -> None:
         selected = self._selected(
             "custom_components/eybond_local/collector/collector_wire.py"
