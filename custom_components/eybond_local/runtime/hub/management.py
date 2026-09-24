@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ...collector.management import CollectorManagementTransportError
 from .common import (
     ADAPTER_COLLECTOR_AT_COMMANDS,
     CollectorEndpointWriteResult,
@@ -447,18 +448,31 @@ class HubManagementMixin:
             "error_code": "",
             "timestamp": _wall_time(),
         }
+        generation = getattr(self._link_manager, "owned_session_generation", None)
+        if type(generation) is int:
+            record["session_generation_start"] = generation
         try:
             return await operation()
+        except asyncio.CancelledError:
+            record["status"] = "cancelled"
+            raise
         except CollectorManagementError as exc:
             record["status"] = "error"
             record["error_class"] = type(exc).__name__
             record["error_code"] = str(exc).split(":", 1)[0]
+            if isinstance(exc, CollectorManagementTransportError):
+                request = exc.request_diagnostics
+                if request:
+                    record["failed_request"] = request
             raise
         except Exception as exc:  # noqa: BLE001 - recorded, then re-raised
             record["status"] = "error"
             record["error_class"] = type(exc).__name__
             raise
         finally:
+            generation = getattr(self._link_manager, "owned_session_generation", None)
+            if type(generation) is int:
+                record["session_generation_end"] = generation
             record["duration_ms"] = int(
                 round((asyncio.get_running_loop().time() - started) * 1000.0)
             )

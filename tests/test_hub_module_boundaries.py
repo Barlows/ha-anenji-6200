@@ -33,7 +33,7 @@ EXPECTED_MRO = [
 ]
 
 EXPECTED_METHOD_MULTISET_SHA256 = (
-    "ba57b97225f5a94229ad673dbdf0a22440578a6880fab3007fa7822c25b67f6f"
+    "3b7bcf18a0ec78be716d726188552155a03697517ae17f7826a117cabdb657ea"
 )
 
 
@@ -97,8 +97,8 @@ class HubCompositionBoundaryTests(unittest.TestCase):
         duplicates = {name: paths for name, paths in owners.items() if len(paths) != 1}
         self.assertEqual(duplicates, {})
         payload = "\n".join(f"{name}:{count}" for name, count in sorted(counts.items()))
-        self.assertEqual(sum(counts.values()), 108)
-        self.assertEqual(len(counts), 103)
+        self.assertEqual(sum(counts.values()), 109)
+        self.assertEqual(len(counts), 104)
         self.assertEqual(
             hashlib.sha256(payload.encode()).hexdigest(),
             EXPECTED_METHOD_MULTISET_SHA256,
@@ -122,6 +122,7 @@ class HubCompositionBoundaryTests(unittest.TestCase):
             "async_set_collector_server_endpoint": "management.py",
             "async_capture_support_evidence": "support.py",
             "async_capture_local_register_snapshot": "support.py",
+            "local_register_collection_availability": "support.py",
             "_async_detect_driver": "detection.py",
             "_build_snapshot": "snapshot.py",
             "async_start_proxy_capture_route": "lifecycle.py",

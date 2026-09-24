@@ -112,6 +112,25 @@ class _FakeAtTransport:
 
 
 class FramedCollectorManagementAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_endpoint_read_transport_failure_identifies_exact_subrequest(self):
+        from unittest.mock import patch
+
+        for failed_parameter in (21, 30):
+            transport = _FakeFramedTransport()
+            send = transport.async_send_collector
+
+            async def fail_query(**kwargs):
+                if kwargs["payload"] == bytes((failed_parameter,)):
+                    raise TimeoutError()
+                return await send(**kwargs)
+
+            with patch.object(transport, "async_send_collector", side_effect=fail_query):
+                with self.assertRaises(CollectorManagementTransportError) as caught:
+                    await self._adapter(transport).async_read_endpoint_state()
+            self.assertEqual(str(caught.exception), "TimeoutError")
+            self.assertEqual(caught.exception.query_parameter, failed_parameter)
+            self.assertNotIn("old.host", str(caught.exception))
+
     def _adapter(self, transport):
         return FramedCollectorManagementAdapter(lambda: transport)
 

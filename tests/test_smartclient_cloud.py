@@ -27,6 +27,7 @@ def responses():
         "auth": {"token": "PRIVATE_TOKEN", "secret": "PRIVATE_SECRET"},
         "queryCollectorDevices": {"pn": PN, "dev": [dict(IDENTITY)]},
         "queryDeviceInfo": {"device": [dict(IDENTITY, timezone=10800, status=1)]},
+        "webQueryCollectorInfo": {"pn": PN, "timezone": 7200},
         "queryDeviceLastData": [
             {"title": "id", "val": "row-id"},
             {"title": "Timestamp", "val": DAY + " 12:00:00"},
@@ -160,7 +161,8 @@ class SmartClientCloudTests(unittest.TestCase):
         self.assertTrue(bundle.raw_packet["payload_omitted"])
         self.assertNotIn("data_base64", bundle.raw_packet)
         self.assertEqual(
-            {name for name, _, _ in calls}, cloud.PASSIVE_ACTIONS | {"auth"}
+            {name for name, _, _ in calls},
+            (cloud.PASSIVE_ACTIONS - {"webQueryCollectorInfo"}) | {"auth"},
         )
         for name, query, timeout in calls:
             self.assertLessEqual(timeout, 15)
@@ -196,6 +198,58 @@ class SmartClientCloudTests(unittest.TestCase):
         data["queryDeviceInfo"]["device"][0]["sn"] = "FOREIGN"
         with self.assertRaisesRegex(cloud.SmartClientCloudError, "identity_mismatch"):
             fetch_fixture(data)
+
+    def test_native_array_device_info_preserves_exact_identity(self):
+        data = responses()
+        data["queryDeviceInfo"] = [dict(IDENTITY, timezone=0)]
+        bundle, calls = fetch_fixture(data)
+        self.assertEqual(bundle.device_info["timezone"], 0)
+        self.assertTrue(bundle.history["requested_date"])
+        self.assertNotIn("webQueryCollectorInfo", [name for name, _, _ in calls])
+        for rows in (
+            [], [dict(IDENTITY, sn="FOREIGN")],
+            [dict(IDENTITY), dict(IDENTITY)],
+            [dict(IDENTITY, devaddr=True)],
+        ):
+            data["queryDeviceInfo"] = rows
+            with self.subTest(rows=rows), self.assertRaisesRegex(
+                cloud.SmartClientCloudError, "identity_mismatch"
+            ):
+                fetch_fixture(data)
+
+    def test_collector_timezone_fallback_is_scoped_and_precedes_history(self):
+        for info in ([dict(IDENTITY)], "malformed"):
+            data = responses()
+            data["queryDeviceInfo"] = info
+            bundle, calls = fetch_fixture(data)
+            self.assertEqual(bundle.device_info["timezone"], 7200)
+            self.assertEqual(bundle.device_info["timezone_source"], "webQueryCollectorInfo")
+            names = [name for name, _, _ in calls]
+            self.assertLess(names.index("webQueryCollectorInfo"), names.index("queryDeviceDataOneDay"))
+            query = next(query for name, query, _ in calls if name == "webQueryCollectorInfo")
+            self.assertEqual(query["pn"], [PN])
+            self.assertNotIn("device", query)
+            self.assertTrue(bundle.history["requested_date"])
+
+    def test_collector_timezone_never_guesses_or_ignores_identity_auth_errors(self):
+        for offset in (None, True, "7200", -43201, 50401):
+            data = responses()
+            data["queryDeviceInfo"] = [dict(IDENTITY)]
+            data["webQueryCollectorInfo"]["timezone"] = offset
+            bundle, calls = fetch_fixture(data)
+            self.assertNotIn("timezone", bundle.device_info)
+            self.assertEqual(bundle.history["requested_date"], "")
+            self.assertIn(("webQueryCollectorInfo", "time_basis_unavailable"), bundle.action_errors)
+            history_query = next(query for name, query, _ in calls if name == "queryDeviceDataOneDay")
+            self.assertNotIn("date", history_query)
+        for reply in (
+            {"pn": "E5000099990002", "timezone": 7200},
+            cloud.SmartClientCloudError("auth_failed"),
+            cloud.SmartClientCloudError("api_rejected", code=257),
+        ):
+            data["webQueryCollectorInfo"] = reply
+            with self.subTest(reply=reply), self.assertRaises(cloud.SmartClientCloudError):
+                fetch_fixture(data)
 
     def test_optional_rejection_preserves_other_evidence(self):
         data = responses()

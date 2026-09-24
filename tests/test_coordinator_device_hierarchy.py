@@ -1678,7 +1678,7 @@ class CoordinatorDeviceHierarchyTests(unittest.TestCase):
                 return None
 
             coordinator._runtime = types.SimpleNamespace(
-                async_capture_local_register_snapshot=_capture
+                async_capture_local_register_snapshot=_capture,
             )
             await coordinator._runtime_operation_lock.acquire()
             task = asyncio.create_task(
@@ -1752,8 +1752,15 @@ class CoordinatorDeviceHierarchyTests(unittest.TestCase):
                 self.assertTrue(coordinator._runtime_operation_lock.locked())
                 return snapshots.pop(0)
 
+            from custom_components.eybond_local.drivers.local_register_evidence import (
+                LocalRegisterCollectionAvailability,
+            )
+
             coordinator._runtime = types.SimpleNamespace(
-                async_capture_local_register_snapshot=_capture
+                async_capture_local_register_snapshot=_capture,
+                local_register_collection_availability=(
+                    LocalRegisterCollectionAvailability("ready")
+                ),
             )
             coordinator._local_register_collection = LocalRegisterCollectionManager(
                 capture_snapshot=coordinator.async_capture_local_register_snapshot,

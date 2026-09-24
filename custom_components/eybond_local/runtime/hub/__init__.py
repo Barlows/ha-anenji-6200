@@ -142,6 +142,7 @@ class EybondHub(
         self._stale_runtime_owned_keys: set[str] = set()
         self._stale_runtime_driver_diagnostic_keys: set[str] = set()
         self._runtime_measurement_identity: str = ""
+        self._runtime_payload_error: str = ""
         self._runtime_measurement_last_mode: str = ""
         self._runtime_measurement_fresh_count: int = 0
         self._runtime_measurement_reused_count: int = 0

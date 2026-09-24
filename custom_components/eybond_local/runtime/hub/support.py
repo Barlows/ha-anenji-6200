@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from ...drivers.local_register_evidence import LocalRegisterSnapshot
+from ...drivers.local_register_evidence import (
+    LocalRegisterCollectionAvailability,
+    LocalRegisterReadPlan,
+    LocalRegisterSnapshot,
+)
 from ...collector_identity import validated_collector_pn
 
 from .common import (
@@ -63,6 +67,27 @@ class HubSupportMixin:
                 raise
 
         return evidence
+
+    @property
+    def local_register_collection_availability(
+        self,
+    ) -> LocalRegisterCollectionAvailability:
+        """Use the bound driver's read plan, not a cloud capability or model list."""
+
+        if self._driver is None or self._inverter is None:
+            return LocalRegisterCollectionAvailability("inverter_unidentified")
+        pn = getattr(self._link_manager.collector_info, "collector_pn", "")
+        if type(pn) is not str or not pn or validated_collector_pn(pn) != pn:
+            return LocalRegisterCollectionAvailability("collector_identity_unavailable")
+        try:
+            plans = self._driver.local_register_read_plans(self._inverter)
+        except (OSError, ValueError, TypeError):
+            # A missing/invalid local schema is not permission to probe guessed
+            # registers, and must not prevent review of cloud-only evidence.
+            return LocalRegisterCollectionAvailability("read_plan_unavailable")
+        if not plans or any(type(plan) is not LocalRegisterReadPlan for plan in plans):
+            return LocalRegisterCollectionAvailability("read_plan_unavailable")
+        return LocalRegisterCollectionAvailability("ready")
 
     async def async_capture_local_register_snapshot(
         self,

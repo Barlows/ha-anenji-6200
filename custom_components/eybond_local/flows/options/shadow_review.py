@@ -139,6 +139,7 @@ class ShadowLearningReviewMixin:
             collection_supported = bool(
                 learning_engine.available
                 and learning_engine.evidence_capabilities.local_register_series
+                and self._local_register_observation_available(coordinator)
                 and callable(
                     getattr(coordinator, "start_local_register_collection", None)
                 )

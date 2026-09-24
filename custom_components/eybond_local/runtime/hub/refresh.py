@@ -407,6 +407,10 @@ class HubRefreshMixin:
                 raw, driver_key=getattr(self._inverter, "driver_key", "")
             )
             self._resolve_runtime_measurements(result)
+            if result.values:
+                # An empty scheduled DELTA/metadata-only refresh proves no
+                # inverter recovery. Clear only on newly returned values.
+                self._runtime_payload_error = ""
             runtime_values: dict[str, object] = self._runtime_measurement_diagnostics()
             runtime_values["collector_poll_duration_ms"] = int(round(duration * 1000.0))
             return runtime_values
@@ -476,9 +480,7 @@ class HubRefreshMixin:
                             getattr(self._last_snapshot, "values", {}) or {}
                         )
                         retained_values.update(collector_values)
-                        retained_values["runtime_payload_error"] = _error_code(
-                            retry_exc
-                        )
+                        self._runtime_payload_error = _error_code(retry_exc)
                         snapshot = self._build_snapshot(
                             extra_values=retained_values,
                             last_error=_error_code(retry_exc),
@@ -679,6 +681,7 @@ class HubRefreshMixin:
     def _reset_runtime_measurement_cache(self) -> None:
         """Drop last-good runtime measurements (a different device/driver)."""
 
+        self._runtime_payload_error = ""
         self._runtime_measurement_values = {}
         self._runtime_measurement_telemetry = TypedTelemetryFrame.empty()
         self._runtime_measurement_owned_keys = set()

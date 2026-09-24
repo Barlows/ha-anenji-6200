@@ -529,6 +529,12 @@ class HubSnapshotMixin:
                     safe_extra_values.pop("collector_pn", None)
             values.update(safe_extra_values)
 
+        # Owned by the payload-read outcome lifecycle, never by carried values
+        # or collector metadata. Identity changes reset it with measurements.
+        values.pop("runtime_payload_error", None)
+        if self._runtime_payload_error:
+            values["runtime_payload_error"] = self._runtime_payload_error
+
         if self._inverter_detection_probe_log:
             values["runtime_inverter_probe_log"] = [
                 dict(entry) for entry in self._inverter_detection_probe_log

@@ -35,6 +35,7 @@ MAX_HISTORY_ROWS = 4096
 PASSIVE_ACTIONS = frozenset(
     {
         "queryCollectorDevices",
+        "webQueryCollectorInfo",
         "queryDeviceInfo",
         "queryDeviceLastData",
         "queryDeviceDataOneDay",
@@ -178,7 +179,7 @@ def build_signed_action_url(
         _DEVICE_PARAMETERS | {"date"}
         if name == "queryDeviceDataOneDay"
         else {"pn"}
-        if name == "queryCollectorDevices"
+        if name in {"queryCollectorDevices", "webQueryCollectorInfo"}
         else {"device"}
         if name == "queryDeviceInfo"
         else _DEVICE_PARAMETERS
@@ -315,10 +316,13 @@ def _controls(data: object) -> tuple[dict[str, Any], ...]:
 
 
 def _device_info(data: object, identity: SmartClientIdentity) -> dict[str, Any]:
-    if type(data) is not dict or type(data.get("device")) is not list:
+    # The native SmartClient APK reads dat as an array. Keep the older object
+    # envelope too, but never copy the APK's unverified first-row selection.
+    rows = data.get("device") if type(data) is dict else data
+    if type(rows) is not list:
         raise SmartClientCloudError("invalid_device_info")
     matches = []
-    for item in data["device"]:
+    for item in rows:
         if type(item) is not dict:
             continue
         if (
@@ -342,6 +346,19 @@ def _device_info(data: object, identity: SmartClientIdentity) -> dict[str, Any]:
     if type(offset) is int and -43200 <= offset <= 50400:
         result["timezone"] = offset
     return result
+
+
+def _collector_time_basis(data: object, identity: SmartClientIdentity) -> dict[str, Any]:
+    """Read only the timezone of this collector, not its other settings."""
+
+    if type(data) is not dict:
+        raise SmartClientCloudError("invalid_collector_info")
+    if not pn_is_same_identity(identity.pn, _text(data.get("pn"))):
+        raise SmartClientCloudError("identity_mismatch")
+    offset = data.get("timezone")
+    if type(offset) is not int or not -43200 <= offset <= 50400:
+        raise SmartClientCloudError("time_basis_unavailable")
+    return {"timezone": offset, "timezone_source": "webQueryCollectorInfo"}
 
 
 def _history(data: object, requested_date: str) -> dict[str, Any]:
@@ -489,6 +506,15 @@ def fetch_read_only_evidence(
         lambda data: _device_info(data, identity),
         {},
     )
+    if "timezone" not in info:
+        info.update(
+            optional(
+                "webQueryCollectorInfo",
+                (("pn", identity.pn),),
+                lambda data: _collector_time_basis(data, identity),
+                {},
+            )
+        )
     telemetry = optional("queryDeviceLastData", params, _telemetry, ())
     controls = optional("queryDeviceCtrlField", params, _controls, ())
     raw = optional("queryDeviceLastRawData", params, _raw_packet, {})

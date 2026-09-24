@@ -39,6 +39,7 @@ from .at import CollectorAtError
 from .collector_wire import (
     CollectorManagementError,
     CollectorManagementUnsupportedError,
+    CollectorQueryResponse,
     CollectorWireError,
     CollectorWireManagementSession,
     QUERY_REBOOT_REQUIRED,
@@ -105,6 +106,23 @@ class CollectorManagementCommandError(CollectorManagementError):
 
 class CollectorManagementTransportError(CollectorManagementError):
     """The management transport failed to carry the command."""
+
+    def __init__(self, message: str, *, query_parameter: int | None = None) -> None:
+        super().__init__(message)
+        # Numeric request context only; never endpoint values or response text.
+        self.query_parameter = query_parameter
+
+    @property
+    def request_diagnostics(self) -> dict[str, object]:
+        """Project wire context here so runtime need not interpret parameters."""
+
+        if self.query_parameter is None:
+            return {}
+        return {
+            "protocol": "eybond_framed",
+            "function": 2,
+            "parameter": self.query_parameter,
+        }
 
 
 class CollectorManagementConfirmationError(CollectorManagementError):
@@ -339,6 +357,24 @@ class FramedCollectorManagementAdapter(CollectorManagementAdapter):
         transport = self._resolve_transport()
         return CollectorWireManagementSession(transport), transport
 
+    async def _query(
+        self, session: CollectorWireManagementSession, parameter: int
+    ) -> CollectorQueryResponse:
+        """Keep a failed FC2 sub-request distinguishable within compound reads."""
+
+        try:
+            return await session.query_collector(parameter)
+        except CollectorManagementTransportError as exc:
+            exc.query_parameter = parameter
+            raise
+        except CollectorManagementError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - same typed policy as other calls
+            wrapped = _wrap_wire_call(exc)
+            if isinstance(wrapped, CollectorManagementTransportError):
+                wrapped.query_parameter = parameter
+            raise wrapped from exc
+
     async def _query_confirmed(
         self, session: CollectorWireManagementSession, parameter: int
     ) -> str:
@@ -351,12 +387,7 @@ class FramedCollectorManagementAdapter(CollectorManagementAdapter):
         confirmed management result.
         """
 
-        try:
-            response = await session.query_collector(parameter)
-        except CollectorManagementError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            raise _wrap_wire_call(exc) from exc
+        response = await self._query(session, parameter)
         code = getattr(response, "code", None)
         got_parameter = getattr(response, "parameter", None)
         if code != 0:
@@ -396,12 +427,7 @@ class FramedCollectorManagementAdapter(CollectorManagementAdapter):
         malformed frame is not "the flag is absent").
         """
 
-        try:
-            response = await session.query_collector(parameter)
-        except CollectorManagementError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - wrapped typed; interrupts the op
-            raise _wrap_wire_call(exc) from exc
+        response = await self._query(session, parameter)
         if getattr(response, "code", None) != 0 or getattr(response, "parameter", None) != parameter:
             return ""
         return str(getattr(response, "text", "") or "").strip().strip("\x00")

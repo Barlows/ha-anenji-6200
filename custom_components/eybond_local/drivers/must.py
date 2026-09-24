@@ -221,14 +221,10 @@ class MustPvPh18Driver(ModbusWriteErrorMixin, InverterDriver):
             ],
         }
 
-    async def async_capture_local_register_snapshot(
-        self,
-        transport,
-        inverter: DetectedInverter,
-        *,
-        collector_pn: str,
-    ) -> LocalRegisterSnapshot:
-        plans = tuple(
+    def local_register_read_plans(
+        self, inverter: DetectedInverter
+    ) -> tuple[LocalRegisterReadPlan, ...]:
+        return tuple(
             LocalRegisterReadPlan.for_target(
                 inverter.probe_target,
                 function=3,
@@ -239,10 +235,14 @@ class MustPvPh18Driver(ModbusWriteErrorMixin, InverterDriver):
                 inverter.register_schema_name or self.register_schema_name
             )
         )
+
+    async def async_capture_local_register_snapshot(
+        self, transport, inverter: DetectedInverter, *, collector_pn: str
+    ) -> LocalRegisterSnapshot:
         return await async_capture_modbus_snapshot(
             collector_pn=collector_pn,
             driver_key=self.key,
-            plans=plans,
+            plans=self.local_register_read_plans(inverter),
             session_factory=lambda target: self._session(transport, target),
         )
 

@@ -20,7 +20,7 @@ from ..poll_policy import DEFAULT_POLL_POLICY, PollPolicy
 from .support_marker import DriverSupportMarker
 from .support_probe import SupportProbeRequest
 from .read_result import DriverReadResult
-from .local_register_evidence import LocalRegisterSnapshot
+from .local_register_evidence import LocalRegisterReadPlan, LocalRegisterSnapshot
 from .probe_evidence import DriverProbeEvidence
 from .write_error import EMPTY_WRITE_ERROR_CLASSIFICATION, WriteErrorClassification
 
@@ -166,6 +166,17 @@ class InverterDriver(ABC):
         """Return driver-specific raw evidence for support/debug packages."""
 
         return {}
+
+    def local_register_read_plans(
+        self, inverter: DetectedInverter
+    ) -> tuple[LocalRegisterReadPlan, ...]:
+        """Describe this bound device's evidence reads without performing I/O.
+
+        No plan means local register observation is unavailable, even if cloud
+        metadata or command-based telemetry is available.
+        """
+
+        return ()
 
     async def async_capture_local_register_snapshot(
         self,

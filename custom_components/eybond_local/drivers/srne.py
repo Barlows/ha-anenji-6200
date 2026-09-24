@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from ..poll_policy import PollPolicy
-
-
+import asyncio
 from typing import Any
 
 from ..metadata.compiled_detection_catalog import load_compiled_detection_catalog
 from ..metadata.register_schema_loader import load_register_schema
 from ..models import DetectedInverter, ProbeTarget
-from ..payload.modbus import ModbusSession
+from ..payload.modbus import ModbusError, ModbusSession
 from ..payload.register_decode import decode_ascii_low_bytes, read_spec_set_values
+from ..poll_policy import PollPolicy
 from .base import InverterDriver
 from .local_register_evidence import (
     LocalRegisterReadPlan,
@@ -19,6 +18,19 @@ from .local_register_evidence import (
     async_capture_modbus_snapshot,
 )
 from .read_result import DriverReadMode, DriverReadResult
+
+
+# SRNE Modbus V2.07, P01 DC Data Area (addresses in that table are hexadecimal).
+# Support-only diagnosis of a rejected 0x0100/18 read; never a runtime read plan.
+# In particular, do not cross the optional/new fields or reserved 0x010D again.
+_DC_DIAGNOSTIC_RANGES = (
+    (0x0100, 3, "battery"),
+    (0x0107, 3, "pv1"),
+    (0x010B, 1, "charge_state"),
+    (0x010E, 1, "charge_power"),
+    (0x010F, 3, "pv2"),
+)
+_DC_DIAGNOSTIC_TIMEOUT = 15.0
 
 
 class SrneModbusDriver(InverterDriver):
@@ -138,10 +150,13 @@ class SrneModbusDriver(InverterDriver):
         session = self._session(transport, inverter.probe_target)
         captured_ranges: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
+        needs_dc_diagnostics = False
         for block in schema.blocks:
             try:
                 values = await session.read_holding(block.start, block.count)
             except Exception as exc:
+                if (block.start, block.count) == (0x0100, 18) and _is_address_rejection(exc):
+                    needs_dc_diagnostics = True
                 failures.append(
                     {
                         "start": block.start,
@@ -157,7 +172,7 @@ class SrneModbusDriver(InverterDriver):
                     "words": list(values),
                 }
             )
-        return {
+        evidence = {
             "capture_kind": "srne_modbus_register_dump",
             "driver_key": self.key,
             "model_name": inverter.model_name,
@@ -180,18 +195,28 @@ class SrneModbusDriver(InverterDriver):
                 for item in captured_ranges
             ],
         }
+        # Finish the ordinary evidence first, so extra diagnostics cannot consume
+        # its budget. Keep the rejected parent and successful subreads separate.
+        if needs_dc_diagnostics:
+            diagnostics = await _capture_dc_subranges(session)
+            evidence["dc_subrange_diagnostics"] = diagnostics
+            evidence["fixture_ranges"].extend(
+                {
+                    "start": item["start"],
+                    "count": item["count"],
+                    "values": list(item["words"]),
+                }
+                for item in diagnostics["captured_ranges"]
+            )
+        return evidence
 
-    async def async_capture_local_register_snapshot(
-        self,
-        transport,
-        inverter: DetectedInverter,
-        *,
-        collector_pn: str,
-    ) -> LocalRegisterSnapshot:
+    def local_register_read_plans(
+        self, inverter: DetectedInverter
+    ) -> tuple[LocalRegisterReadPlan, ...]:
         schema = load_register_schema(
             inverter.register_schema_name or self.register_schema_name
         )
-        plans = tuple(
+        return tuple(
             LocalRegisterReadPlan.for_target(
                 inverter.probe_target,
                 function=3,
@@ -200,10 +225,14 @@ class SrneModbusDriver(InverterDriver):
             )
             for block in schema.blocks
         )
+
+    async def async_capture_local_register_snapshot(
+        self, transport, inverter: DetectedInverter, *, collector_pn: str
+    ) -> LocalRegisterSnapshot:
         return await async_capture_modbus_snapshot(
             collector_pn=collector_pn,
             driver_key=self.key,
-            plans=plans,
+            plans=self.local_register_read_plans(inverter),
             session_factory=lambda target: self._session(transport, target),
         )
 
@@ -214,6 +243,60 @@ class SrneModbusDriver(InverterDriver):
             route=target.link_route,
             slave_id=target.payload_address,
         )
+
+
+def _is_address_rejection(error: Exception) -> bool:
+    return isinstance(error, ModbusError) and str(error) == "exception_code:2"
+
+
+async def _capture_dc_subranges(session: ModbusSession) -> dict[str, Any]:
+    """Try at most five documented DC groups with one shared deadline.
+
+    Preserve normal Modbus retry semantics, but stop this diagnostic sequence on
+    any error except an explicit illegal-address response. No recursive splitting,
+    phase probing, capability writes or mutation of the runtime schema occurs.
+    """
+
+    result: dict[str, Any] = {
+        "source": "SRNE Modbus V2.07, P01 DC Data Area",
+        "purpose": "support_only_rejected_dc_block",
+        "trigger_range": {"start": 0x0100, "count": 18},
+        "time_budget_seconds": _DC_DIAGNOSTIC_TIMEOUT,
+        "planned_ranges": [
+            {"start": start, "count": count, "group": group}
+            for start, count, group in _DC_DIAGNOSTIC_RANGES
+        ],
+        "status": "completed",
+        "captured_ranges": [],
+        "range_failures": [],
+    }
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _DC_DIAGNOSTIC_TIMEOUT
+    for start, count, _group in _DC_DIAGNOSTIC_RANGES:
+        if loop.time() >= deadline:
+            result["status"] = "budget_exhausted"
+            break
+        timeout = asyncio.timeout_at(deadline)
+        try:
+            async with timeout:
+                words = await session.read_holding(start, count)
+        except Exception as exc:
+            expired = timeout.expired()
+            result["range_failures"].append(
+                {
+                    "start": start,
+                    "count": count,
+                    "error": "diagnostic_budget_exhausted" if expired else str(exc),
+                }
+            )
+            if _is_address_rejection(exc):
+                continue
+            result["status"] = "budget_exhausted" if expired else "stopped_on_error"
+            break
+        result["captured_ranges"].append(
+            {"start": start, "count": count, "words": list(words)}
+        )
+    return result
 
 
 def _srne_default_schema_name() -> str:

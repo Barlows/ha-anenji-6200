@@ -26,6 +26,26 @@ _MAX_BLOCKS = 256
 _MAX_REGISTER_COUNT = 125
 
 
+@dataclass(frozen=True, slots=True)
+class LocalRegisterCollectionAvailability:
+    """Runtime admission for background reads; not a promise of wire success."""
+
+    reason: str
+
+    def __post_init__(self) -> None:
+        if type(self.reason) is not str or self.reason not in {
+            "ready",
+            "inverter_unidentified",
+            "collector_identity_unavailable",
+            "read_plan_unavailable",
+        }:
+            raise ValueError("local_register_availability_invalid")
+
+    @property
+    def available(self) -> bool:
+        return self.reason == "ready"
+
+
 def local_register_evidence_timestamp() -> str:
     """Return one aware UTC timestamp for a local wire observation."""
 

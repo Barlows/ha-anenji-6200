@@ -475,14 +475,10 @@ class SmartEssLocalDriver(ModbusWriteErrorMixin, InverterDriver):
             ],
         }
 
-    async def async_capture_local_register_snapshot(
-        self,
-        transport,
-        inverter: DetectedInverter,
-        *,
-        collector_pn: str,
-    ) -> LocalRegisterSnapshot:
-        """Capture raw 0925 wire words without support-payload normalization."""
+    def local_register_read_plans(
+        self, inverter: DetectedInverter
+    ) -> tuple[LocalRegisterReadPlan, ...]:
+        """Plan raw 0925 wire words without support-payload normalization."""
 
         schema = load_register_schema(
             inverter.register_schema_name or self.register_schema_name
@@ -523,11 +519,15 @@ class SmartEssLocalDriver(ModbusWriteErrorMixin, InverterDriver):
             )
         # Several bitfield capabilities may share one physical register. One
         # wire read is sufficient and keeps the evidence plan deterministic.
-        unique_plans = tuple(dict.fromkeys(plans))
+        return tuple(dict.fromkeys(plans))
+
+    async def async_capture_local_register_snapshot(
+        self, transport, inverter: DetectedInverter, *, collector_pn: str
+    ) -> LocalRegisterSnapshot:
         return await async_capture_modbus_snapshot(
             collector_pn=collector_pn,
             driver_key=self.key,
-            plans=unique_plans,
+            plans=self.local_register_read_plans(inverter),
             session_factory=lambda target: self._session(transport, target),
         )
 

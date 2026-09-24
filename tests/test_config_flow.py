@@ -318,6 +318,7 @@ from custom_components.eybond_local.drivers.local_register_series import (
     LocalRegisterSeriesPlan,
     LocalRegisterSnapshotSeries,
 )
+from custom_components.eybond_local.drivers.local_register_evidence import LocalRegisterCollectionAvailability
 from custom_components.eybond_local.support.local_register_collection import (
     LOCAL_REGISTER_COLLECTION_STATE_RUNNING,
     LocalRegisterCollectionStatus,
@@ -8181,6 +8182,7 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
             cloud_evidence_provider="smartess",
             smartess_collector_pn="E50000200000000001",
             local_register_collection_status=LocalRegisterCollectionStatus.idle(),
+            local_register_collection_availability=LocalRegisterCollectionAvailability("ready"),
         )
 
         def _start_local_collection(plan):
@@ -10785,6 +10787,29 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
             _schema_select_options(result["data_schema"], "result_action"),
             ["create_support_package", "done"],
         )
+
+    async def test_metadata_review_without_local_plan_never_starts_observation(self):
+        options = self._wizard_options_flow()
+        coordinator = options._coordinator()
+        coordinator.local_register_collection_availability = LocalRegisterCollectionAvailability("inverter_unidentified")
+        options._shadow_learning_state.update({
+            "wizard_method": "read_only_evidence",
+            "wizard_source": "smartclient",
+            "discovery": {"status": "ok", "found_controls": 0, "found_metadata": 1},
+            "cloud_metadata": {
+                "provider_id": "smartess", "source_id": "smartclient",
+                "telemetry_fields": [{"field_id": "2", "title": "PV Voltage", "value": "230", "unit": "V"}],
+            },
+        })
+        review = await options.async_step_shadow_learning_review()
+        self.assertEqual(review["step_id"], "shadow_learning_review")
+        self.assertNotIn("start_local_register_observation", review["data_schema"].schema)
+        self.assertIn("no local register read plan", review["description_placeholders"]["control_discovery_hint"])
+        rejected = await options.async_step_shadow_learning_review({"start_local_register_observation": True})
+        self.assertEqual(rejected["errors"]["base"], "local_register_collection_unavailable")
+        coordinator.start_local_register_collection.assert_not_called()
+        result = await options.async_step_shadow_learning_review({})
+        self.assertEqual(result["step_id"], "shadow_learning_result")
 
     async def test_smartess_read_only_offers_background_history_correlation(
         self,

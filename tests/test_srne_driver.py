@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
+from unittest.mock import AsyncMock, patch
+import zipfile
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +22,13 @@ from custom_components.eybond_local.drivers.read_result import (  # noqa: E402
 )
 from custom_components.eybond_local.fixtures.transport import FixtureTransport  # noqa: E402
 from custom_components.eybond_local.models import ProbeTarget  # noqa: E402
+from custom_components.eybond_local.payload.modbus import (  # noqa: E402
+    ModbusError,
+    crc16_modbus,
+    decode_read_request,
+)
+from custom_components.eybond_local.support.package import export_support_package  # noqa: E402
+from custom_components.eybond_local.support.runtime_projection import build_support_fixture  # noqa: E402
 
 
 def _full_values(result: DriverReadResult) -> dict[str, object]:
@@ -208,6 +220,225 @@ class SrneModbusDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn((528, 18), planned)
         self.assertIn((554, 14), planned)
         self.assertEqual(len(evidence["fixture_ranges"]), len(planned))
+
+
+class _ReadOnlySrneTransport(FixtureTransport):
+    """Replay an inverter rejecting reads that include undocumented holes."""
+
+    def __init__(self, registers: dict[int, int], target: ProbeTarget) -> None:
+        super().__init__(registers=registers, command_responses=None, probe_target=target)
+        self.requests: list[tuple[int, int]] = []
+
+    async def async_send_payload(self, payload, *, route):
+        request = decode_read_request(payload)
+        if request is None or request.function_code != 3:
+            raise AssertionError("Support capture must only issue FC3 reads")
+        self.requests.append((request.address, request.count))
+        if any(
+            address not in self._registers
+            for address in range(request.address, request.address + request.count)
+        ):
+            response = bytes((request.slave_id, 0x83, 2))
+            return response + crc16_modbus(response).to_bytes(2, "little")
+        return await super().async_send_payload(payload, route=route)
+
+
+class SrneSupportDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.driver = SrneModbusDriver()
+        target = ProbeTarget(devcode=1, collector_addr=255, device_addr=1)
+        registers = _srne_registers(include_phase=False)
+        del registers[269]  # 0x010D: reserved; never read it separately.
+        self.transport = _ReadOnlySrneTransport(registers, target)
+        self.inverter = await self.driver.async_probe(self.transport, target)
+        assert self.inverter is not None
+        self.transport.requests.clear()
+
+    async def test_rejected_dc_block_gets_only_fixed_support_subranges(self) -> None:
+        evidence = await self.driver.async_capture_support_evidence(
+            self.transport, self.inverter
+        )
+
+        normal = [(53, 20), (256, 18), (516, 4), (528, 18), (554, 14)]
+        extra = [(256, 3), (263, 3), (267, 1), (270, 1), (271, 3)]
+        self.assertEqual(self.transport.requests, normal + extra)
+        self.assertEqual(
+            [(item["start"], item["count"]) for item in evidence["planned_ranges"]],
+            normal,
+        )
+        self.assertEqual(
+            evidence["range_failures"],
+            [
+                {"start": 256, "count": 18, "error": "exception_code:2"},
+                {"start": 554, "count": 14, "error": "exception_code:2"},
+            ],
+        )
+        diagnostics = evidence["dc_subrange_diagnostics"]
+        self.assertEqual(diagnostics["status"], "completed")
+        self.assertEqual(diagnostics["range_failures"], [])
+        self.assertEqual(diagnostics["trigger_range"], {"start": 256, "count": 18})
+        self.assertEqual(diagnostics["time_budget_seconds"], 15.0)
+        captured = diagnostics["captured_ranges"]
+        self.assertEqual([(item["start"], item["count"]) for item in captured], extra)
+        self.assertEqual(captured[0]["words"], [85, 512, 123])
+        self.assertEqual(len(evidence["captured_ranges"]), 3)
+        self.assertEqual(len(evidence["fixture_ranges"]), 8)
+
+        # Gathering support evidence must not silently change runtime polling.
+        self.transport.requests.clear()
+        values = _full_values(
+            await self.driver.async_read_values(self.transport, self.inverter)
+        )
+        self.assertEqual(self.transport.requests, normal)
+        self.assertEqual(values["output_power"], 1200)
+        self.assertNotIn("battery_voltage", values)
+        self.assertEqual(
+            [(plan.start, plan.count) for plan in self.driver.local_register_read_plans(self.inverter)],
+            normal,
+        )
+
+    async def test_rejected_subrange_does_not_expand_the_probe(self) -> None:
+        del self.transport._registers[257]
+        evidence = await self.driver.async_capture_support_evidence(
+            self.transport, self.inverter
+        )
+        diagnostics = evidence["dc_subrange_diagnostics"]
+        self.assertEqual(diagnostics["status"], "completed")
+        self.assertEqual(len(self.transport.requests), 10)
+        self.assertEqual(
+            diagnostics["range_failures"],
+            [{"start": 256, "count": 3, "error": "exception_code:2"}],
+        )
+        self.assertEqual(len(diagnostics["captured_ranges"]), 4)
+
+    async def test_export_preserves_parent_failure_and_subrange_evidence(self) -> None:
+        evidence = await self.driver.async_capture_support_evidence(
+            self.transport, self.inverter
+        )
+        fixture = build_support_fixture(
+            evidence, inverter=self.inverter, collector_payload=None
+        )
+        with tempfile.TemporaryDirectory() as config_dir:
+            exported = export_support_package(
+                config_dir=Path(config_dir),
+                entry_id="srne_test",
+                entry_title="SRNE diagnostics",
+                support_bundle={},
+                raw_capture=evidence,
+                fixture=fixture,
+                anonymized_fixture=None,
+            )
+            with zipfile.ZipFile(exported.path) as archive:
+                self.assertIsNone(archive.testzip())
+                raw = json.loads(archive.read("raw_capture.json"))
+                saved_fixture = json.loads(archive.read("fixture/raw_fixture.json"))
+        self.assertEqual(raw["dc_subrange_diagnostics"], evidence["dc_subrange_diagnostics"])
+        self.assertEqual(raw["range_failures"], evidence["range_failures"])
+        self.assertEqual(saved_fixture["ranges"], evidence["fixture_ranges"])
+        self.assertEqual(saved_fixture["probe_target"]["device_addr"], 1)
+
+    async def test_no_subranges_after_success_or_non_address_failure(self) -> None:
+        for failure in (
+            None,
+            ModbusError("request_timeout"),
+            ModbusError("exception_code:3"),
+            ModbusError("crc_mismatch"),
+            OSError("offline"),
+        ):
+            with self.subTest(failure=failure):
+                async def read(start, count):
+                    if (start, count) == (256, 18) and failure is not None:
+                        raise failure
+                    return [0] * count
+
+                session = type("Session", (), {"read_holding": AsyncMock(side_effect=read)})()
+                with patch.object(self.driver, "_session", return_value=session):
+                    evidence = await self.driver.async_capture_support_evidence(
+                        self.transport, self.inverter
+                    )
+                self.assertNotIn("dc_subrange_diagnostics", evidence)
+                self.assertEqual(session.read_holding.await_count, 5)
+
+    async def test_extra_reads_stop_at_first_non_address_failure(self) -> None:
+        for failure in (
+            ModbusError("request_timeout"),
+            ModbusError("exception_code:3"),
+            ModbusError("crc_mismatch"),
+            OSError("offline"),
+        ):
+            with self.subTest(failure=failure):
+                async def read(start, count):
+                    if (start, count) == (256, 18):
+                        raise ModbusError("exception_code:2")
+                    if (start, count) == (263, 3):
+                        raise failure
+                    return [0] * count
+
+                session = type("Session", (), {"read_holding": AsyncMock(side_effect=read)})()
+                with patch.object(self.driver, "_session", return_value=session):
+                    evidence = await self.driver.async_capture_support_evidence(
+                        self.transport, self.inverter
+                    )
+                diagnostics = evidence["dc_subrange_diagnostics"]
+                self.assertEqual(diagnostics["status"], "stopped_on_error")
+                self.assertEqual(session.read_holding.await_count, 7)
+                self.assertEqual(len(evidence["captured_ranges"]), 4)
+                self.assertEqual(len(diagnostics["captured_ranges"]), 1)
+                self.assertEqual(diagnostics["range_failures"][0]["error"], str(failure))
+
+    async def test_extra_read_budget_keeps_prior_successes(self) -> None:
+        entered = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def read(start, count):
+            if (start, count) == (256, 18):
+                raise ModbusError("exception_code:2")
+            if (start, count) == (263, 3):
+                entered.set()
+                try:
+                    await asyncio.Future()
+                finally:
+                    cancelled.set()
+            return [0] * count
+
+        session = type("Session", (), {"read_holding": AsyncMock(side_effect=read)})()
+        with patch.object(self.driver, "_session", return_value=session), patch(
+            "custom_components.eybond_local.drivers.srne._DC_DIAGNOSTIC_TIMEOUT", 0.01
+        ):
+            evidence = await self.driver.async_capture_support_evidence(
+                self.transport, self.inverter
+            )
+        self.assertTrue(entered.is_set())
+        self.assertTrue(cancelled.is_set())
+        diagnostics = evidence["dc_subrange_diagnostics"]
+        self.assertEqual(diagnostics["status"], "budget_exhausted")
+        self.assertEqual(session.read_holding.await_count, 7)
+        self.assertEqual(len(evidence["fixture_ranges"]), 5)
+        self.assertEqual(diagnostics["range_failures"][0]["error"], "diagnostic_budget_exhausted")
+
+    async def test_external_cancellation_is_not_a_partial_success(self) -> None:
+        entered = asyncio.Event()
+
+        async def read(start, count):
+            if (start, count) == (256, 18):
+                raise ModbusError("exception_code:2")
+            if (start, count) == (256, 3):
+                entered.set()
+                await asyncio.Future()
+            return [0] * count
+
+        session = type("Session", (), {"read_holding": AsyncMock(side_effect=read)})()
+        with patch.object(self.driver, "_session", return_value=session):
+            task = asyncio.create_task(self.driver.async_capture_support_evidence(
+                self.transport, self.inverter
+            ))
+            try:
+                await asyncio.wait_for(entered.wait(), 1)
+            finally:
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+        self.assertEqual(session.read_holding.await_count, 6)
 
 
 if __name__ == "__main__":

@@ -18,7 +18,10 @@ from ...const import (
     DOMAIN,
 )
 from ...fixtures.utils import anonymize_fixture_json
-from ...drivers.local_register_evidence import LocalRegisterSnapshot
+from ...drivers.local_register_evidence import (
+    LocalRegisterCollectionAvailability,
+    LocalRegisterSnapshot,
+)
 from ...drivers.local_register_series import (
     LocalRegisterSeriesPlan,
     LocalRegisterSnapshotSeries,
@@ -100,6 +103,14 @@ class CoordinatorSupportMixin:
             raise TypeError("runtime_local_register_snapshot_invalid")
         return snapshot
 
+    @property
+    def local_register_collection_availability(
+        self,
+    ) -> LocalRegisterCollectionAvailability:
+        """Expose the same admission boundary to UI and task creation."""
+
+        return self._runtime.local_register_collection_availability
+
     def start_local_register_collection(
         self,
         plan: LocalRegisterSeriesPlan,
@@ -108,6 +119,8 @@ class CoordinatorSupportMixin:
 
         if type(plan) is not LocalRegisterSeriesPlan:
             raise TypeError("local_register_collection_plan_invalid")
+        if not self.local_register_collection_availability.available:
+            raise RuntimeError("local_register_collection_unavailable")
         return self._local_register_collection.start(plan)
 
     async def async_cancel_local_register_collection(

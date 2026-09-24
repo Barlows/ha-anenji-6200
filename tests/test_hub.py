@@ -48,6 +48,76 @@ from custom_components.eybond_local.metadata.profile_loader import load_driver_p
 from custom_components.eybond_local.const import DRIVER_DETECTION_FULL_SCAN
 
 
+class HubEvidenceAdmissionAndRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    def make_hub(self):
+        from custom_components.eybond_local.drivers.srne import SrneModbusDriver
+
+        hub = EybondHub(connection=EybondConnectionSpec(
+            server_ip="192.0.2.10", collector_ip="192.0.2.14", tcp_port=8899,
+            udp_port=58899, discovery_target="192.0.2.255", discovery_interval=30,
+            heartbeat_interval=60, request_timeout=5.0,
+        ))
+        hub._link_manager = _FakeLinkManager()
+        hub._link_manager.collector_info.collector_pn = "E50000200000000001"
+        hub._driver = SrneModbusDriver()
+        hub._inverter = DetectedInverter(
+            driver_key="srne_modbus", protocol_family="srne_modbus", model_name="SRNE Test",
+            serial_number="TEST", probe_target=ProbeTarget(1, 255, 1),
+            register_schema_name="srne_modbus/base.json",
+        )
+        hub._accept_inverter_binding_identity()
+        return hub
+
+    async def test_payload_error_survives_empty_delta_and_clears_on_new_read(self):
+        from custom_components.eybond_local.drivers.read_result import DriverReadResult, DriverReadMode
+
+        hub = self.make_hub()
+        outcomes = [ModbusError("request_timeout"), ModbusError("request_timeout"),
+                    DriverReadResult({}, mode=DriverReadMode.DELTA),
+                    DriverReadResult({"output_power": 420}),
+                    ModbusError("request_timeout"), ModbusError("exception_code:2")]
+        with patch.object(hub._driver, "async_read_values", side_effect=outcomes):
+            failed = await hub.async_refresh(poll_interval=3)
+            self.assertEqual(failed.values["runtime_payload_error"], "request_timeout")
+            metadata = hub._build_snapshot(extra_values={"collector_wifi_ssid": "test"})
+            self.assertEqual(metadata.values["runtime_payload_error"], "request_timeout")
+            empty = await hub.async_refresh(poll_interval=3)
+            self.assertEqual(empty.values["runtime_payload_error"], "request_timeout")
+            recovered = await hub.async_refresh(poll_interval=3)
+            self.assertIsNone(recovered.last_error)
+            self.assertEqual(recovered.telemetry.values()["output_power"], 420)
+            self.assertNotIn("runtime_payload_error", recovered.values)
+            failed_again = await hub.async_refresh(poll_interval=3)
+            self.assertEqual(failed_again.values["runtime_payload_error"], "exception_code:2")
+        self.assertEqual(hub._link_manager.reset_calls, 0)
+
+    async def test_payload_error_does_not_cross_identity_boundary(self):
+        from dataclasses import replace
+
+        hub = self.make_hub()
+        with patch.object(hub._driver, "async_read_values", side_effect=ModbusError("request_timeout")):
+            await hub.async_refresh()
+        hub._accept_inverter_binding_identity()
+        self.assertEqual(hub._build_snapshot().values["runtime_payload_error"], "request_timeout")
+        hub._inverter = replace(hub._inverter, serial_number="REPLACEMENT")
+        hub._accept_inverter_binding_identity()
+        self.assertNotIn("runtime_payload_error", hub._build_snapshot().values)
+
+    def test_local_evidence_admission_uses_plan_not_cloud_or_connectivity(self):
+        hub = self.make_hub()
+        self.assertTrue(hub.local_register_collection_availability.available)
+        hub._link_manager.connected = False  # existing collection can reconnect
+        self.assertTrue(hub.local_register_collection_availability.available)
+        with patch.object(hub._driver, "local_register_read_plans", return_value=()):
+            self.assertEqual(hub.local_register_collection_availability.reason, "read_plan_unavailable")
+        with patch.object(hub._driver, "local_register_read_plans", side_effect=FileNotFoundError()):
+            self.assertEqual(hub.local_register_collection_availability.reason, "read_plan_unavailable")
+        hub._link_manager.collector_info.collector_pn = ""
+        self.assertEqual(hub.local_register_collection_availability.reason, "collector_identity_unavailable")
+        hub._driver = None
+        self.assertEqual(hub.local_register_collection_availability.reason, "inverter_unidentified")
+
+
 class _FakeLinkManager:
     def __init__(self, *, heartbeat_result: bool = True) -> None:
         self.connected = True
@@ -4671,6 +4741,33 @@ class HubCollectorManagementTests(unittest.TestCase):
             self.assertEqual(op["operation"], "reboot")
             self.assertEqual(op["status"], "ok")
             self.assertEqual(op["error_class"], "")
+
+        asyncio.run(_run())
+
+    def test_failed_endpoint_subrequest_is_exported_without_values(self) -> None:
+        from custom_components.eybond_local.collector.management import CollectorManagementTransportError
+
+        async def _run():
+            hub, _ = self._framed_hub()
+            hub._link_manager.owned_session_generation = 17
+            for parameter in (21, 30):
+                async def failed():
+                    hub._link_manager.owned_session_generation += 1
+                    raise CollectorManagementTransportError("TimeoutError", query_parameter=parameter)
+
+                with self.assertRaises(CollectorManagementTransportError):
+                    await hub._run_management_operation("read_endpoint_state", failed)
+                op = hub.collector_management_diagnostics()["collector_management_last_operation"]
+                self.assertEqual(op["failed_request"], {"protocol": "eybond_framed", "function": 2, "parameter": parameter})
+                self.assertEqual(op["session_generation_end"], op["session_generation_start"] + 1)
+                self.assertEqual(op["error_code"], "TimeoutError")
+            await hub._run_management_operation("read_endpoint_state", AsyncMock())
+            op = hub.collector_management_diagnostics()["collector_management_last_operation"]
+            self.assertNotIn("failed_request", op)
+            self.assertEqual(op["status"], "ok")
+            with self.assertRaises(asyncio.CancelledError):
+                await hub._run_management_operation("read_endpoint_state", AsyncMock(side_effect=asyncio.CancelledError()))
+            self.assertEqual(hub._last_management_operation["status"], "cancelled")
 
         asyncio.run(_run())
 

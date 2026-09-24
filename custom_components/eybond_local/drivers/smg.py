@@ -780,16 +780,12 @@ class SmgModbusDriver(ModbusWriteErrorMixin, InverterDriver):
             "fixture_ranges": fixture_ranges,
         }
 
-    async def async_capture_local_register_snapshot(
-        self,
-        transport,
-        inverter: DetectedInverter,
-        *,
-        collector_pn: str,
-    ) -> LocalRegisterSnapshot:
-        """Capture raw SMG words with exact tunnel/function provenance."""
+    def local_register_read_plans(
+        self, inverter: DetectedInverter
+    ) -> tuple[LocalRegisterReadPlan, ...]:
+        """Plan raw SMG words with exact tunnel/function provenance."""
 
-        plans = tuple(
+        return tuple(
             LocalRegisterReadPlan.for_target(
                 inverter.probe_target,
                 function=3,
@@ -800,10 +796,14 @@ class SmgModbusDriver(ModbusWriteErrorMixin, InverterDriver):
                 inverter.register_schema_name or self.register_schema_name
             )
         )
+
+    async def async_capture_local_register_snapshot(
+        self, transport, inverter: DetectedInverter, *, collector_pn: str
+    ) -> LocalRegisterSnapshot:
         return await async_capture_modbus_snapshot(
             collector_pn=collector_pn,
             driver_key=self.key,
-            plans=plans,
+            plans=self.local_register_read_plans(inverter),
             session_factory=lambda target: self._session(transport, target),
         )
 

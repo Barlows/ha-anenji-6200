@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from test_smartclient_cloud import DAY, IDENTITY, PN, fetch_fixture
+from test_smartclient_cloud import DAY, IDENTITY, PN, fetch_fixture, responses
 
 from custom_components.eybond_local.support.cloud_learning_engines import (
     resolve_cloud_learning_selection,
@@ -32,6 +32,20 @@ def fixture():
 
 
 class SmartClientLearningTests(unittest.TestCase):
+    def test_native_info_and_collector_timezone_normalize_cloud_history(self):
+        data = responses()
+        data["queryDeviceInfo"] = [dict(IDENTITY)]
+        bundle, _ = fetch_fixture(data)
+        bundle = replace(bundle, history=dict(bundle.history, requested_date=DAY))
+        outcome = build_smartclient_outcome(bundle)
+        history = outcome.metadata_evidence["history_collection"]
+        self.assertEqual(history["identity"], IDENTITY)
+        self.assertEqual(
+            history["series"][0]["points"][0]["utc_timestamp"], DAY + "T10:00:00+00:00"
+        )
+        self.assertEqual(outcome.result["planned_write_count"], 0)
+        self.assertIsNone(outcome.read_bindings)
+
     def test_normalized_history_has_exact_identity_and_utc(self):
         outcome = build_smartclient_outcome(fixture())
         history = outcome.metadata_evidence["history_collection"]

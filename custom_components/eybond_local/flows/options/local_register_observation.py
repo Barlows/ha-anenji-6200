@@ -18,6 +18,7 @@ from ...drivers.local_register_series import (
     DEFAULT_LOCAL_REGISTER_SERIES_SAMPLE_COUNT,
     LocalRegisterSeriesPlan,
 )
+from ...drivers.local_register_evidence import LocalRegisterCollectionAvailability
 from ...support.local_register_collection import (
     LOCAL_REGISTER_COLLECTION_STATE_CANCELLED,
     LOCAL_REGISTER_COLLECTION_STATE_COMPLETE,
@@ -36,6 +37,16 @@ LOCAL_REGISTER_OBSERVATION_ACTION_DONE = "done"
 
 class LocalRegisterObservationOptionsMixin:
     """Present and control the retained read-only evidence task."""
+
+    @staticmethod
+    def _local_register_observation_available(coordinator) -> bool:
+        availability = getattr(
+            coordinator, "local_register_collection_availability", None
+        )
+        return (
+            type(availability) is LocalRegisterCollectionAvailability
+            and availability.available
+        )
 
     @staticmethod
     def _local_register_observation_status(coordinator) -> LocalRegisterCollectionStatus:
@@ -67,7 +78,9 @@ class LocalRegisterObservationOptionsMixin:
         coordinator,
     ) -> LocalRegisterCollectionStatus:
         start = getattr(coordinator, "start_local_register_collection", None)
-        if not callable(start):
+        if not callable(start) or not self._local_register_observation_available(
+            coordinator
+        ):
             raise RuntimeError("local_register_collection_unavailable")
         result = start(self._local_register_observation_plan())
         if type(result) is not LocalRegisterCollectionStatus:
@@ -100,7 +113,8 @@ class LocalRegisterObservationOptionsMixin:
         if status.state == LOCAL_REGISTER_COLLECTION_STATE_FAILED:
             return self._tr(
                 "common.dynamic.local_register_observation_failed",
-                "Local read-only observation stopped before it could finish.",
+                "Local read-only observation stopped ({done}/{total} snapshots). "
+                "Details are included in the support package.",
                 placeholders,
             )
         if status.state == LOCAL_REGISTER_COLLECTION_STATE_CANCELLED:
@@ -108,6 +122,13 @@ class LocalRegisterObservationOptionsMixin:
                 "common.dynamic.local_register_observation_cancelled",
                 "Local read-only observation was cancelled.",
                 placeholders,
+            )
+        if not self._local_register_observation_available(coordinator):
+            return self._tr(
+                "common.dynamic.local_register_observation_unavailable",
+                "Background observation is unavailable: Home Assistant has no local "
+                "register read plan for this device yet. Cloud evidence is still "
+                "included in the support package.",
             )
         return self._tr(
             "common.dynamic.local_register_observation_available",
@@ -168,7 +189,7 @@ class LocalRegisterObservationOptionsMixin:
                     ),
                 )
             )
-        else:
+        elif self._local_register_observation_available(coordinator):
             options.append(
                 SelectOptionDict(
                     value=LOCAL_REGISTER_OBSERVATION_ACTION_RESTART,

@@ -6,7 +6,10 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from ..models import RuntimeSnapshot
-from ..drivers.local_register_evidence import LocalRegisterSnapshot
+from ..drivers.local_register_evidence import (
+    LocalRegisterCollectionAvailability,
+    LocalRegisterSnapshot,
+)
 from ..support.shadow_learning import ShadowWriteObservation
 
 
@@ -281,6 +284,13 @@ class RuntimeManager(Protocol):
         ...
 
     async def async_capture_support_evidence(self) -> dict[str, object]:
+        ...
+
+    @property
+    def local_register_collection_availability(
+        self,
+    ) -> LocalRegisterCollectionAvailability:
+        """Report whether the bound local device has an evidence read plan."""
         ...
 
     async def async_capture_local_register_snapshot(

@@ -379,17 +379,13 @@ class ModbusCatalogDriver(ModbusWriteErrorMixin, InverterDriver):
             ],
         }
 
-    async def async_capture_local_register_snapshot(
-        self,
-        transport,
-        inverter: DetectedInverter,
-        *,
-        collector_pn: str,
-    ) -> LocalRegisterSnapshot:
+    def local_register_read_plans(
+        self, inverter: DetectedInverter
+    ) -> tuple[LocalRegisterReadPlan, ...]:
         schema = load_register_schema(
             inverter.register_schema_name or self.register_schema_name
         )
-        plans = tuple(
+        return tuple(
             LocalRegisterReadPlan.for_target(
                 inverter.probe_target,
                 function=block.function,
@@ -398,10 +394,14 @@ class ModbusCatalogDriver(ModbusWriteErrorMixin, InverterDriver):
             )
             for block in schema.blocks
         )
+
+    async def async_capture_local_register_snapshot(
+        self, transport, inverter: DetectedInverter, *, collector_pn: str
+    ) -> LocalRegisterSnapshot:
         return await async_capture_modbus_snapshot(
             collector_pn=collector_pn,
             driver_key=self.key,
-            plans=plans,
+            plans=self.local_register_read_plans(inverter),
             session_factory=lambda target: self._session(transport, target),
         )
 
