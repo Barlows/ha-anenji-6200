@@ -59,8 +59,11 @@ the GitHub release body should be rendered from the matching version section her
   the diagnostic cannot leak to a replacement inverter (#44).
 
 - Collector endpoint-read failures identify the framed sub-request that failed
-  and record session generations, without exporting endpoint values or weakening
-  the live-endpoint checks before proxy capture (#43).
+  and record session generations. That context now reaches the Support Archive,
+  including its collector-management section, rather than remaining only in the
+  internal operation record. Later actions cannot inherit an earlier failed
+  request, and transport diagnostics omit free-form exception text. Live-endpoint
+  checks before proxy capture and transport behavior are unchanged (#43).
 
 - Collector listener shutdown now fences and drains TCP admission before
   clearing its sessions. Reconnecting during an entry reload no longer enters

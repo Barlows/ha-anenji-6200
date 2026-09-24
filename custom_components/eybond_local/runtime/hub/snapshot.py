@@ -416,14 +416,6 @@ class HubSnapshotMixin:
             values["collector_management_can_write_endpoint"] = caps.write_endpoint
             values["collector_management_can_apply_changes"] = caps.apply_changes
             values["collector_management_can_reboot"] = caps.reboot
-        if self._last_management_operation is not None:
-            op = self._last_management_operation
-            values["collector_management_last_operation"] = op.get("operation", "")
-            values["collector_management_last_status"] = op.get("status", "")
-            values["collector_management_last_error_class"] = op.get("error_class", "")
-            values["collector_management_last_error_code"] = op.get("error_code", "")
-            values["collector_management_last_duration_ms"] = op.get("duration_ms", 0)
-            values["collector_management_last_timestamp"] = op.get("timestamp", 0.0)
         # Non-sensitive collector-metadata TELEMETRY diagnostics: channel routes /
         # provenance / generation / per-channel outcome+duration / cache dirty /
         # dead channels (NEVER endpoint values, credentials, or raw payloads).
@@ -528,6 +520,29 @@ class HubSnapshotMixin:
                 else:
                     safe_extra_values.pop("collector_pn", None)
             values.update(safe_extra_values)
+
+        # Only the last operation owns these diagnostics. Neither a carried
+        # snapshot nor an extra metadata observation may restore an older error
+        # or attribute its failed sub-request to a newer successful operation.
+        for key in tuple(values):
+            if key.startswith("collector_management_last_"):
+                values.pop(key)
+        if self._last_management_operation is not None:
+            op = self._last_management_operation
+            values["collector_management_last_operation"] = op.get("operation", "")
+            values["collector_management_last_status"] = op.get("status", "")
+            values["collector_management_last_error_class"] = op.get("error_class", "")
+            values["collector_management_last_error_code"] = op.get("error_code", "")
+            values["collector_management_last_duration_ms"] = op.get("duration_ms", 0)
+            values["collector_management_last_timestamp"] = op.get("timestamp", 0.0)
+            for field in ("failed_request", "session_generation_start", "session_generation_end"):
+                if field in op:
+                    value = op[field]
+                    # Wire context is already bounded by the adapter. Detach it
+                    # so support consumers cannot mutate the operation record.
+                    values[f"collector_management_last_{field}"] = (
+                        dict(value) if isinstance(value, dict) else value
+                    )
 
         # Owned by the payload-read outcome lifecycle, never by carried values
         # or collector metadata. Identity changes reset it with measurements.

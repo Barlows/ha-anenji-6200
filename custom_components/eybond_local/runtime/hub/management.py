@@ -461,6 +461,7 @@ class HubManagementMixin:
             record["error_class"] = type(exc).__name__
             record["error_code"] = str(exc).split(":", 1)[0]
             if isinstance(exc, CollectorManagementTransportError):
+                record["error_code"] = exc.diagnostic_code
                 request = exc.request_diagnostics
                 if request:
                     record["failed_request"] = request

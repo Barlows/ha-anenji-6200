@@ -65,6 +65,12 @@ Depending on what is available for this entry, one archive can include:
 - an anonymized replay fixture when one can be built safely;
 - device-learning or cloud evidence that already belongs to this entry.
 
+If traffic capture fails while reading the collector's server address, create
+the archive just after that attempt. It includes the last collector-management
+result and, when available, which read failed and whether the connection changed
+during it. A later collector-settings action can replace that result. There is
+no need to change the endpoint manually to collect this information.
+
 For the **EyeBond Short-ASCII family** in the test code, creating an archive
 also requests the basic `MP/Q1/MD` replies and optional `F/RB` replies. It keeps
 the returned bytes, including malformed responses, and records failed requests.

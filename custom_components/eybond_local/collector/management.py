@@ -113,6 +113,18 @@ class CollectorManagementTransportError(CollectorManagementError):
         self.query_parameter = query_parameter
 
     @property
+    def diagnostic_code(self) -> str:
+        """Keep arbitrary socket/parser exception text out of support metadata."""
+
+        if self.__cause__ is not None:
+            return type(self.__cause__).__name__
+        # Directly constructed typed failures may already carry a class code.
+        code = str(self)
+        if code in {failure.__name__ for failure in _TRANSPORT_FAILURES}:
+            return code
+        return type(self).__name__
+
+    @property
     def request_diagnostics(self) -> dict[str, object]:
         """Project wire context here so runtime need not interpret parameters."""
 

@@ -4744,7 +4744,7 @@ class HubCollectorManagementTests(unittest.TestCase):
 
         asyncio.run(_run())
 
-    def test_failed_endpoint_subrequest_is_exported_without_values(self) -> None:
+    def test_failed_endpoint_subrequest_is_recorded_without_values(self) -> None:
         from custom_components.eybond_local.collector.management import CollectorManagementTransportError
 
         async def _run():
