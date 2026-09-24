@@ -25,6 +25,7 @@ from custom_components.eybond_local.metadata.local_metadata import (
     resolve_local_metadata_rollback_paths,
     rollback_local_metadata_overrides,
 )
+from custom_components.eybond_local.metadata import profile_loader, register_schema_loader
 from custom_components.eybond_local.metadata.profile_loader import (
     _is_within_root as profile_loader_is_within_root,
 )
@@ -211,6 +212,100 @@ class LocalMetadataTests(unittest.TestCase):
             for helper in helpers:
                 with self.subTest(helper=helper.__module__):
                     self.assertFalse(helper(link_out, root))
+
+    def test_missing_override_status_through_config_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = root / "config"
+            config.mkdir()
+            alias = root / "alias"
+            alias.symlink_to(config, target_is_directory=True)
+            source = "modbus_smg/models/smg_6200.json"
+
+            for details, directory in (
+                (local_profile_override_details, "profiles"),
+                (local_register_schema_override_details, "register_schemas"),
+            ):
+                with self.subTest(kind=directory):
+                    result = details(alias, source)
+                    self.assertFalse(result["exists"])
+                    self.assertIn(f"Create {directory}/{source}", result["status"])
+                    self.assertTrue(Path(result["path"]).is_relative_to(config.resolve()))
+
+    def test_create_and_load_drafts_through_config_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = Path(temp_dir) / "config"
+            config.mkdir()
+            alias = Path(temp_dir) / "alias"
+            alias.symlink_to(config, target_is_directory=True)
+            roots = ensure_local_metadata_dirs(alias)
+            source = "modbus_smg/models/smg_6200.json"
+            profile_path = create_local_profile_draft(
+                config_dir=alias, source_profile_name=source
+            )
+            schema_path = create_local_schema_draft(
+                config_dir=alias, source_schema_name=source
+            )
+            self.assertTrue(local_profile_override_details(alias, source)["exists"])
+            self.assertTrue(local_register_schema_override_details(alias, source)["exists"])
+            try:
+                profile_loader.set_external_profile_roots((roots["profiles"],))
+                register_schema_loader.set_external_register_schema_roots((roots["register_schemas"],))
+                for loaded, path in (
+                    (profile_loader.load_driver_profile(source), profile_path),
+                    (register_schema_loader.load_register_schema(source), schema_path),
+                ):
+                    with self.subTest(path=path):
+                        self.assertEqual(loaded.source_scope, "external")
+                        self.assertEqual(loaded.source_path, str(path))
+                        self.assertTrue(path.is_relative_to(config.resolve()))
+                        self.assertIn("Local Draft", loaded.title)
+            finally:
+                profile_loader.set_external_profile_roots(())
+                register_schema_loader.set_external_register_schema_roots(())
+
+    def test_public_draft_creation_rejects_symlink_and_relative_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = Path(temp_dir) / "config"
+            roots = ensure_local_metadata_dirs(config)
+            outside = roots["root"] / "outside.json"
+            outside.write_text("untouched", encoding="utf-8")
+            source = "modbus_smg/models/smg_6200.json"
+            for create, kind, directory in (
+                (create_local_profile_draft, "profile", "profiles"),
+                (create_local_schema_draft, "schema", "register_schemas"),
+            ):
+                (roots[directory] / "escape.json").symlink_to(outside)
+                for output in ("escape.json", "../outside.json"):
+                    with self.subTest(kind=kind, output=output):
+                        with self.assertRaisesRegex(ValueError, "path_outside_local_metadata_root"):
+                            create(
+                                config_dir=config,
+                                overwrite=True,
+                                **{f"source_{kind}_name": source, f"output_{kind}_name": output},
+                            )
+                        self.assertEqual(outside.read_text(encoding="utf-8"), "untouched")
+
+    def test_relative_load_rejects_file_outside_external_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "root"
+            root.mkdir()
+            outside = root.parent / "outside.json"
+            # Invalid JSON proves that the loaders never even read this file.
+            outside.write_text("must not be parsed", encoding="utf-8")
+            (root / "escape.json").symlink_to(outside)
+            for configure, load in (
+                (profile_loader.set_external_profile_roots, profile_loader.load_driver_profile),
+                (register_schema_loader.set_external_register_schema_roots, register_schema_loader.load_register_schema),
+            ):
+                try:
+                    configure((root,))
+                    for name in ("escape.json", "../outside.json"):
+                        with self.subTest(loader=load.__module__, name=name):
+                            with self.assertRaises(FileNotFoundError):
+                                load(name)
+                finally:
+                    configure(())
 
     def test_detects_when_one_draft_name_overrides_builtin_metadata(self) -> None:
         self.assertTrue(draft_activates_automatically("smg_modbus.json", None))
