@@ -175,13 +175,16 @@ history for this workflow. Home Assistant may then offer a separate background
 observation of five local snapshots over roughly 20 minutes so timestamped
 local samples can be compared with the cloud series. You may close the options
 dialog while that observation runs and return later to see its status. This
-background step appears only when the selected source supplied usable
-timestamped history. It does not redirect the collector, send a control action,
+background step requires a local register read plan for the identified inverter.
+If local register reading is not supported yet, the option is not offered; save
+the cloud evidence in the Support Archive instead. Collection alone does not
+guarantee a match: comparison also needs usable timestamped cloud history.
+It does not redirect the collector, send a control action,
 add an entity automatically, or claim a local register mapping.
 
 For SmartClient, history comparison additionally requires a timezone supplied
-by the cloud for that exact device. Without it, the history is kept in the
-archive but is not treated as time-aligned local evidence. Do not change your
+by the cloud for that exact device or its verified collector. Without it, the
+history is kept in the archive but is not treated as time-aligned local evidence. Do not change your
 Home Assistant timezone to work around this.
 
 ## Review screen

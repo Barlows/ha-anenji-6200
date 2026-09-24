@@ -9,6 +9,11 @@ the GitHub release body should be rendered from the matching version section her
 
 ### Added
 
+- SRNE support archives can check five smaller, documented battery/PV register
+  groups after the inverter explicitly rejects the combined DC block (#44).
+  These read-only diagnostics share a 15-second limit and stop on communication
+  errors. They do not change normal polling, enable sensors or add controls.
+
 - Added an offline MPPT-frame inspector for maintainers, with strict runtime
   decoding and explicit warnings about overlapping wire formats. This does not
   enable live PV polling or create additional Home Assistant entities.
@@ -27,6 +32,27 @@ the GitHub release body should be rendered from the matching version section her
   this is not full device or control support (#45).
 
 ### Fixed
+
+- Local metadata path checks and missing-override messages handle configuration
+  directories reached through symbolic links (#47). Relative paths escaping a
+  configured metadata root remain rejected.
+
+- Read-only cloud analysis delivers queued progress updates before its final
+  stage, including when a background request completes immediately.
+
+- SmartClient read-only analysis accepts the native device-info array and can
+  obtain the history timezone from the same verified collector. Foreign or
+  ambiguous identities remain rejected. Background local observation is only
+  offered when the bound driver has a register read plan; cloud-only evidence
+  remains available for unidentified inverters (#23).
+
+- A recovered inverter payload read clears its old timeout diagnostic. Empty
+  scheduled reads and collector metadata updates do not falsely report recovery;
+  the diagnostic cannot leak to a replacement inverter (#44).
+
+- Collector endpoint-read failures identify the framed sub-request that failed
+  and record session generations, without exporting endpoint values or weakening
+  the live-endpoint checks before proxy capture (#43).
 
 - Collector listener shutdown now fences and drains TCP admission before
   clearing its sessions. Reconnecting during an entry reload no longer enters

@@ -73,6 +73,12 @@ snapshot, not a continuous recording: if a reading jumps, also report when it
 happened and which sensor was affected. A later archive may no longer contain
 the response that caused that jump.
 
+For **SRNE** devices in the test code, an archive can also check smaller battery
+and solar-data groups if the inverter rejects the combined register block.
+This adds at most 15 seconds of read-only diagnostics and stops early if
+communication fails. The archive keeps both the original failure and the extra
+results. It does not change normal polling or automatically add missing sensors.
+
 The archive helps answer questions such as:
 
 - Which collector and inverter path was detected?
