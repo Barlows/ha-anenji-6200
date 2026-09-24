@@ -263,7 +263,7 @@
         "register": 15218
       },
       {
-        "key": "pv_generation_day",
+        "key": "pv_operating_days",
         "register": 15219
       },
       {
@@ -323,8 +323,9 @@
         "decimals": 1
       },
       {
-        "key": "output_power",
-        "register": 25213
+        "key": "inverter_power",
+        "register": 25213,
+        "signed": true
       },
       {
         "key": "grid_power",
@@ -333,7 +334,8 @@
       },
       {
         "key": "ac_output_power",
-        "register": 25215
+        "register": 25215,
+        "signed": true
       },
       {
         "key": "load_percent",
@@ -569,18 +571,19 @@
       "enabled_default": false
     },
     {
-      "key": "pv_generation_sum",
-      "name": "PV Generation Sum",
-      "unit": "Wh",
+      "key": "pv_energy_total",
+      "name": "PV Energy Total",
+      "unit": "kWh",
       "device_class": "energy",
       "state_class": "total_increasing"
     },
     {
-      "key": "pv_generation_day",
-      "name": "PV Generation Day",
-      "unit": "Wh",
-      "device_class": "energy",
-      "state_class": "total_increasing"
+      "key": "pv_operating_days",
+      "name": "PV Charger Operating Days",
+      "unit": "d",
+      "state_class": "measurement",
+      "diagnostic": true,
+      "enabled_default": false
     },
     {
       "key": "inverter_operation_mode",
@@ -638,8 +641,8 @@
       "state_class": "measurement"
     },
     {
-      "key": "output_power",
-      "name": "Output Power",
+      "key": "inverter_power",
+      "name": "Inverter Power",
       "unit": "W",
       "device_class": "power",
       "state_class": "measurement"

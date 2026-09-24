@@ -33,6 +33,14 @@ the GitHub release body should be rendered from the matching version section her
 
 ### Fixed
 
+- MUST PV/PH18 telemetry distinguishes signed inverter-converter power from
+  load power (#46). Corrected cumulative PV energy uses a new **PV Energy Total**
+  entity in kWh so the old incorrectly scaled statistics are not continued.
+  The former **PV Generation Day** reading was elapsed operating days, not
+  energy; it is replaced by an optional **PV Charger Operating Days** diagnostic.
+  Re-select the new total in Energy Dashboard if you used the old counter.
+  Historical statistics are not rewritten. Controls and transport are unchanged.
+
 - Local metadata path checks and missing-override messages handle configuration
   directories reached through symbolic links (#47). Relative paths escaping a
   configured metadata root remain rejected.

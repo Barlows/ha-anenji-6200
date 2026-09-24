@@ -130,6 +130,12 @@ _CANONICAL_TELEMETRY: tuple[CanonicalTelemetryDescription, ...] = (
                 source_keys=("output_active_power",),
                 compute="passthrough",
             ),
+            # MUST PLoad (25215), not the signed converter PInverter (25213).
+            CanonicalTelemetryVariant(
+                driver_keys=("must_pv_ph18",),
+                source_keys=("ac_output_power",),
+                compute="passthrough",
+            ),
             # Solis hybrids report grid-side household load and EPS backup
             # load separately; total consumption is their sum.
             CanonicalTelemetryVariant(

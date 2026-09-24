@@ -134,10 +134,13 @@ class MustPvPh18Driver(ModbusWriteErrorMixin, InverterDriver):
         values = await read_spec_set_values(session, schema, ascii_style="model")
 
         if "pv_generation_sum_high" in values and "pv_generation_sum_low" in values:
-            values["pv_generation_sum"] = (
-                int(values["pv_generation_sum_high"]) * 1000
+            # PH/PV Modbus 1.4.15: 15217 is in 1000 kWh, 15218 in 0.1 kWh.
+            # Use a new entity key: the old Wh counter had incorrect scaling;
+            # continuing its statistics would invent an energy-consumption jump.
+            values["pv_energy_total"] = (
+                int(values["pv_generation_sum_high"]) * 10000
                 + int(values["pv_generation_sum_low"])
-            )
+            ) / 10
         if "model_prefix" in values and "model_suffix" in values:
             values["model_number"] = f"{values['model_prefix']}{values['model_suffix']}"
         return DriverReadResult(values=values, mode=DriverReadMode.FULL)

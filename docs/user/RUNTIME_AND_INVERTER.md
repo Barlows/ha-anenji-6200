@@ -72,6 +72,27 @@ If utilization remains high, use Automatic mode or increase the manual
 interval. Occasional long cycles during detection or reconnect recovery are not
 the same as continuously overloaded polling.
 
+## MUST PV/PH18 power and energy corrections
+
+The unreleased test build corrects several readings in the MUST PV/PH18 map:
+
+- **Load Power** uses the load measurement, not the inverter converter's power.
+  The existing entity ID is retained. **Inverter Power** is a separate signed
+  measurement; a negative value is not a 65 kW load. **AC Output Power** remains
+  the same underlying load measurement for existing dashboards.
+- **PV Energy Total** is the cumulative hardware counter in kWh. It replaces
+  the incorrectly scaled **PV Generation Sum** with a new entity and fresh
+  statistics. If you used the old counter in Energy Dashboard or an automation,
+  select the new sensor after updating.
+- **PV Generation Day** was actually days of operation, not daily generation.
+  That energy entity is retired. The optional **PV Charger Operating Days**
+  diagnostic exposes the value with the correct unit and is disabled by default.
+
+The integration does not rewrite historical statistics or automatically change
+your Energy Dashboard configuration. Earlier totals and energy estimates based
+on the incorrect load reading may need review. These corrections do not change
+the collector connection, polling ranges or inverter controls.
+
 ## EyeBond Short-ASCII family
 
 This read-only profile is included in the unreleased test code. It supports

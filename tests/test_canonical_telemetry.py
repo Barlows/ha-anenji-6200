@@ -115,6 +115,19 @@ class CanonicalTelemetryTests(unittest.TestCase):
         self.assertIn("pv_to_home_power", keys)
         self.assertIn("grid_to_battery_power", keys)
 
+    def test_must_load_projection_never_falls_back_to_converter_power(self) -> None:
+        frame = self._typed_frame("must_pv_ph18", {"inverter_power": -487})
+        self.assertIsNone(project_canonical_telemetry(frame).point("output_power"))
+        frame = self._typed_frame("must_pv_ph18", {"inverter_power": -487, "ac_output_power": 0})
+        point = project_canonical_telemetry(frame).point("output_power")
+        self.assertEqual(point.value, 0)
+        self.assertEqual(point.source_keys, ("ac_output_power",))
+        self.assertEqual(point.origin, TelemetryOrigin.CANONICAL)
+        self.assertEqual(point.freshness, TelemetryFreshness.FRESH)
+        # This alias is MUST-specific, not an implicit protocol-wide fallback.
+        other = self._typed_frame("modbus_smg", {"inverter_power": -487, "ac_output_power": 0})
+        self.assertIsNone(project_canonical_telemetry(other).point("output_power"))
+
     def test_apply_canonical_measurements_builds_srne_card_values(self) -> None:
         values = {
             "grid_voltage": 229.0,

@@ -67,6 +67,74 @@ def _must_registers() -> dict[int, int]:
 
 
 class MustPvPh18DriverTests(unittest.IsolatedAsyncioTestCase):
+    async def test_converter_power_and_load_are_distinct_signed_words(self) -> None:
+        from custom_components.eybond_local.canonical_telemetry import project_canonical_telemetry
+        from custom_components.eybond_local.telemetry import TypedTelemetryFrame, fold_driver_telemetry
+
+        for converter_raw, load_raw, converter, load in (
+            (65049, 0, -487, 0),  # #46: charging converter, unloaded AC output.
+            (450, 440, 450, 440),
+            (0x8000, 0xFFFF, -32768, -1),
+            (0x7FFF, 1200, 32767, 1200),
+        ):
+            with self.subTest(converter_raw=converter_raw, load_raw=load_raw):
+                registers = _must_registers() | {25213: converter_raw, 25215: load_raw}
+                driver = MustPvPh18Driver()
+                target = ProbeTarget(1, 255, 4)
+                transport = FixtureTransport(registers=registers, command_responses=None, probe_target=target)
+                inverter = await driver.async_probe(transport, target)
+                assert inverter is not None
+                values = _full_values(await driver.async_read_values(transport, inverter))
+                self.assertEqual(values["inverter_power"], converter)
+                self.assertEqual(values["ac_output_power"], load)
+                self.assertNotIn("output_power", values)
+                frame = project_canonical_telemetry(fold_driver_telemetry(
+                    TypedTelemetryFrame.empty(), driver_key=driver.key, values=values, replace=True,
+                ))
+                self.assertEqual(frame.values()["output_power"], load)
+
+    async def test_pv_energy_uses_documented_high_low_units_and_fresh_identity(self) -> None:
+        from custom_components.eybond_local.metadata.register_schema_loader import load_register_schema
+
+        schema = load_register_schema("must_pv_ph18/base.json")
+        descriptions = {item.key: item for item in schema.measurement_descriptions}
+        self.assertNotIn("pv_generation_sum", descriptions)
+        self.assertNotIn("pv_generation_day", descriptions)
+        self.assertEqual(descriptions["pv_energy_total"].unit, "kWh")
+        self.assertEqual(descriptions["pv_energy_total"].state_class, "total_increasing")
+        days = descriptions["pv_operating_days"]
+        self.assertEqual(days.unit, "d")
+        self.assertNotEqual(days.device_class, "energy")
+        self.assertTrue(days.diagnostic)
+        self.assertFalse(days.enabled_default)
+        for high, low, expected in ((0, 0, 0), (0, 1, 0.1), (12, 345, 12034.5), (0, 9999, 999.9), (1, 0, 1000)):
+            with self.subTest(high=high, low=low):
+                driver = MustPvPh18Driver()
+                target = ProbeTarget(1, 255, 4)
+                registers = _must_registers() | {15217: high, 15218: low, 15219: 39}
+                transport = FixtureTransport(registers=registers, command_responses=None, probe_target=target)
+                inverter = await driver.async_probe(transport, target)
+                assert inverter is not None
+                values = _full_values(await driver.async_read_values(transport, inverter))
+                self.assertEqual(values["pv_energy_total"], expected)
+                self.assertEqual(values["pv_operating_days"], 39)
+                self.assertNotIn("pv_generation_sum", values)
+                self.assertNotIn("pv_generation_day", values)
+
+    async def test_missing_pv_counter_block_does_not_publish_zero_energy(self) -> None:
+        registers = _must_registers()
+        del registers[15218]
+        driver = MustPvPh18Driver()
+        target = ProbeTarget(1, 255, 4)
+        transport = FixtureTransport(registers=registers, command_responses=None, probe_target=target)
+        inverter = await driver.async_probe(transport, target)
+        assert inverter is not None
+        values = _full_values(await driver.async_read_values(transport, inverter))
+        self.assertNotIn("pv_energy_total", values)
+        self.assertNotIn("pv_operating_days", values)
+        self.assertEqual(values["inverter_power"], 450)
+        self.assertEqual(values["ac_output_power"], 440)
+
     async def test_probe_detects_must_pv18_on_slave_four(self) -> None:
         driver = MustPvPh18Driver()
         target = ProbeTarget(devcode=1, collector_addr=255, device_addr=4)
@@ -189,8 +257,8 @@ class MustPvPh18DriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(values["pv_input_voltage"], 376.0)
         self.assertEqual(values["pv_input_current"], 5.4)
         self.assertEqual(values["pv_charging_power"], 850)
-        self.assertEqual(values["pv_generation_sum"], 12345)
-        self.assertEqual(values["pv_generation_day"], 7)
+        self.assertEqual(values["pv_energy_total"], 12034.5)
+        self.assertEqual(values["pv_operating_days"], 7)
         self.assertEqual(values["battery_voltage"], 25.6)
         self.assertEqual(values["output_voltage"], 230.1)
         self.assertEqual(values["grid_voltage"], 229.8)
