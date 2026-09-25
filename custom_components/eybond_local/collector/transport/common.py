@@ -370,6 +370,9 @@ def _copy_collector_info(collector: CollectorInfo) -> CollectorInfo:
             disconnect_count=collector.disconnect_count,
             pending_request_drop_count=collector.pending_request_drop_count,
             last_disconnect_reason=collector.last_disconnect_reason,
+            retained_disconnect_reason=getattr(
+                collector, "retained_disconnect_reason", ""
+            ),
             discovery_restart_count=collector.discovery_restart_count,
             last_discovery_reason=collector.last_discovery_reason,
             collector_pn=collector.collector_pn,

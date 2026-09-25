@@ -76,6 +76,7 @@ class EybondServer:
             disconnect_count=self._collector.disconnect_count,
             pending_request_drop_count=self._collector.pending_request_drop_count,
             last_disconnect_reason=self._collector.last_disconnect_reason,
+            retained_disconnect_reason=self._collector.retained_disconnect_reason,
             discovery_restart_count=self._collector.discovery_restart_count,
             last_discovery_reason=self._collector.last_discovery_reason,
             collector_pn=self._collector.collector_pn,

@@ -4757,6 +4757,59 @@ class TransportLifecycleHardeningTests(unittest.IsolatedAsyncioTestCase):
             expected_reason="collector_frame_payload_too_large",
         )
 
+    async def test_disconnect_reason_survives_a_reconnect(self) -> None:
+        # The fault reason is the whole point of the diagnostic, and the most
+        # interesting time to read it is after the collector has already
+        # reconnected. run() resets last_disconnect_reason on attach, so the
+        # retained field must be the one that survives.
+        connection = _CollectorConnection(
+            remote_ip_hint="203.0.113.10",
+            heartbeat_interval=60.0,
+            write_timeout=0.5,
+        )
+        reader = asyncio.StreamReader()
+        writer = _FakeWriter()
+
+        async def _quiet_heartbeat(self) -> None:
+            return None
+
+        with (
+            patch.object(
+                _CollectorConnection,
+                "_heartbeat_loop",
+                new=_quiet_heartbeat,
+            ),
+            patch(
+                "custom_components.eybond_local.collector.transport.connections._FRAMED_HEADER_COMPLETION_TIMEOUT",
+                0.05,
+            ),
+        ):
+            run = asyncio.create_task(
+                connection.run(reader, writer)  # type: ignore[arg-type]
+            )
+            self.assertTrue(await connection.wait_until_connected(1.0))
+            reader.feed_data(bytes.fromhex("010302"))
+            await asyncio.wait_for(run, timeout=1.0)
+
+        self.assertEqual(
+            connection.collector_info.last_disconnect_reason,
+            "collector_frame_header_timeout",
+        )
+        self.assertEqual(
+            connection.collector_info.retained_disconnect_reason,
+            "collector_frame_header_timeout",
+        )
+
+        # Reconnect: run() clears the live-session field on attach.
+        # collector_info is a copy, so mutate the instance the connection owns.
+        connection._collector.last_disconnect_reason = ""
+
+        self.assertEqual(connection.collector_info.last_disconnect_reason, "")
+        self.assertEqual(
+            connection.collector_info.retained_disconnect_reason,
+            "collector_frame_header_timeout",
+        )
+
     async def test_replaced_socket_closes_only_its_session_inventory(self) -> None:
         listener = _SharedEybondListener(host="127.0.0.1", port=_free_tcp_port())
         connection = _CollectorConnection(

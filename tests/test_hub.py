@@ -1232,6 +1232,58 @@ class HubSnapshotTests(unittest.TestCase):
             "heartbeat_timeout",
         )
 
+    def test_build_snapshot_reports_none_instead_of_dropping_fault_entities(self) -> None:
+        # These entities are enabled by default. Popping the key made a healthy
+        # system surface them as "unavailable", which reads as a fault.
+        hub = EybondHub(
+            connection=EybondConnectionSpec(
+                server_ip="192.168.1.10",
+                collector_ip="192.168.1.14",
+                tcp_port=8899,
+                udp_port=58899,
+                discovery_target="192.168.1.255",
+                discovery_interval=30,
+                heartbeat_interval=60,
+                request_timeout=5.0,
+            ),
+        )
+        hub._link_manager = _FakeLinkManager()
+
+        snapshot = hub._build_snapshot()
+
+        self.assertEqual(snapshot.values["last_error"], "none")
+        self.assertEqual(snapshot.values["collector_retained_disconnect_reason"], "none")
+        # The live-session field stays absent while no session has torn down.
+        self.assertNotIn("collector_last_disconnect_reason", snapshot.values)
+
+    def test_build_snapshot_retains_disconnect_reason_across_reconnects(self) -> None:
+        hub = EybondHub(
+            connection=EybondConnectionSpec(
+                server_ip="192.168.1.10",
+                collector_ip="192.168.1.14",
+                tcp_port=8899,
+                udp_port=58899,
+                discovery_target="192.168.1.255",
+                discovery_interval=30,
+                heartbeat_interval=60,
+                request_timeout=5.0,
+            ),
+        )
+        hub._link_manager = _FakeLinkManager()
+        collector = hub._link_manager.collector_info
+        collector.disconnect_count = 1
+        collector.retained_disconnect_reason = "collector_frame_header_timeout"
+        # A reconnect resets the live-session field but must not lose the fault.
+        collector.last_disconnect_reason = ""
+
+        snapshot = hub._build_snapshot()
+
+        self.assertEqual(
+            snapshot.values["collector_retained_disconnect_reason"],
+            "collector_frame_header_timeout",
+        )
+        self.assertNotIn("collector_last_disconnect_reason", snapshot.values)
+
     def test_build_snapshot_prefers_more_complete_runtime_collector_pn(self) -> None:
         hub = EybondHub(
             connection=EybondConnectionSpec(

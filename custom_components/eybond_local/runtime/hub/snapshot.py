@@ -362,6 +362,14 @@ class HubSnapshotMixin:
             values["collector_last_disconnect_reason"] = collector.last_disconnect_reason
         else:
             values.pop("collector_last_disconnect_reason", None)
+        # Retained reason survives a reconnect, so this keeps reporting the last
+        # real fault instead of silently reverting to unavailable.
+        if collector.retained_disconnect_reason:
+            values["collector_retained_disconnect_reason"] = (
+                collector.retained_disconnect_reason
+            )
+        else:
+            values["collector_retained_disconnect_reason"] = "none"
         if collector.last_discovery_reason:
             values["collector_last_discovery_reason"] = collector.last_discovery_reason
         else:
@@ -665,7 +673,10 @@ class HubSnapshotMixin:
         if last_error:
             values["last_error"] = last_error
         else:
-            values.pop("last_error", None)
+            # "none" rather than popping: this entity is enabled by default, and
+            # popping it made a healthy system report an unavailable sensor,
+            # which reads as a fault rather than "no error".
+            values["last_error"] = "none"
 
         if self._inverter_overlay_applier is not None and self._inverter is not None:
             # Merge activated device-scoped learned controls into the inverter on every

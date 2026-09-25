@@ -252,6 +252,10 @@ class LinkSessionProjectionMixin:
             collector.connection_replace_count = at_collector.connection_replace_count
             collector.disconnect_count = at_collector.disconnect_count
             collector.last_disconnect_reason = at_collector.last_disconnect_reason
+            collector.retained_disconnect_reason = (
+                at_collector.retained_disconnect_reason
+                or collector.retained_disconnect_reason
+            )
             collector.pending_request_drop_count = at_collector.pending_request_drop_count
         # For at_text collectors all raw inverter traffic lives on the AT
         # connection; without this merge support bundles report zero raw

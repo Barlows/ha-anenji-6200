@@ -278,6 +278,14 @@ BASE_SENSOR_DESCRIPTIONS: tuple[MeasurementDescription, ...] = (
         live=False,
     ),
     MeasurementDescription(
+        key="collector_retained_disconnect_reason",
+        name="Collector Retained Disconnect Reason",
+        icon="mdi:alert-circle-outline",
+        diagnostic=True,
+        enabled_default=True,
+        live=False,
+    ),
+    MeasurementDescription(
         key="collector_poll_utilization_percent",
         name="Poll Utilization",
         unit="%",

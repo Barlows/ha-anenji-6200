@@ -31,6 +31,11 @@ def build_collector_support_payload(
         "disconnect_count": collector.disconnect_count,
         "pending_request_drop_count": collector.pending_request_drop_count,
         "last_disconnect_reason": collector.last_disconnect_reason,
+        # getattr: support payloads accept duck-typed collector stand-ins that
+        # predate this field, and a diagnostics export must never hard-fail.
+        "retained_disconnect_reason": getattr(
+            collector, "retained_disconnect_reason", ""
+        ),
         "discovery_restart_count": collector.discovery_restart_count,
         "last_discovery_reason": collector.last_discovery_reason,
         "collector_pn": collector.collector_pn,

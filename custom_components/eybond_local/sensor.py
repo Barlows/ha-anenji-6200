@@ -169,6 +169,7 @@ _SUMMARY_ATTRIBUTE_MAP: dict[str, tuple[tuple[str, str], ...]] = {
         ("management_adapter", "collector_management_adapter_id"),
         ("management_provenance", "collector_management_adapter_provenance"),
         ("last_disconnect_reason", "collector_last_disconnect_reason"),
+        ("retained_disconnect_reason", "collector_retained_disconnect_reason"),
         ("adapter_conflict", "collector_callback_adapter_conflict"),
         ("configured_session_protocol", "collector_configured_session_protocol"),
         ("configured_identity_strategy", "collector_callback_identity_strategy"),
