@@ -14,6 +14,13 @@ onto upstream `main`, so the version history below this section is upstream's
 own changelog, carried through unchanged. This section covers only what's
 different in this fork, most recent first:
 
+- **2026-09-25** — Recognized unwrapped Modbus RTU replies in the collector
+  transport's malformed-frame log line. Header-decode failures that begin
+  with a Modbus slave address, a read-registers function code, and a
+  plausible byte count are real RTU replies arriving outside the EyeBond
+  frame envelope, not wire corruption; the log now says so instead of
+  reporting a generic "malformed frame header". Recovery behavior and the
+  stored disconnect-reason value are unchanged — diagnostics only.
 - **2026-09-25** — `fix(diagnostics)`: retained disconnect reason across
   reconnects and stopped reporting healthy systems as unavailable.
   `last_disconnect_reason` reset to `""` on every new session attach, which
