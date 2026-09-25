@@ -653,6 +653,9 @@ class _CollectorConnection:
                 or self._collector.last_disconnect_reason
                 or "collector_disconnected"
             )
+            self._collector.retained_disconnect_reason = (
+                self._collector.last_disconnect_reason
+            )
 
         # Detach the session from shared state and close the writer BEFORE
         # cancelling the reader: cancelling the reader wakes the session's
@@ -1546,6 +1549,9 @@ class _CollectorAtConnection:
                 reason
                 or self._collector.last_disconnect_reason
                 or "collector_disconnected"
+            )
+            self._collector.retained_disconnect_reason = (
+                self._collector.last_disconnect_reason
             )
 
         # Same ordering rule as _CollectorConnection._disconnect: detach and

@@ -487,6 +487,11 @@ class CollectorInfo:
     raw_last_total_duration_ms: int = 0
     inverter_forward_mode: str = ""
     last_disconnect_reason: str = ""
+    # Retained across reconnects. last_disconnect_reason is reset to "" when a
+    # new session attaches (it describes the live session's own teardown), so a
+    # flap-and-reconnect erases the very reason a fault investigator needs.
+    # This field keeps the most recent non-empty reason for the runtime.
+    retained_disconnect_reason: str = ""
     discovery_restart_count: int = 0
     last_discovery_reason: str = ""
     collector_pn: str = ""
