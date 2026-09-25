@@ -24,6 +24,7 @@ from custom_components.eybond_local.collector.transport.binary_framing import (
     BinaryFramingError,
     BinaryGrammar,
     async_read_binary_frame,
+    looks_like_stray_modbus_rtu_reply,
     runtime_eybond_header_error,
     validate_aabb_frame,
 )
@@ -233,6 +234,38 @@ class BinaryFrameDecoderTests(unittest.TestCase):
                 decoder = self._decoder(BinaryGrammar.EYBOND)
                 with self.assertRaisesRegex(BinaryFramingError, reason):
                     decoder.feed(wire, now=10.1)
+
+    def test_recognizes_field_observed_stray_modbus_rtu_replies(self) -> None:
+        # Three field-observed header-decode failures that share one shape:
+        # Modbus slave address 0x01, function 0x03 (read holding registers),
+        # then a plausible byte count. These are real, valid Modbus RTU reply
+        # headers arriving outside any EyeBond frame envelope — not wire
+        # corruption — on a collector whose firmware occasionally forwards a
+        # raw serial reply onto the same socket. The byte count values below
+        # (20, 108, 24) match what was actually observed on the wire.
+        for header_bytes in (
+            bytes.fromhex("0103140000000000"),
+            bytes.fromhex("01036c0000000200"),
+            bytes.fromhex("0103180000000000"),
+        ):
+            with self.subTest(header=header_bytes.hex()):
+                self.assertTrue(looks_like_stray_modbus_rtu_reply(header_bytes))
+
+    def test_does_not_flag_genuine_corruption_or_implausible_shapes(self) -> None:
+        for header_bytes, reason in (
+            (bytes.fromhex("00000000"), "too short"),
+            (bytes.fromhex("aabbccddeeff0011"), "not a read function code"),
+            (bytes.fromhex("010300000000ffff"), "zero byte count is not a real reply"),
+            (bytes.fromhex("0103ff0000000000"), "byte count collides with exception framing"),
+        ):
+            with self.subTest(reason=reason):
+                self.assertFalse(looks_like_stray_modbus_rtu_reply(header_bytes))
+
+    def test_read_input_registers_function_code_is_also_recognized(self) -> None:
+        # 0x04 = read input registers, the other common RTU read reply.
+        self.assertTrue(
+            looks_like_stray_modbus_rtu_reply(bytes.fromhex("0104100000000000"))
+        )
 
     def test_invalid_constructor_deadline_and_grammar(self) -> None:
         for start, timeout in ((10, 0), (10, -1), (10, float("inf")), (float("nan"), 1)):

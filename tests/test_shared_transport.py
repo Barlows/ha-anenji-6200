@@ -4810,6 +4810,75 @@ class TransportLifecycleHardeningTests(unittest.IsolatedAsyncioTestCase):
             "collector_frame_header_timeout",
         )
 
+    async def test_unwrapped_modbus_rtu_reply_gets_an_honest_log_reason(self) -> None:
+        # Field-observed bytes: Modbus slave 0x01, function 0x03 (read
+        # holding registers), byte count 0x14 — a real, valid RTU reply
+        # header, not corruption, arriving outside any EyeBond envelope.
+        # last_disconnect_reason (the stored/reported value) is unchanged by
+        # this recognition; only the human-readable log line differs.
+        connection = _CollectorConnection(
+            remote_ip_hint="203.0.113.10",
+            heartbeat_interval=60.0,
+            write_timeout=0.5,
+        )
+        reader = asyncio.StreamReader()
+        writer = _FakeWriter()
+
+        async def _quiet_heartbeat(self) -> None:
+            return None
+
+        with (
+            patch.object(_CollectorConnection, "_heartbeat_loop", new=_quiet_heartbeat),
+            self.assertLogs(
+                "custom_components.eybond_local.collector.transport.connections",
+                level="WARNING",
+            ) as captured,
+        ):
+            run = asyncio.create_task(
+                connection.run(reader, writer)  # type: ignore[arg-type]
+            )
+            self.assertTrue(await connection.wait_until_connected(1.0))
+            reader.feed_data(bytes.fromhex("0103140000000000"))
+            await asyncio.wait_for(run, timeout=1.0)
+
+        self.assertEqual(
+            connection.collector_info.last_disconnect_reason,
+            "collector_frame_length_invalid",
+        )
+        joined = "\n".join(captured.output)
+        self.assertIn("unwrapped Modbus RTU reply", joined)
+        self.assertNotIn("malformed frame header", joined)
+
+    async def test_genuine_garbage_header_keeps_the_original_wording(self) -> None:
+        connection = _CollectorConnection(
+            remote_ip_hint="203.0.113.10",
+            heartbeat_interval=60.0,
+            write_timeout=0.5,
+        )
+        reader = asyncio.StreamReader()
+        writer = _FakeWriter()
+
+        async def _quiet_heartbeat(self) -> None:
+            return None
+
+        with (
+            patch.object(_CollectorConnection, "_heartbeat_loop", new=_quiet_heartbeat),
+            self.assertLogs(
+                "custom_components.eybond_local.collector.transport.connections",
+                level="WARNING",
+            ) as captured,
+        ):
+            run = asyncio.create_task(
+                connection.run(reader, writer)  # type: ignore[arg-type]
+            )
+            self.assertTrue(await connection.wait_until_connected(1.0))
+            reader.feed_data(bytes.fromhex("aabbccddeeff0011"))
+            await asyncio.wait_for(run, timeout=1.0)
+
+        joined = "\n".join(captured.output)
+        self.assertIn("malformed frame header", joined)
+        self.assertNotIn("unwrapped Modbus RTU reply", joined)
+
     async def test_replaced_socket_closes_only_its_session_inventory(self) -> None:
         listener = _SharedEybondListener(host="127.0.0.1", port=_free_tcp_port())
         connection = _CollectorConnection(
