@@ -6,12 +6,17 @@ import sys
 import types
 import unittest
 
-from helpers.homeassistant_stubs import ensure_module, ensure_package
-
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+# `helpers` lives beside this file, so the tests directory itself must be
+# importable for `from helpers...` to resolve when a module is run
+# directly (unittest discover happens to add it; direct runs do not).
+TESTS_ROOT = Path(__file__).resolve().parent
+if str(TESTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TESTS_ROOT))
+
+from helpers.homeassistant_stubs import ensure_module, ensure_package
 
 
 _STUBBED_MODULE_NAMES = (
