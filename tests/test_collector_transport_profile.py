@@ -13,6 +13,7 @@ if str(REPO_ROOT) not in sys.path:
 from custom_components.eybond_local.collector.transport_profile import (
     apply_observed_collector_session_protocol,
     collector_cloud_family_from_entry_context,
+    collector_session_protocol_from_inventory_state,
     resolve_collector_transport_profile,
     resolve_collector_transport_profile_from_entry_context,
     runtime_owner_key_from_entry_context,
@@ -59,6 +60,24 @@ class CollectorTransportProfileTests(unittest.TestCase):
             self.assertEqual(profile.session_protocol, "", family)
             self.assertEqual(profile.identity_strategy, "", family)
             self.assertEqual(profile.raw_passthrough_bootstrap, "", family)
+
+    def test_restart_inventory_state_restores_the_confirmed_route(self) -> None:
+        cases = (
+            ("routed_at_text", "eybond_framed", "at_text"),
+            ("routed_framed", "at_text", "eybond_framed"),
+            ("waiting_for_route_identity", "at_text", "at_text"),
+            ("", "eybond_framed", "eybond_framed"),
+            ("", "mystery", ""),
+        )
+        for state, shape, expected in cases:
+            with self.subTest(state=state, shape=shape):
+                self.assertEqual(
+                    collector_session_protocol_from_inventory_state(
+                        state=state,
+                        protocol_shape=shape,
+                    ),
+                    expected,
+                )
 
     def test_metadata_never_chooses_bootstrap_transport(self) -> None:
         # Neither the inverter driver nor the collector's cloud family is wire

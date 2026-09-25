@@ -71,6 +71,12 @@ from custom_components.eybond_local.services import (
 class _FakeCoordinator:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
+        self.available_management_actions: set[str] | None = None
+
+    def collector_management_action_available(self, action: str) -> bool:
+        if self.available_management_actions is None:
+            return True
+        return action in self.available_management_actions
 
     async def async_set_collector_server_endpoint(self, **kwargs):
         self.calls.append(dict(kwargs))
@@ -99,6 +105,11 @@ class _FakeCoordinator:
     async def async_stop_proxy_capture(self, **kwargs):
         self.calls.append({"stop_proxy_capture": dict(kwargs)})
         return {"status": "stopped", "manifest_path": "/config/eybond_local/proxy_traces/session.json"}
+
+
+class _DisconnectedCoordinator(_FakeCoordinator):
+    async def async_reboot_collector(self, **kwargs):
+        raise ConnectionError("collector_not_connected")
 
 
 class _FakeEntry:
@@ -227,6 +238,44 @@ class ServiceHandlerTests(unittest.TestCase):
 
             self.assertEqual(result["action"], "reboot")
             self.assertEqual(coordinator.calls[-1], {"reboot": {"confirm_restart": True}})
+
+        asyncio.run(_run())
+
+    def test_management_action_preflight_reports_unavailable_adapter(self) -> None:
+        async def _run() -> None:
+            coordinator = _FakeCoordinator()
+            coordinator.available_management_actions = set()
+            hass = _FakeHass(_FakeEntry(coordinator))
+
+            with self.assertRaisesRegex(
+                Exception,
+                "collector_management_action_unavailable",
+            ):
+                await _async_handle_bind_collector_to_home_assistant(
+                    hass,
+                    _FakeServiceCall(
+                        {"entry_id": "entry-1", "confirm_redirect": True}
+                    ),
+                )
+            self.assertEqual(coordinator.calls, [])
+
+        asyncio.run(_run())
+
+    def test_runtime_failure_is_translated_to_actionable_service_error(self) -> None:
+        async def _run() -> None:
+            coordinator = _DisconnectedCoordinator()
+            hass = _FakeHass(_FakeEntry(coordinator))
+
+            with self.assertRaisesRegex(
+                Exception,
+                "collector_not_connected.*power-cycle",
+            ):
+                await _async_handle_reboot_collector(
+                    hass,
+                    _FakeServiceCall(
+                        {"entry_id": "entry-1", "confirm_restart": True}
+                    ),
+                )
 
         asyncio.run(_run())
 

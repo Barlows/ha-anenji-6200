@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from contextlib import suppress
 import logging
 from pathlib import Path
@@ -37,6 +38,86 @@ if TYPE_CHECKING:
 _SERVICES_READY_KEY = "services_ready"
 
 logger = logging.getLogger(__name__)
+
+
+_SERVICE_OPERATION_ERROR_HINTS: dict[str, str] = {
+    "collector_not_connected": (
+        "The collector has no active management session. Wait for a live callback "
+        "session or power-cycle the collector before retrying."
+    ),
+    "collector_management_action_unavailable": (
+        "The current collector transport does not expose this management action."
+    ),
+    "collector_configuration_proxy_transition_active": (
+        "The collector callback is being redirected; wait for the transition to finish."
+    ),
+    "collector_configuration_proxy_session_active": (
+        "A proxy capture session is active; stop it before changing the collector "
+        "callback."
+    ),
+    "collector_endpoint_sync_pending": (
+        "The collector is still applying a previous endpoint change; wait for it "
+        "to finish."
+    ),
+    "collector_control_disabled": (
+        "Collector management actions are disabled by the current control policy."
+    ),
+    "proxy_capture_not_ready": (
+        "Proxy capture is not ready for the current collector route."
+    ),
+}
+
+
+def _service_operation_error(operation: str, code: object) -> Exception:
+    """Build an actionable, bounded service error for a failed collector action."""
+
+    raw_code = str(code or "").strip()
+    normalized_code = "".join(
+        char for char in raw_code if char.isalnum() or char in "._-"
+    )[:96]
+    if not normalized_code:
+        normalized_code = "collector_operation_failed"
+    hint = _SERVICE_OPERATION_ERROR_HINTS.get(normalized_code)
+    message = f"EyeBond Local {operation} failed: {normalized_code}"
+    if hint:
+        message = f"{message}. {hint}"
+    try:
+        from homeassistant.exceptions import HomeAssistantError
+    except (ImportError, AttributeError):
+        return ValueError(message)
+    return HomeAssistantError(message)
+
+
+def _raise_service_operation_error(operation: str, code: object) -> None:
+    raise _service_operation_error(operation, code)
+
+
+async def _async_call_guarded_operation(
+    operation: str,
+    awaitable: Awaitable[dict[str, object]],
+) -> dict[str, object]:
+    """Return a service result or translate runtime failures for the caller."""
+
+    try:
+        return await awaitable
+    except (OSError, RuntimeError, ValueError) as exc:
+        _raise_service_operation_error(operation, str(exc))
+
+
+def _require_management_action(coordinator: object, operation: str, action: str) -> None:
+    """Fail early with a useful code when the live adapter lacks an action."""
+
+    checker = getattr(coordinator, "collector_management_action_available", None)
+    if not callable(checker):
+        return
+    try:
+        available = bool(checker(action))
+    except Exception:  # pragma: no cover - defensive introspection guard
+        return
+    if not available:
+        _raise_service_operation_error(
+            operation, "collector_management_action_unavailable"
+        )
 
 
 _BIND_COLLECTOR_SCHEMA = vol.Schema(
@@ -292,12 +373,18 @@ async def _async_handle_set_collector_server_endpoint(
     call: ServiceCall,
 ) -> dict[str, object]:
     coordinator = _resolve_entry_coordinator(hass, call)
-    return await coordinator.async_set_collector_server_endpoint(
-        server_host=str(call.data.get("server_host") or ""),
-        server_port=int(call.data.get("server_port") or 0),
-        server_protocol=str(call.data.get("server_protocol") or "TCP"),
-        apply_changes=bool(call.data.get("apply_changes", True)),
-        confirm_redirect=bool(call.data.get("confirm_redirect", False)),
+    _require_management_action(
+        coordinator, "set_collector_server_endpoint", "write_endpoint"
+    )
+    return await _async_call_guarded_operation(
+        "set_collector_server_endpoint",
+        coordinator.async_set_collector_server_endpoint(
+            server_host=str(call.data.get("server_host") or ""),
+            server_port=int(call.data.get("server_port") or 0),
+            server_protocol=str(call.data.get("server_protocol") or "TCP"),
+            apply_changes=bool(call.data.get("apply_changes", True)),
+            confirm_redirect=bool(call.data.get("confirm_redirect", False)),
+        ),
     )
 
 
@@ -306,8 +393,14 @@ async def _async_handle_bind_collector_to_home_assistant(
     call: ServiceCall,
 ) -> dict[str, object]:
     coordinator = _resolve_entry_coordinator(hass, call)
-    return await coordinator.async_bind_collector_to_home_assistant(
-        confirm_redirect=bool(call.data.get("confirm_redirect", False)),
+    _require_management_action(
+        coordinator, "bind_collector_to_home_assistant", "write_endpoint"
+    )
+    return await _async_call_guarded_operation(
+        "bind_collector_to_home_assistant",
+        coordinator.async_bind_collector_to_home_assistant(
+            confirm_redirect=bool(call.data.get("confirm_redirect", False)),
+        ),
     )
 
 
@@ -316,8 +409,14 @@ async def _async_handle_apply_collector_changes(
     call: ServiceCall,
 ) -> dict[str, object]:
     coordinator = _resolve_entry_coordinator(hass, call)
-    return await coordinator.async_apply_collector_changes(
-        confirm_restart=bool(call.data.get("confirm_restart", False)),
+    _require_management_action(
+        coordinator, "apply_collector_changes", "apply_changes"
+    )
+    return await _async_call_guarded_operation(
+        "apply_collector_changes",
+        coordinator.async_apply_collector_changes(
+            confirm_restart=bool(call.data.get("confirm_restart", False)),
+        ),
     )
 
 
@@ -326,8 +425,12 @@ async def _async_handle_reboot_collector(
     call: ServiceCall,
 ) -> dict[str, object]:
     coordinator = _resolve_entry_coordinator(hass, call)
-    return await coordinator.async_reboot_collector(
-        confirm_restart=bool(call.data.get("confirm_restart", False)),
+    _require_management_action(coordinator, "reboot_collector", "reboot")
+    return await _async_call_guarded_operation(
+        "reboot_collector",
+        coordinator.async_reboot_collector(
+            confirm_restart=bool(call.data.get("confirm_restart", False)),
+        ),
     )
 
 
@@ -336,9 +439,15 @@ async def _async_handle_rollback_collector_server_endpoint(
     call: ServiceCall,
 ) -> dict[str, object]:
     coordinator = _resolve_entry_coordinator(hass, call)
-    return await coordinator.async_rollback_collector_server_endpoint(
-        apply_changes=bool(call.data.get("apply_changes", True)),
-        confirm_redirect=bool(call.data.get("confirm_redirect", False)),
+    _require_management_action(
+        coordinator, "rollback_collector_server_endpoint", "write_endpoint"
+    )
+    return await _async_call_guarded_operation(
+        "rollback_collector_server_endpoint",
+        coordinator.async_rollback_collector_server_endpoint(
+            apply_changes=bool(call.data.get("apply_changes", True)),
+            confirm_redirect=bool(call.data.get("confirm_redirect", False)),
+        ),
     )
 
 
@@ -353,7 +462,10 @@ async def _async_handle_start_proxy_capture(
     }
     if CONF_PROXY_CAPTURE_DURATION_MINUTES in call.data:
         kwargs["duration_minutes"] = call.data.get(CONF_PROXY_CAPTURE_DURATION_MINUTES)
-    return await coordinator.async_start_proxy_capture(**kwargs)
+    return await _async_call_guarded_operation(
+        "start_proxy_capture",
+        coordinator.async_start_proxy_capture(**kwargs),
+    )
 
 
 async def _async_handle_stop_proxy_capture(
@@ -361,7 +473,10 @@ async def _async_handle_stop_proxy_capture(
     call: ServiceCall,
 ) -> dict[str, object]:
     coordinator = _resolve_entry_coordinator(hass, call)
-    return await coordinator.async_stop_proxy_capture()
+    return await _async_call_guarded_operation(
+        "stop_proxy_capture",
+        coordinator.async_stop_proxy_capture(),
+    )
 
 
 async def _async_handle_run_diagnostic_commands(

@@ -29,6 +29,9 @@ from custom_components.eybond_local.collector.transport import (
     _collector_pn_from_initial_chunk,
     _parse_fc2_collector_pn,
 )
+from custom_components.eybond_local.collector.transport.common import (
+    _classify_initial_protocol_shape,
+)
 from custom_components.eybond_local.collector.at import CollectorAtResponse
 from custom_components.eybond_local.collector.protocol import (
     HEADER_SIZE,
@@ -94,6 +97,28 @@ async def _wait_for_writer_buffer(writer: _FakeWriter, expected: bytes) -> None:
 
 
 class SharedTransportTests(unittest.IsolatedAsyncioTestCase):
+    def test_initial_protocol_shape_exposes_ambiguous_and_malformed_prefixes(self) -> None:
+        cases = (
+            (b"AT+DTUPN:E5000020000000" + bytes((13, 10)), "at_text"),
+            (bytes((1, 3, 2)), "unknown"),
+            (bytes.fromhex("0103180000000000"), "raw_tcp"),
+            (bytes.fromhex("01036c0000000200"), "raw_tcp"),
+            (
+                build_collector_request(
+                    0x0103,
+                    b"payload",
+                    devcode=0x1800,
+                    collector_addr=0,
+                    fcode=4,
+                ),
+                "eybond_framed",
+            ),
+            (b"", "unknown"),
+        )
+        for chunk, expected in cases:
+            with self.subTest(chunk=chunk):
+                self.assertEqual(_classify_initial_protocol_shape(chunk), expected)
+
     def test_scanner_control_payload_is_not_a_heartbeat_identity(self) -> None:
         scanner_payload = b"\x13\x03\x13\x02+/,"
         frame = build_collector_request(
@@ -4696,6 +4721,19 @@ class TransportLifecycleHardeningTests(unittest.IsolatedAsyncioTestCase):
             b"\x00",
             expected_reason="collector_frame_header_timeout",
             header_timeout=0.05,
+        )
+        await _run_failure(
+            bytes.fromhex("010302"),
+            expected_reason="collector_frame_header_timeout",
+            header_timeout=0.05,
+        )
+        await _run_failure(
+            bytes.fromhex("0103180000000000"),
+            expected_reason="collector_frame_length_invalid",
+        )
+        await _run_failure(
+            bytes.fromhex("01036c0000000200"),
+            expected_reason="collector_frame_length_invalid",
         )
         await _run_failure(
             build_collector_request(
