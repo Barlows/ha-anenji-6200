@@ -135,6 +135,23 @@ class EntityDescriptionsTests(unittest.TestCase):
         self.assertTrue(summary.diagnostic)
         self.assertFalse(summary.enabled_default)
 
+    def test_transport_and_disconnect_diagnostics_are_explicit_entities(self) -> None:
+        expected = {
+            "collector_callback_wire_framing": True,
+            "collector_last_disconnect_reason": True,
+            "collector_callback_observed_session_protocol": False,
+            "collector_management_adapter_id": False,
+            "collector_management_adapter_provenance": False,
+        }
+        descriptions = {
+            item.key: item for item in BASE_SENSOR_DESCRIPTIONS if item.key in expected
+        }
+        self.assertEqual(set(descriptions), set(expected))
+        for key, enabled_default in expected.items():
+            with self.subTest(key=key):
+                self.assertTrue(descriptions[key].diagnostic)
+                self.assertEqual(descriptions[key].enabled_default, enabled_default)
+
     def test_collector_listener_details_are_hidden_diagnostic_sensors(self) -> None:
         hidden_keys = {
             "collector_listener_bind_host",
