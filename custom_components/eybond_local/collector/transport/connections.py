@@ -39,6 +39,7 @@ from .common import (
     _copy_collector_info,
     _disconnect_reason_from_exception,
     _looks_like_plain_raw_response_start,
+    _looks_like_stray_modbus_rtu_reply,
     _looks_like_uart_passthrough_value,
     _parse_fc2_collector_pn,
     _runtime_eybond_header_error,
@@ -525,19 +526,36 @@ class _CollectorConnection:
                     header_error = _runtime_eybond_header_error(header)
                     if header_error:
                         self._collector.last_disconnect_reason = header_error
-                        logger.warning(
-                            "Closing collector session after malformed frame header "
-                            "remote=%s reason=%s header=%s tid=%d devcode=0x%04X "
-                            "devaddr=0x%02X fc=%d payload=%d",
-                            self._collector.remote_ip,
-                            header_error,
-                            header_bytes.hex(),
-                            header.tid,
-                            header.devcode,
-                            header.devaddr,
-                            header.fcode,
-                            header.payload_len,
-                        )
+                        if _looks_like_stray_modbus_rtu_reply(header_bytes):
+                            logger.warning(
+                                "Closing collector session after an unwrapped "
+                                "Modbus RTU reply outside any EyeBond frame "
+                                "envelope (not wire corruption) remote=%s "
+                                "reason=%s header=%s tid=%d devcode=0x%04X "
+                                "devaddr=0x%02X fc=%d payload=%d",
+                                self._collector.remote_ip,
+                                header_error,
+                                header_bytes.hex(),
+                                header.tid,
+                                header.devcode,
+                                header.devaddr,
+                                header.fcode,
+                                header.payload_len,
+                            )
+                        else:
+                            logger.warning(
+                                "Closing collector session after malformed frame header "
+                                "remote=%s reason=%s header=%s tid=%d devcode=0x%04X "
+                                "devaddr=0x%02X fc=%d payload=%d",
+                                self._collector.remote_ip,
+                                header_error,
+                                header_bytes.hex(),
+                                header.tid,
+                                header.devcode,
+                                header.devaddr,
+                                header.fcode,
+                                header.payload_len,
+                            )
                         return
                     payload = b""
                     if header.payload_len > 0:

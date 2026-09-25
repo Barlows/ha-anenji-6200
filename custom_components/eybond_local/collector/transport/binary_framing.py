@@ -48,6 +48,35 @@ def runtime_eybond_header_error(header: EybondHeader) -> str:
     return ""
 
 
+# Modbus RTU read-reply function codes: 0x03 (read holding registers) and
+# 0x04 (read input registers). A byte count of 0 or 253-255 cannot be a real
+# RTU reply (253+ collides with Modbus exception-response framing, which is
+# a different, shorter shape this check does not claim to recognize).
+_MODBUS_RTU_READ_REPLY_FCODES = frozenset({0x03, 0x04})
+_MODBUS_RTU_MAX_PLAUSIBLE_BYTE_COUNT = 252
+
+
+def looks_like_stray_modbus_rtu_reply(header_bytes: bytes) -> bool:
+    """True when bytes that failed EyeBond header decoding instead look like
+    an unsolicited, unwrapped Modbus RTU read reply (slave address byte,
+    a read-holding/input-registers function code, then a plausible byte
+    count) rather than genuine wire corruption.
+
+    This does not change how the session recovers — the caller still closes
+    it exactly as before. It only distinguishes, for logging, "the inverter
+    sent a real raw-serial reply outside any EyeBond frame envelope" (a
+    protocol/bridging quirk worth naming) from actual garbled bytes, since
+    the two currently share one generic diagnostic reason.
+    """
+
+    if len(header_bytes) < 3:
+        return False
+    _address, function, byte_count = header_bytes[0:3]
+    if function not in _MODBUS_RTU_READ_REPLY_FCODES:
+        return False
+    return 0 < byte_count <= _MODBUS_RTU_MAX_PLAUSIBLE_BYTE_COUNT
+
+
 class BinaryGrammar(Enum):
     """A session's allowed binary grammars, NOT a request-waiter preference."""
 

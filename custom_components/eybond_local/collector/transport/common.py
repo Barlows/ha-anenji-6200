@@ -42,6 +42,7 @@ from ..protocol import (
 from .binary_framing import (
     MAX_EYBOND_PAYLOAD_SIZE,
     RUNTIME_EYBOND_FCODES,
+    looks_like_stray_modbus_rtu_reply,
     runtime_eybond_header_error,
 )
 
@@ -237,6 +238,16 @@ def _runtime_eybond_header_error(header: EybondHeader) -> str:
     """
 
     return runtime_eybond_header_error(header)
+
+
+def _looks_like_stray_modbus_rtu_reply(header_bytes: bytes) -> bool:
+    """Return whether bytes that failed EyeBond header decoding instead look
+    like an unwrapped Modbus RTU read reply (see the underlying helper's
+    docstring). Purely diagnostic: it never changes recovery behavior, only
+    how the resulting log line names the failure.
+    """
+
+    return looks_like_stray_modbus_rtu_reply(header_bytes)
 
 
 def _mask_identity_token(value: str) -> str:
