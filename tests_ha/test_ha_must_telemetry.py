@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
 import pytest
 
 from homeassistant.config_entries import ConfigEntryDisabler
+from homeassistant.core import State
 from homeassistant.helpers import entity_registry as er
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import MockConfigEntry, mock_restore_cache
 
 from custom_components.eybond_local.canonical_telemetry import project_canonical_telemetry
 from custom_components.eybond_local.const import DOMAIN
@@ -20,6 +24,12 @@ from synthetic import SYNTHETIC_COLLECTOR_IP, SYNTHETIC_COLLECTOR_PN, SYNTHETIC_
 @pytest.mark.parametrize("upgrade", [False, True])
 async def test_must_power_and_energy_setup_upgrade_reload(hass, fake_runtime, monkeypatch, upgrade):
     from conftest import FakeRuntimeManager
+    from custom_components.eybond_local import sensor as sensor_platform
+
+    # Keep the sensor's local-day clock deterministic without changing HA's own
+    # clock/scheduler. This tests retained pre-fix energy, not a Recorder rewrite.
+    now = datetime(2026, 9, 24, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(sensor_platform, "dt_util", SimpleNamespace(now=lambda: now))
 
     # Synthetic bank, no customer identifiers or cloud/device I/O.
     registers = {
@@ -69,6 +79,14 @@ async def test_must_power_and_energy_setup_upgrade_reload(hass, fake_runtime, mo
     legacy_ids = []
     old_load_id = None
     if upgrade:
+        daily = registry.async_get_or_create(
+            "sensor", DOMAIN, f"{entry.entry_id}_estimated_load_energy_daily",
+            config_entry=entry, suggested_object_id="my_daily_load_energy",
+        )
+        mock_restore_cache(hass, [State(
+            daily.entity_id, "102.2785",
+            {"period_key": now.date().isoformat(), "unit_of_measurement": "kWh"},
+        )])
         for key in ("pv_generation_sum", "pv_generation_day"):
             old = registry.async_get_or_create(
                 "sensor", DOMAIN, f"{entry.entry_id}_{key}",
@@ -107,6 +125,11 @@ async def test_must_power_and_energy_setup_upgrade_reload(hass, fake_runtime, mo
     energy = hass.states.get(identities["pv_energy_total"])
     assert energy.attributes["unit_of_measurement"] == "kWh"
     assert energy.attributes["state_class"] == "total_increasing"
+    daily_id = sensor_id("estimated_load_energy_daily")
+    daily = hass.states.get(daily_id)
+    assert daily.attributes["source_key"] == "estimated_load_energy"
+    assert daily.attributes["period_key"] == now.date().isoformat()
+    assert float(daily.state) == (102.2785 if upgrade else 0)
     assert identities["pv_energy_total"] not in legacy_ids
     for key in ("pv_generation_sum", "pv_generation_day"):
         assert sensor_id(key) is None
@@ -131,5 +154,21 @@ async def test_must_power_and_energy_setup_upgrade_reload(hass, fake_runtime, mo
     assert days.attributes.get("device_class") != "energy"
     assert days.attributes.get("state_class") == "measurement"
     assert registry.async_get(other_energy.entity_id) is not None
+    # A same-day restart and correct zero load do not erase already accumulated
+    # energy. A new local day resets on the next valid measurement, then the
+    # corrected MUST load measurement integrates at 1000 W -> 1 kWh per hour.
+    assert float(hass.states.get(daily_id).state) == (102.2785 if upgrade else 0)
+    now += timedelta(days=1)
+    await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    assert float(hass.states.get(daily_id).state) == 0
+    transport._registers[25215] = 1000
+    await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    assert float(hass.states.get(sensor_id("output_power")).state) == 1000
+    now += timedelta(hours=1)
+    await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    assert float(hass.states.get(daily_id).state) == 1
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()

@@ -96,6 +96,7 @@ class _CollectorConnection:
         self._writer: asyncio.StreamWriter | None = None
         self._connected = asyncio.Event()
         self._pending: dict[int, asyncio.Future[tuple[EybondHeader, bytes]]] = {}
+        self._pending_fcode: dict[int, int] = {}
         self._pending_at_response: asyncio.Future[CollectorAtResponse] | None = None
         self._request_lock = asyncio.Lock()
         self._write_lock = asyncio.Lock()
@@ -233,6 +234,7 @@ class _CollectorConnection:
             loop = asyncio.get_running_loop()
             future: asyncio.Future[tuple[EybondHeader, bytes]] = loop.create_future()
             self._pending[tid] = future
+            self._pending_fcode[tid] = fcode
 
             try:
                 await self._async_write(frame, owner=owner)
@@ -251,6 +253,7 @@ class _CollectorConnection:
             finally:
                 if self._pending.get(tid) is future:
                     self._pending.pop(tid, None)
+                    self._pending_fcode.pop(tid, None)
                 finish_request_future(future)
 
     async def async_send_auxiliary_read(
@@ -589,11 +592,17 @@ class _CollectorConnection:
                         )
                         self._record_session_identity(pn, "fc2_parameter_2")
                 future = self._pending.get(header.tid)
-                if header.fcode == FC_HEARTBEAT or (
+                expected_fcode = self._pending_fcode.get(header.tid)
+                correlated = (
                     future is not None and not future.done()
-                ):
+                    and header.fcode == expected_fcode
+                )
+                if header.fcode == FC_HEARTBEAT or correlated:
                     self._last_liveness_monotonic = observed_at
-                if future and not future.done():
+                # A collector-initiated heartbeat can reuse a local request's
+                # TID. It remains a heartbeat, never an FC2/FC3/FC4 reply. Do not
+                # compare devcode/address: firmware legitimately rewrites those.
+                if correlated:
                     future.set_result((header, payload))
                     continue
 
@@ -671,6 +680,7 @@ class _CollectorConnection:
             if not future.done():
                 future.set_exception(ConnectionError("collector_disconnected"))
         self._pending.clear()
+        self._pending_fcode.clear()
 
         at_future = self._pending_at_response
         self._pending_at_response = None

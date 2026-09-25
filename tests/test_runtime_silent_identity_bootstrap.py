@@ -458,6 +458,7 @@ class Issue37WeakHeartbeatRuntimeRegressionTests(
         callback_on_demand: bool = True,
     ) -> tuple[bool, tuple, str, int]:
         session_port = _free_port()
+        listener = await _acquire_shared_listener("0.0.0.0", session_port)
         primary_port = session_port if session_on_primary else _free_port()
         udp_port = _free_udp_port()
         manager = EybondRuntimeLinkManager(
@@ -486,9 +487,16 @@ class Issue37WeakHeartbeatRuntimeRegressionTests(
             pn=collector_pn,
             answer_fc2=answer_fc2,
         )
-        listener = await _acquire_shared_listener("0.0.0.0", session_port)
-        await collector.start()
+        primary_listener = None
         try:
+            if primary_port != session_port:
+                # Reserve the primary listener before any fake collector TCP
+                # connect can claim this ephemeral port. No runtime owner is
+                # registered yet, so the weak session below remains parked.
+                primary_listener = await _acquire_shared_listener(
+                    "0.0.0.0", primary_port,
+                )
+            await collector.start()
             # Reproduce the support archive faithfully: the callback session is
             # already open and the listener has learned only the 14-character
             # heartbeat prefix before the entry runtime starts and registers
@@ -523,12 +531,47 @@ class Issue37WeakHeartbeatRuntimeRegressionTests(
         finally:
             await collector.stop()
             await manager.async_stop()
+            if primary_listener is not None:
+                await _release_shared_listener(
+                    primary_listener,
+                    close_pending=True,
+                    close_payload=True,
+                    close_at=True,
+                )
             await _release_shared_listener(
                 listener,
                 close_pending=True,
                 close_payload=True,
                 close_at=True,
             )
+
+    async def test_primary_port_is_reserved_before_fake_collector_connects(self) -> None:
+        acquired_ports = []
+        original_acquire = _acquire_shared_listener
+        original_callback = async_send_callback_trigger
+
+        async def acquire(host, port):
+            listener = await original_acquire(host, port)
+            acquired_ports.append(port)
+            return listener
+
+        async def callback(**kwargs):
+            # Both physical listeners must exist before the fake collector opens
+            # an outbound TCP socket. Otherwise its ephemeral source port can
+            # consume the runtime's selected-but-not-yet-bound primary port.
+            self.assertEqual(len(set(acquired_ports)), 2)
+            return await original_callback(**kwargs)
+
+        with (
+            patch(f"{__name__}._acquire_shared_listener", side_effect=acquire),
+            patch(f"{__name__}.async_send_callback_trigger", side_effect=callback),
+        ):
+            connected, _, _, _ = await self._exercise(
+                durable_pn=ISSUE37_SHORT_PN,
+                collector_pn=ISSUE37_FULL_PN,
+                answer_fc2=True,
+            )
+        self.assertTrue(connected)
 
     async def test_weak_heartbeat_is_upgraded_on_the_exact_session(self) -> None:
         connected, sessions, weak_session_id, trigger_count = await self._exercise(

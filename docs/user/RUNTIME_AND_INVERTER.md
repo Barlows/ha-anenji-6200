@@ -93,6 +93,20 @@ your Energy Dashboard configuration. Earlier totals and energy estimates based
 on the incorrect load reading may need review. These corrections do not change
 the collector connection, polling ranges or inverter controls.
 
+**Estimated Load Energy Today** is calculated by Home Assistant from **Load
+Power** over time; it is not a daily register read from the inverter. If the old
+version reported an incorrect high load, that energy may already be included in
+today's total. Updating or restarting HA on the same day retains that total.
+It resets on the first valid reading of the next day in HA's configured timezone.
+If the collector is offline at midnight, the displayed total can remain until
+readings resume. The reset does not remove incorrect historical statistics.
+
+After updating, compare Load Power with the manufacturer's app while a load is
+present, then check the next day's estimate. If it still grows unexpectedly,
+include the Load Power and Estimated Load Energy Today history around that time
+with a fresh Support Archive. Do not change scaling or delete the integration
+just to clear the old total.
+
 ## EyeBond Short-ASCII family
 
 This read-only profile is included in the unreleased test code. It supports

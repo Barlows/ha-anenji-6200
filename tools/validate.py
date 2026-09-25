@@ -64,6 +64,7 @@ _FAMILY_TESTS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "custom_components/eybond_local/collector/transport",
         (
             "test_shared_transport.py",
+            "test_framed_response_correlation.py",
             "test_collector_binary_framing.py",
             "test_collector_auxiliary_session.py",
             "test_collector_send_ownership.py",

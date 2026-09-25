@@ -223,6 +223,7 @@ class SharedTransportTests(unittest.IsolatedAsyncioTestCase):
         connection._writer = _FakeWriter()  # type: ignore[assignment]
         future = asyncio.get_running_loop().create_future()
         connection._pending[23] = future
+        connection._pending_fcode[23] = 4
         reader = asyncio.StreamReader()
         reader.feed_data(
             build_collector_request(
@@ -301,6 +302,7 @@ class SharedTransportTests(unittest.IsolatedAsyncioTestCase):
         # not merely the first control byte it happens to encounter later.
         printable_tid = 0x4142
         connection._pending[printable_tid] = framed_future
+        connection._pending_fcode[printable_tid] = 4
         reader = asyncio.StreamReader()
         reader.feed_data(
             b"AT+INTPARA:41,GRooVE"

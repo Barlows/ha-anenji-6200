@@ -33,6 +33,12 @@ the GitHub release body should be rendered from the matching version section her
 
 ### Fixed
 
+- Framed collector replies must match both the request's transaction ID and
+  function code. An unrelated heartbeat or response can no longer complete a
+  collector-management or inverter request merely by reusing its transaction
+  ID. Reply devcode/address differences remain supported. This is an independently
+  reproduced safeguard, not a confirmed fix for the connection resets in #43.
+
 - MUST PV/PH18 telemetry distinguishes signed inverter-converter power from
   load power (#46). Corrected cumulative PV energy uses a new **PV Energy Total**
   entity in kWh so the old incorrectly scaled statistics are not continued.

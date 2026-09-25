@@ -286,6 +286,7 @@ class AuxiliaryConnectionTests(unittest.IsolatedAsyncioTestCase):
                     future.cancel()
                 if kind == "framed":
                     connection._pending[0xAABB] = future
+                    connection._pending_fcode[0xAABB] = 4
                 else:
                     connection._pending_framed_response[0xAABB] = future
                     connection._pending_framed_fcode[0xAABB] = 4
