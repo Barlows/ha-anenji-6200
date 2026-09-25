@@ -5,6 +5,47 @@ All notable changes to this project are documented in this file.
 The format is inspired by Keep a Changelog, with one practical rule for this repository:
 the GitHub release body should be rendered from the matching version section here.
 
+## This fork (Barlows/ha-anenji-6200)
+
+This repository is a customized build of
+[groove-max/ha-eybond-local](https://github.com/groove-max/ha-eybond-local),
+maintained by [Barlows](https://github.com/Barlows). It is periodically rebased
+onto upstream `main`, so the version history below this section is upstream's
+own changelog, carried through unchanged. This section covers only what's
+different in this fork, most recent first:
+
+- **2026-09-25** — `fix(diagnostics)`: retained disconnect reason across
+  reconnects and stopped reporting healthy systems as unavailable.
+  `last_disconnect_reason` reset to `""` on every new session attach, which
+  could erase the exact fault reason before it was ever read. Added
+  `retained_disconnect_reason`, set at both disconnect sites, which survives
+  reconnects and is projected into the snapshot, session inventory and
+  support bundle. Also fixed `last_error` and the new retained-reason entity
+  publishing `"none"` instead of going `unavailable` on a healthy system,
+  since both are enabled by default.
+- **2026-09-25** — `feat(diagnostics)`: exposed transport faults and
+  clarified collector service errors. Added **Collector Callback Wire
+  Framing**, **Collector Last Disconnect Reason**, **Collector Management
+  Adapter** (+ provenance), and **Observed Session Protocol** diagnostic
+  sensors. Failed `eybond_local` service calls (reboot collector, set
+  endpoint, start/stop proxy capture, etc.) now raise an actionable
+  `HomeAssistantError` with a plain-language hint instead of a bare
+  exception, and unsupported management actions fail fast with a clear code
+  when the live adapter can report its own availability.
+- **2026-09-13** — Added an exact-fingerprint catalog entry (`smg_6200_fw7904`)
+  for SMG 6200 firmware revision 7904 (`model_code 0x7904`, layout 11,
+  Aninerel/Anenji 6200 dual-output), bound to the existing
+  `anenji_op2_6200_full` control surface.
+- **2026-09-13** — Added a **Solar-Utility-FeedIn (SUF)** output-source-priority
+  option and an **Output 2 Overload** fault code to the classic SMG RS232 V1
+  profile and register schema.
+- **2026-09-13** — Added hardware-tested support notes for
+  `automatic_mains_output_enabled`, `output2_cutoff_soc`, and
+  `output2_overload_threshold` on the SMG 6200 (fw7904) model, from local
+  write testing on real hardware.
+- **2026-09-13** — Renamed the project display name to **EyeBond Local SC**
+  (`hacs.json`, README).
+
 ## [Unreleased]
 
 ### Added

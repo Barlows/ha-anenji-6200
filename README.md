@@ -5,7 +5,7 @@
 
 [Українською](README.uk.md)
 
-[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=groove-max&repository=ha-eybond-local&category=integration)
+[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Barlows&repository=ha-anenji-6200&category=integration)
 
 > The **Open in HACS** button requires HACS to be installed. HACS is optional;
 > if you do not use it, follow the manual installation steps below.
@@ -23,6 +23,35 @@ It reads live inverter data over your local network. On supported models it can 
 > **Note:** The integration is actively developed. Some inverters work fully, some work in read-only mode, and some need a Support Archive before support can be added.
 
 > **Known issue:** On some setups, vendor-cloud updates can pause while Home Assistant readings continue. This is under investigation; see [Known cloud telemetry issue](#known-cloud-telemetry-issue).
+
+---
+
+## This fork
+
+This repository (`Barlows/ha-anenji-6200`) is a customized build of
+[groove-max/ha-eybond-local](https://github.com/groove-max/ha-eybond-local),
+maintained by [Barlows](https://github.com/Barlows) and periodically rebased onto
+upstream `main`. Most users should install the upstream project directly; use this
+fork if you specifically want the additions below.
+
+Fork-specific changes on top of upstream, most recent first:
+
+- **2026-09-25** — Collector disconnect reason now survives a reconnect instead of
+  being cleared the instant the collector reattaches (`collector_retained_disconnect_reason`),
+  and healthy-system diagnostic sensors report `none` instead of going `unavailable`.
+- **2026-09-25** — Added transport-fault diagnostics (Collector Callback Wire Framing,
+  Collector Management Adapter + provenance, Collector Last Disconnect Reason) and
+  clearer, actionable errors for failed `eybond_local` service calls.
+- **2026-09-13** — Added an exact-fingerprint catalog entry for SMG 6200 firmware
+  revision 7904 (`model_code 0x7904`, layout 11, Aninerel/Anenji 6200 dual-output),
+  a **Solar-Utility-FeedIn (SUF)** output-source-priority option, an **Output 2
+  Overload** fault code, and hardware-tested support notes for
+  `automatic_mains_output_enabled`, `output2_cutoff_soc`, and
+  `output2_overload_threshold` on that exact model/firmware.
+- **2026-09-13** — Renamed the project display name to **EyeBond Local SC**.
+
+This fork's own changes are re-applied on top of upstream `main` as upstream
+releases; see the [Changelog](CHANGELOG.md) for the full merged history.
 
 ---
 
@@ -123,14 +152,14 @@ It is a small ESP8266/ESP32-based bridge that connects directly to the inverter 
 
 1. Open **HACS → Integrations**.
 2. Click the menu → **Custom repositories**.
-3. Add `https://github.com/groove-max/ha-eybond-local` as an **Integration**.
-4. Find **EyeBond Local** and click **Download**.
+3. Add `https://github.com/Barlows/ha-anenji-6200` as an **Integration**.
+4. Find **EyeBond Local SC** and click **Download**.
 5. Restart Home Assistant.
-6. Go to **Settings → Devices & Services → Add Integration** and search for **EyeBond Local**.
+6. Go to **Settings → Devices & Services → Add Integration** and search for **EyeBond Local SC**.
 
 ### Manual installation
 
-1. Download the archive from the [latest EyeBond Local release](https://github.com/groove-max/ha-eybond-local/releases/latest).
+1. Download the archive from the [latest release of this fork](https://github.com/Barlows/ha-anenji-6200/releases/latest).
 2. Copy `custom_components/eybond_local/` into `config/custom_components/`.
 3. Restart Home Assistant.
 4. Add **EyeBond Local** from **Settings → Devices & Services**.
@@ -147,7 +176,7 @@ Use this only when a maintainer asks you to test a fix that is not in a release
 yet. It does not update through HACS and may change before the next release.
 
 1. Back up your Home Assistant configuration.
-2. Download the current [`main` branch archive](https://github.com/groove-max/ha-eybond-local/archive/refs/heads/main.zip).
+2. Download the current [`main` branch archive](https://github.com/Barlows/ha-anenji-6200/archive/refs/heads/main.zip) of this fork.
 3. Remove the existing `config/custom_components/eybond_local/` directory, then
    copy the complete directory from the archive into `config/custom_components/`.
    Do not mix files from two builds.
@@ -305,7 +334,7 @@ If the integration does not work as expected:
 1. Open the integration in **Settings → Devices & Services**.
 2. Click **Configure → Diagnostics and service tools**.
 3. Click **Create support archive**.
-4. Open a [GitHub issue](https://github.com/groove-max/ha-eybond-local/issues) and attach the ZIP.
+4. Open a [GitHub issue on this fork](https://github.com/Barlows/ha-anenji-6200/issues) and attach the ZIP.
 
 The Support Archive is the preferred way to report unsupported hardware, failed setup, missing sensors, or missing controls.
 

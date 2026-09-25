@@ -5,7 +5,7 @@
 
 [English](README.md)
 
-[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=groove-max&repository=ha-eybond-local&category=integration)
+[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Barlows&repository=ha-anenji-6200&category=integration)
 
 > Кнопка **Open in HACS** працює лише тоді, коли HACS уже встановлено. HACS не
 > є обов’язковим — без нього скористайтеся ручним встановленням нижче.
@@ -23,6 +23,37 @@
 > **Примітка:** Інтеграція активно розвивається. Частина інверторів підтримується повністю, частина — лише для читання, а для частини потрібен архів підтримки.
 
 > **Відома проблема:** На деяких системах оновлення в хмарі виробника можуть зупинятися, хоча показання Home Assistant продовжують змінюватися. Ми досліджуємо це; подробиці — у [розділі про хмарну телеметрію](#відома-проблема-хмарної-телеметрії).
+
+---
+
+## Про цей форк
+
+Цей репозиторій (`Barlows/ha-anenji-6200`) — кастомізована збірка проєкту
+[groove-max/ha-eybond-local](https://github.com/groove-max/ha-eybond-local),
+яку підтримує [Barlows](https://github.com/Barlows) і періодично оновлює на
+основі гілки `main` оригінального проєкту. Більшості користувачів варто
+встановлювати оригінальний проєкт; цей форк потрібен, якщо вам конкретно
+потрібні доповнення нижче.
+
+Зміни цього форку поверх оригіналу, від новіших до старіших:
+
+- **2026-09-25** — Причина останнього відключення колектора тепер
+  зберігається після перепідключення (`collector_retained_disconnect_reason`)
+  замість того, щоб одразу зникати, а сенсори справного стану показують
+  `none` замість `unavailable`.
+- **2026-09-25** — Додано діагностику транспортного рівня (Collector Callback
+  Wire Framing, Collector Management Adapter, Collector Last Disconnect
+  Reason) та зрозуміліші повідомлення про помилки службових викликів
+  `eybond_local`.
+- **2026-09-13** — Додано точний запис у каталозі для SMG 6200 з прошивкою
+  7904 (`model_code 0x7904`, layout 11, Aninerel/Anenji 6200 з двома
+  виходами), опцію пріоритету джерела виходу **Solar-Utility-FeedIn (SUF)**,
+  код несправності **Output 2 Overload** та підтверджені на реальному
+  обладнанні нотатки для `automatic_mains_output_enabled`,
+  `output2_cutoff_soc` та `output2_overload_threshold` на цій моделі/прошивці.
+- **2026-09-13** — Проєкт перейменовано на **EyeBond Local SC**.
+
+Повну історію змін (оригінал + цей форк) дивіться у [Changelog](CHANGELOG.md).
 
 ---
 
@@ -127,14 +158,14 @@ PI30 та SRNE. Рівень підтримки залежить від моде
 
 1. Відкрийте **HACS → Інтеграції**.
 2. Натисніть меню → **Користувацькі репозиторії**.
-3. Додайте `https://github.com/groove-max/ha-eybond-local` як **інтеграцію**.
-4. Знайдіть **EyeBond Local** і натисніть **Завантажити**.
+3. Додайте `https://github.com/Barlows/ha-anenji-6200` як **інтеграцію**.
+4. Знайдіть **EyeBond Local SC** і натисніть **Завантажити**.
 5. Перезапустіть Home Assistant.
-6. Перейдіть у **Налаштування → Пристрої та служби → Додати інтеграцію** і знайдіть **EyeBond Local**.
+6. Перейдіть у **Налаштування → Пристрої та служби → Додати інтеграцію** і знайдіть **EyeBond Local SC**.
 
 ### Ручне встановлення
 
-1. Завантажте архів з [останнього релізу EyeBond Local](https://github.com/groove-max/ha-eybond-local/releases/latest).
+1. Завантажте архів з [останнього релізу цього форку](https://github.com/Barlows/ha-anenji-6200/releases/latest).
 2. Скопіюйте `custom_components/eybond_local/` у `config/custom_components/`.
 3. Перезапустіть Home Assistant.
 4. Додайте **EyeBond Local** через **Налаштування → Пристрої та служби**.
@@ -152,7 +183,7 @@ Assistant; після заміни Python-файлів перезавантаж�
 до наступного релізу.
 
 1. Створіть резервну копію конфігурації Home Assistant.
-2. Завантажте архів поточної [гілки `main`](https://github.com/groove-max/ha-eybond-local/archive/refs/heads/main.zip).
+2. Завантажте архів поточної [гілки `main`](https://github.com/Barlows/ha-anenji-6200/archive/refs/heads/main.zip) цього форку.
 3. Видаліть наявну папку `config/custom_components/eybond_local/`, а потім
    скопіюйте туди всю папку з архіву. Не змішуйте файли з різних збірок.
 4. Перезапустіть Home Assistant і перевірте записи EyeBond Local.
@@ -316,7 +347,7 @@ Modbus-пристрої можуть оновлюватися частіше, н
 1. Відкрийте інтеграцію в **Налаштування → Пристрої та служби**.
 2. Натисніть **Налаштувати → Діагностика та сервісні інструменти**.
 3. Натисніть **Створити архів підтримки**.
-4. Відкрийте [звернення на GitHub](https://github.com/groove-max/ha-eybond-local/issues) і прикріпіть ZIP.
+4. Відкрийте [звернення на GitHub у цьому форку](https://github.com/Barlows/ha-anenji-6200/issues) і прикріпіть ZIP.
 
 Архів підтримки — найкращий спосіб повідомити про непідтримуване обладнання, помилку налаштування, відсутні сенсори або відсутнє керування.
 
