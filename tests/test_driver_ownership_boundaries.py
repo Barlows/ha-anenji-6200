@@ -577,15 +577,29 @@ class RegistrySupportMarkerFailsHonestlyGuard(unittest.TestCase):
         # as "no marker": it propagates out of the registry dispatch.
         import custom_components.eybond_local.drivers.registry as registry_module
 
-        original = registry_module.get_driver
-        registry_module.get_driver = lambda key: (
-            _RaisingDriver() if key == "raising_test" else original(key)
-        )
+        # support_marker resolves get_driver from its own __globals__, which is
+        # the module dict of the registry instance that defined it. Another test
+        # harness may have left a stub or a second registry module object
+        # behind, so rebind on the defining function's own globals and fall
+        # back to the current module attribute when that binding is absent.
+        function_globals = registry_module.support_marker.__globals__
+        had_binding = "get_driver" in function_globals
+        original = function_globals.get("get_driver", registry_module.get_driver)
+
+        def fake_get_driver(key):
+            if key == "raising_test":
+                return _RaisingDriver()
+            return original(key)
+
+        function_globals["get_driver"] = fake_get_driver
         try:
             with self.assertRaisesRegex(RuntimeError, "driver_support_marker_defect"):
                 registry_module.support_marker("raising_test", variant_key="x")
         finally:
-            registry_module.get_driver = original
+            if had_binding:
+                function_globals["get_driver"] = original
+            else:
+                function_globals.pop("get_driver", None)
 
 
 if __name__ == "__main__":

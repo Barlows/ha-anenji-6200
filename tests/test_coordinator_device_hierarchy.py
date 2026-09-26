@@ -223,6 +223,18 @@ def _install_coordinator_stubs() -> None:
     control_policy.controls_summary = lambda *args, **kwargs: ""
 
     drivers_registry = ensure_module("custom_components.eybond_local.drivers.registry")
+    # ensure_module() returns the REAL module when one is already imported, so
+    # these doubles overwrite production functions on the live module object.
+    # Record the originals once so the harness can put them back; without that,
+    # every later test module sees a registry whose get_driver() always
+    # returns None and whose support_marker() is a stub that never dispatches.
+    _MUTATED_REGISTRY_ATTRS.setdefault("originals", {}).update(
+        {
+            name: getattr(drivers_registry, name)
+            for name in ("get_driver", "all_write_capabilities", "support_marker")
+            if name not in _MUTATED_REGISTRY_ATTRS.get("originals", {})
+        }
+    )
     drivers_registry.get_driver = lambda *args, **kwargs: None
     drivers_registry.all_write_capabilities = lambda *args, **kwargs: []
     # A realistic test double for the neutral policy resolver: mirrors what each
@@ -732,6 +744,22 @@ def _install_coordinator_stubs() -> None:
     support_diagnostic_runner.DiagnosticSingleFlight = DiagnosticSingleFlight
     support_diagnostic_runner.run_scenario = run_scenario
 
+# Production attributes this harness overwrites on the real drivers.registry
+# module. Captured on first use and restored in tearDownClass.
+_MUTATED_REGISTRY_ATTRS: dict[str, dict[str, object]] = {}
+
+
+def _restore_mutated_registry() -> None:
+    """Put back the real drivers.registry functions this harness replaced."""
+
+    registry = sys.modules.get("custom_components.eybond_local.drivers.registry")
+    originals = _MUTATED_REGISTRY_ATTRS.get("originals") or {}
+    if registry is None:
+        return
+    for name, value in originals.items():
+        setattr(registry, name, value)
+
+
 _STUBBED_MODULE_NAMES: tuple[str, ...] = (
     "custom_components",
     "custom_components.eybond_local",
@@ -867,6 +895,10 @@ class CoordinatorDeviceHierarchyTests(unittest.TestCase):
             name: sys.modules.pop(name, None) for name in _STUBBED_MODULE_NAMES
         }
         _install_coordinator_stubs()
+        # Register the restore up front: if any import below raises, tearDownClass
+        # never runs and the real drivers.registry would keep the harness doubles
+        # for the rest of the process.
+        cls.addClassCleanup(_restore_mutated_registry)
 
         coordinator_module = importlib.import_module(
             "custom_components.eybond_local.runtime.coordinator.root"
@@ -937,6 +969,7 @@ class CoordinatorDeviceHierarchyTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
+        _restore_mutated_registry()
         for name in reversed(_STUBBED_MODULE_NAMES):
             original = cls._saved_modules.get(name)
             if original is None:

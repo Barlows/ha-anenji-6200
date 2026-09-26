@@ -14,6 +14,32 @@ onto upstream `main`, so the version history below this section is upstream's
 own changelog, carried through unchanged. This section covers only what's
 different in this fork, most recent first:
 
+- **2026-09-26** — Stopped the stub-based test harnesses from leaking test
+  doubles into the real integration modules. The shared `ensure_module()`
+  helper only consulted `sys.modules`, so the first test to ask for a
+  not-yet-imported name installed an empty synthetic module that then
+  shadowed the real one for the rest of the process; harnesses patched a few
+  attributes onto a blank object and every later test that imported that
+  module failed with `ImportError: cannot import name ... (unknown location)`.
+  It now attempts the real import first and only synthesises a module when
+  there is genuinely nothing to import (the `homeassistant.*` stubs, which do
+  not exist in this repository). That exposed a second leak: the coordinator
+  harness overwrote `get_driver`, `all_write_capabilities` and
+  `support_marker` on what is now the real `drivers.registry` and never
+  restored them, so every later suite ran against a registry whose
+  `get_driver()` always returned `None` and whose `support_marker()` was a
+  stub that never dispatched. The originals are captured once and restored,
+  with the restore registered via `addClassCleanup` so it still runs when
+  `setUpClass` raises partway through (`tearDownClass` is skipped in that
+  case). Two further tests were corrected: one rebound `get_driver` on the
+  module object although `support_marker` resolves that name from its own
+  `__globals__`, and one patched an attribute on `support.download`, a
+  submodule nothing had imported, which `mock.patch` cannot reach because it
+  walks attributes on already-imported packages. Full suite: 46 failures down
+  to 22, 24 tests fixed and none newly broken, verified by diffing the
+  failure set against unmodified `main`. Of the 22 remaining, 12 are only a
+  missing `aiohttp` in the development container; the other 10 are
+  pre-existing, order-dependent, and not addressed here.
 - **2026-09-25** — Fixed three test-infrastructure defects found by actually
   running the full suite rather than reading it: seven test modules imported
   from `helpers` above the `sys.path` guard meant to make that import work

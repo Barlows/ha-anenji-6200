@@ -14,6 +14,21 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
+def _bind_support_download() -> None:
+    """Import ``support.download`` so mock.patch can reach an attribute on it.
+
+    mock.patch resolves a dotted target by walking attributes on packages that
+    are already imported; it does not import submodules itself. Importing at
+    module scope would drag in the real ``aiohttp`` dependency, so this runs
+    inside the tests that actually patch that module.
+    """
+
+    __import__(
+        "custom_components.eybond_local.support.download",
+        fromlist=["async_register_download_views"],
+    )
+
+
 def _install_homeassistant_entity_registry_stub() -> None:
     """Provide the HA entity-registry module for local pure-unit runs."""
 
@@ -2088,7 +2103,13 @@ class SetupOwnershipOrderingTests(unittest.TestCase):
 
     FULL_PN = "V001020SYN62344022"
 
-    def _run_setup_with_registry(self, entry_data, registry, coordinator_probe):
+    def _run_setup_with_registry(self, *args, **kwargs):
+        # mock.patch cannot reach a submodule nothing has imported; bind
+        # support.download before the patch context below patches it.
+        _bind_support_download()
+        return self._run_setup_with_registry_inner(*args, **kwargs)
+
+    def _run_setup_with_registry_inner(self, entry_data, registry, coordinator_probe):
         async def _run() -> None:
             async def async_add_executor_job(func, *args):
                 return func(*args)
@@ -2176,6 +2197,9 @@ class SetupOwnershipOrderingTests(unittest.TestCase):
                 patch("custom_components.eybond_local._async_cleanup_obsolete_entities", new=AsyncMock()),
                 patch("custom_components.eybond_local._async_finalize_expert_entity_migration", new=AsyncMock()),
                 patch("custom_components.eybond_local._async_ensure_listener_entry", new=AsyncMock()),
+                # mock.patch walks attributes on already-imported packages, so
+                # it cannot reach a submodule nothing has imported. Bind
+                # support.download before patching an attribute on it.
                 patch("custom_components.eybond_local.support.download.async_register_download_views"),
                 patch("custom_components.eybond_local.entity_setup_context", return_value=(None, None, False)),
                 patch.dict(
