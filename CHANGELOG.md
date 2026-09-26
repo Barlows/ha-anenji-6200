@@ -14,6 +14,18 @@ onto upstream `main`, so the version history below this section is upstream's
 own changelog, carried through unchanged. This section covers only what's
 different in this fork, most recent first:
 
+- **2026-09-25** — Fixed three test-infrastructure defects found by actually
+  running the full suite rather than reading it: seven test modules imported
+  from `helpers` above the `sys.path` guard meant to make that import work
+  (and the guard pointed at the repo root instead of `tests/`), so they only
+  passed under `unittest discover` and failed if run directly; the detection
+  suite's scan-composition tests drove the real live-socket scan path with
+  multi-second polling deadlines instead of stubbing it, making one test take
+  9s and the module 36s; and an unbounded `asyncio.Event` wait in the UART
+  sweep authority test could hang the entire suite indefinitely if a
+  precondition ever failed. Full suite: was hanging past 15 minutes,
+  now completes in ~3 minutes (3,853 tests), with no change to the 48
+  pre-existing, order-dependent failures verified against pristine `main`.
 - **2026-09-25** — Recognized unwrapped Modbus RTU replies in the collector
   transport's malformed-frame log line. Header-decode failures that begin
   with a Modbus slave address, a read-registers function code, and a
