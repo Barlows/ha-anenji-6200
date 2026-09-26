@@ -14,6 +14,21 @@ onto upstream `main`, so the version history below this section is upstream's
 own changelog, carried through unchanged. This section covers only what's
 different in this fork, most recent first:
 
+- **2026-09-26** — Documented that the unit suite requires the two libraries
+  in `requirements-test.txt` (`aiohttp`, `voluptuous`). Both are imported at
+  module scope by production modules the stub-based suite cannot fake:
+  `aiohttp` by `support/download.py` and `voluptuous` by `config_flow.py`.
+  Running the suite without them is worse than skipping a few tests.
+  `test_config_flow` installs nine `homeassistant.*` fakes into `sys.modules`
+  and *then* fails on the `aiohttp` import, so the half-initialised state
+  survives into every module that runs afterwards. That is what produced a
+  misleading spread of order-dependent failures, including
+  `TypeError: WriteCapability() takes no arguments`, a cascade of
+  `ImportError: cannot import name ... (unknown location)`, and assertion
+  failures in driver and catalog tests that all trace back to the one missing
+  library. With both installed the suite is fully green: 4,596 tests, 0
+  failures. No production code changed; the fix is to install the documented
+  test requirements.
 - **2026-09-26** — Stopped the stub-based test harnesses from leaking test
   doubles into the real integration modules. The shared `ensure_module()`
   helper only consulted `sys.modules`, so the first test to ask for a
