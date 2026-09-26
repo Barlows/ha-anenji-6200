@@ -3246,6 +3246,12 @@ class RuntimeStateMachineTests(unittest.TestCase):
         )
         hub._link_manager = _FakeLinkManager()
         hub.set_callback_ownership(None, "entry-runtime-state-machine")
+        # The UART-sweep authority keys on this attribute (detection.py reads
+        # `_collector_operation_entry_id`). Production sets it during
+        # ownership handover; without it the hub keys on "" and an acquire
+        # against "entry-runtime-state-machine" targets a different owner
+        # slot than the sweep actually holds.
+        hub._collector_operation_entry_id = "entry-runtime-state-machine"
         return hub
 
     def _inverter(
@@ -3854,7 +3860,10 @@ class RuntimeStateMachineTests(unittest.TestCase):
                         detection_generation=7
                     )
                 )
-                await entered.wait()
+                # Bounded: an unbounded wait turns any precondition failure
+                # (stale process-global state from another module, a changed
+                # guard) into a suite-wide hang instead of a clear failure.
+                await asyncio.wait_for(entered.wait(), timeout=5.0)
                 self.assertEqual(
                     COLLECTOR_ENDPOINT_OPERATION_AUTHORITY.active_operation(
                         "entry-runtime-state-machine"

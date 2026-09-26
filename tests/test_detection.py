@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from pathlib import Path
 import sys
 import types
 import unittest
+from typing import Iterator
 from unittest.mock import AsyncMock, patch
 
 
@@ -31,6 +33,49 @@ from custom_components.eybond_local.models import (
 )
 from custom_components.eybond_local.drivers.smg import SmgModbusDriver
 from custom_components.eybond_local.collector.discovery import DiscoveryProbeResult
+
+
+class _NoFanoutListener:
+    """Stand-in for the shared scan listener that yields no extra callback IPs.
+
+    The real listener is a live socket, and both the broadcast-expansion
+    identity window and the fan-out settle poll run wall-clock waits against
+    it. Unit tests that assert scan composition, not fan-out timing, must not
+    pay that cost or risk blocking the suite.
+    """
+
+    def matching_callback_ips(self, collector_ip: str) -> tuple[str, ...]:
+        return ()
+
+
+@contextmanager
+def no_network_waits(detector: OnboardingDetector) -> Iterator[None]:
+    """Stub the live-socket scan paths so a unit test performs no real waiting.
+
+    ``async_scan`` acquires a shared listener socket, runs a silent-session
+    identity window in 0.05s poll steps, and polls for fan-out targets until a
+    multi-second deadline. Tests that assert scan *composition* must not pay
+    that wall-clock cost, and under full-suite load those waits are what turn
+    into an apparent hang.
+    """
+    with (
+        patch(
+            "custom_components.eybond_local.onboarding.eybond._acquire_shared_listener",
+            new=AsyncMock(return_value=_NoFanoutListener()),
+            create=True,
+        ),
+        patch(
+            "custom_components.eybond_local.onboarding.eybond._release_shared_listener",
+            new=AsyncMock(),
+            create=True,
+        ),
+        patch.object(
+            detector,
+            "_async_wait_for_fanout_targets",
+            new=AsyncMock(return_value=()),
+        ),
+    ):
+        yield
 
 
 class DetectionTests(unittest.IsolatedAsyncioTestCase):
@@ -351,6 +396,7 @@ class DetectionTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
+            no_network_waits(detector),
             patch.object(
                 detector,
                 "_async_detect_targets",
@@ -407,17 +453,39 @@ class DetectionTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
+            no_network_waits(detector),
             patch.object(
                 detector,
                 "_async_detect_targets",
                 new=AsyncMock(
-                    side_effect=[(broadcast_result,), (fallback_result,)]
+                    # async_scan calls _async_detect_targets for the broadcast
+                    # target and again for the unicast fallback. A two-item
+                    # side_effect list left the second call to raise
+                    # StopIteration, so return the same two results for every
+                    # call and let the assertions below pin the real behaviour.
+                    return_value=(broadcast_result, fallback_result),
                 ),
             ) as detect_targets,
             patch(
                 "custom_components.eybond_local.onboarding.eybond.async_probe_fallback_targets",
                 new=AsyncMock(return_value=(DiscoveryTarget(ip="192.168.1.14", source="subnet_unicast"),)),
             ) as probe_targets,
+            patch.object(
+                # Broadcast expansion runs a real silent-session identity
+                # window (0.05s poll steps to a 3s ceiling) against live
+                # sockets. Not what this test is asserting; stub it so the
+                # unit test does no network waiting. It must still return the
+                # broadcast target PLUS the unicast target the real expansion
+                # would have learned, otherwise the fallback is never scanned.
+                detector,
+                "_async_expand_broadcast_targets",
+                new=AsyncMock(
+                    return_value=(
+                        DiscoveryTarget(ip="192.168.1.255", source="broadcast"),
+                        DiscoveryTarget(ip="192.168.1.14", source="subnet_unicast"),
+                    ),
+                ),
+            ),
             patch(
                 "custom_components.eybond_local.onboarding.eybond.async_send_callback_trigger_replies",
                 new=AsyncMock(
@@ -581,6 +649,7 @@ class DetectionTests(unittest.IsolatedAsyncioTestCase):
         fake_listener = FakeListener()
 
         with (
+            no_network_waits(detector),
             patch.object(
                 detector,
                 "_async_detect_targets",
@@ -666,6 +735,7 @@ class DetectionTests(unittest.IsolatedAsyncioTestCase):
         detector = OnboardingDetector(server_ip="192.168.1.50")
 
         with (
+            no_network_waits(detector),
             patch.object(
                 detector,
                 "_async_detect_targets",
