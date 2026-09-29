@@ -21,6 +21,15 @@ from ...collector_identity import (
     reconcile_pn,
     validated_collector_pn,
 )
+from ...const import (
+    AT_TEXT_MIXED_FRAME_READ_TIMEOUT,
+    AT_TEXT_RESPONSE_IDLE_TIMEOUT,
+    MAX_BOUNDED_WRITE_TIMEOUT,
+    MAX_TASK_CANCEL_ATTEMPTS,
+    MIN_BOUNDED_WRITE_TIMEOUT,
+    TASK_CANCEL_JOIN_TIMEOUT,
+    WRITER_CLOSE_TIMEOUT,
+)
 from ...link_models import EybondLinkRoute, LinkRoute, RawSerialLinkRoute
 from ...link_transport import PayloadLinkTransport
 from ...models import CollectorInfo
@@ -92,7 +101,7 @@ def _spawn_tracked_task(coro: Any, *, name: str) -> "asyncio.Task[Any]":
 # Bounds every writer teardown: wait_closed() on a peer that vanished with
 # unflushed data (collector rebooting mid-frame) otherwise blocks until the
 # OS-level TCP timeout — minutes, observed hanging Home Assistant shutdown.
-_WRITER_CLOSE_TIMEOUT = 5.0
+# (_WRITER_CLOSE_TIMEOUT is imported from const.py)
 
 
 async def _cancel_and_join_task(task: "asyncio.Task[Any]") -> None:
@@ -108,9 +117,9 @@ async def _cancel_and_join_task(task: "asyncio.Task[Any]") -> None:
     attempts = 0
     while not task.done():
         task.cancel()
-        await asyncio.wait({task}, timeout=0.25)
+        await asyncio.wait({task}, timeout=TASK_CANCEL_JOIN_TIMEOUT)
         attempts += 1
-        if attempts >= 20 and not task.done():
+        if attempts >= MAX_TASK_CANCEL_ATTEMPTS and not task.done():
             # A task that survives 20 cancellations is swallowing
             # CancelledError; waiting longer would recreate the very hang
             # this helper exists to prevent. Log a warning so the
@@ -221,8 +230,8 @@ def _short_ascii(value: bytes, *, limit: int = 160) -> str:
     return text
 
 
-_AT_TEXT_MIXED_FRAME_READ_TIMEOUT = 0.05
-_AT_TEXT_RESPONSE_IDLE_TIMEOUT = 0.2
+# (_AT_TEXT_MIXED_FRAME_READ_TIMEOUT and _AT_TEXT_RESPONSE_IDLE_TIMEOUT
+# are imported from const.py)
 _AT_TEXT_MAX_MIXED_FRAME_PAYLOAD_LEN = MAX_EYBOND_PAYLOAD_SIZE
 _AT_TEXT_MIXED_FRAME_FCODES = RUNTIME_EYBOND_FCODES
 
@@ -326,7 +335,7 @@ def _collector_pn_from_initial_chunk(chunk: bytes) -> tuple[str, str]:
 
 
 def _bounded_write_timeout(request_timeout: float) -> float:
-    return max(0.5, min(float(request_timeout), 1.5))
+    return max(MIN_BOUNDED_WRITE_TIMEOUT, min(float(request_timeout), MAX_BOUNDED_WRITE_TIMEOUT))
 
 
 def _parse_ip_address(value: str) -> ipaddress._BaseAddress | None:

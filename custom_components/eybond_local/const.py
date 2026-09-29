@@ -223,3 +223,153 @@ SERVICE_SET_COLLECTOR_SERVER_ENDPOINT = "set_collector_server_endpoint"
 SERVICE_START_PROXY_CAPTURE = "start_proxy_capture"
 SERVICE_STOP_PROXY_CAPTURE = "stop_proxy_capture"
 SERVICE_RUN_DIAGNOSTIC_COMMANDS = "run_diagnostic_commands"
+
+
+# --- Collector listener session inventory -------------------------------------
+
+# Maximum number of session inventory entries retained for diagnostics.
+# Older entries are evicted FIFO when this limit is exceeded.
+MAX_SESSION_INVENTORY = 20
+
+# Maximum number of unclaimed collector sockets held open (parked) simultaneously.
+# Closing unclaimed sockets causes collector firmware to redial within seconds,
+# producing a connect/close loop. Parking keeps them claimable by a later scan.
+MAX_PARKED_SOCKETS = 8
+
+# Time-to-live for parked sockets in seconds. After this duration, the socket
+# is closed as a natural refresh point.
+PARKED_SOCKET_TTL_SECONDS = 900.0
+
+# Maximum bytes of initial data buffered from a parked socket for identity
+# classification. Prevents unbounded memory growth from a silent or slow peer.
+PARKED_IDENTITY_BUFFER_LIMIT = 512
+
+# Timeout (seconds) for wait_until_connected after activating a pending socket.
+# Short timeout: the connection is already established; this is just a readiness
+# check before spawning the session task.
+WAIT_UNTIL_CONNECTED_TIMEOUT = 0.1
+
+# Timeout (seconds) for reading the initial chunk from a pending socket.
+# Bounds how long the listener waits for the first bytes to classify the wire.
+PENDING_INITIAL_CHUNK_READ_TIMEOUT = 0.25
+
+# Timeout (seconds) for reading the remainder of a partial framed message.
+# Allows the collector to complete a split frame without blocking routing.
+PENDING_FRAME_COMPLETION_TIMEOUT = 0.5
+
+# Timeout (seconds) for draining the writer during identity probe.
+# Bounds the drain operation to prevent indefinite blocking on a slow peer.
+IDENTITY_PROBE_DRAIN_TIMEOUT = 1.5
+
+# Timeout (seconds) for reading the identity probe response.
+# Bounds the read operation to prevent indefinite blocking on a silent peer.
+IDENTITY_PROBE_READ_TIMEOUT = 1.5
+
+# Timeout (seconds) for reading from a parked socket during watch loop.
+# Capped at 30 seconds to ensure the TTL deadline is checked regularly.
+PARKED_SOCKET_READ_TIMEOUT = 30.0
+
+# Buffer size (bytes) for reading from a parked socket.
+# Small enough to be responsive, large enough to capture identity frames.
+PARKED_SOCKET_READ_SIZE = 256
+
+# Buffer size (bytes) for reading the initial chunk from a pending socket.
+# Sized to capture a complete EyeBond header plus some payload.
+PENDING_INITIAL_CHUNK_READ_SIZE = 64
+
+
+# --- Collector transport common constants -------------------------------------
+
+# Timeout (seconds) for closing a stream writer. Prevents inheriting a dead
+# peer's TCP timeout (minutes) during shutdown.
+WRITER_CLOSE_TIMEOUT = 5.0
+
+# Timeout (seconds) for waiting on a task cancellation during cleanup.
+# Short timeout to avoid blocking shutdown while still allowing graceful exit.
+TASK_CANCEL_JOIN_TIMEOUT = 0.25
+
+# Maximum number of cancel attempts before abandoning a task join.
+# A task surviving this many cancellations is likely swallowing CancelledError.
+MAX_TASK_CANCEL_ATTEMPTS = 20
+
+# Timeout (seconds) for reading a mixed AT/framed message from the collector.
+# Short timeout to detect idle gaps in AT responses without blocking.
+AT_TEXT_MIXED_FRAME_READ_TIMEOUT = 0.05
+
+# Timeout (seconds) for detecting an idle gap in an AT response.
+# Some collector firmware omits CR/LF; this idle gap is the framing boundary.
+AT_TEXT_RESPONSE_IDLE_TIMEOUT = 0.2
+
+# Minimum timeout (seconds) for a bounded write operation.
+MIN_BOUNDED_WRITE_TIMEOUT = 0.5
+
+# Maximum timeout (seconds) for a bounded write operation.
+MAX_BOUNDED_WRITE_TIMEOUT = 1.5
+
+
+# --- Polling constants -------------------------------------------------------
+
+# Weight for the previous EWMA value in poll duration smoothing.
+# 0.7 gives more weight to historical data, smoothing out transient spikes.
+POLL_DURATION_EWMA_PREVIOUS_WEIGHT = 0.7
+
+# Weight for the current duration in poll duration smoothing.
+# 0.3 gives less weight to the current sample, reducing noise.
+POLL_DURATION_EWMA_CURRENT_WEIGHT = 0.3
+
+
+# --- Shadow learning backend constants ---------------------------------------
+
+# Maximum number of distinct value samples kept per register in the in-memory
+# read map. Bounds memory growth while preserving recent history.
+READ_SAMPLE_LIMIT = 8
+
+# Maximum number of distinct field samples kept per ASCII command.
+# Bounds memory growth while preserving recent field history.
+ASCII_FIELD_SAMPLE_LIMIT = 8
+
+# Buffer size (bytes) for reading from the shadow learning client.
+# Large enough to capture complete frames in a single read.
+SHADOW_CLIENT_READ_SIZE = 4096
+
+# Minimum buffer size (bytes) before attempting to parse an ASCII frame.
+# Frames shorter than this are incomplete and should wait for more data.
+ASCII_FRAME_MIN_BUFFER_SIZE = 64
+
+# Maximum frame size (bytes) for an ASCII frame. Frames exceeding this are
+# rejected as malformed to prevent unbounded buffer growth.
+ASCII_FRAME_MAX_SIZE = 128
+
+
+# --- Modbus constants --------------------------------------------------------
+
+# Number of retry attempts for a Modbus read operation.
+# One retry handles transient errors like CRC mismatch or short responses.
+MODBUS_READ_RETRY_ATTEMPTS = 2
+
+# Delay (seconds) between Modbus read retry attempts.
+# Short delay to recover from transient bus errors without excessive waiting.
+MODBUS_READ_RETRY_DELAY = 0.15
+
+
+# --- EyeBond G-ASCII driver constants ----------------------------------------
+
+# Timeout (seconds) for the G-ASCII probe operation.
+# Generous timeout to accommodate slow inverters during initial detection.
+G_ASCII_PROBE_TIMEOUT = 12.0
+
+# Timeout (seconds) for the G-ASCII signature probe operation.
+# Shorter timeout for signature detection after initial probe.
+G_ASCII_SIGNATURE_TIMEOUT = 4.0
+
+# Maximum number of concurrent G-ASCII commands.
+# Limits bus contention and prevents overwhelming the inverter.
+G_ASCII_MAX_CONCURRENT_COMMANDS = 3
+
+# Number of consecutive timeouts before suppressing a readback command.
+# Prevents repeatedly timing out on a failing command.
+READBACK_TIMEOUT_SUPPRESSION_THRESHOLD = 3
+
+# Backoff duration (seconds) after an optional command times out.
+# Prevents repeated timeouts on a command that is not responding.
+OPTIONAL_COMMAND_TIMEOUT_BACKOFF_SECONDS = 600.0

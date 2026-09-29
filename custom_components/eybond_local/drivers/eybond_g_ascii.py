@@ -10,6 +10,13 @@ from pathlib import Path
 import time
 from typing import Any
 
+from ..const import (
+    G_ASCII_MAX_CONCURRENT_COMMANDS,
+    G_ASCII_PROBE_TIMEOUT,
+    G_ASCII_SIGNATURE_TIMEOUT,
+    OPTIONAL_COMMAND_TIMEOUT_BACKOFF_SECONDS,
+    READBACK_TIMEOUT_SUPPRESSION_THRESHOLD,
+)
 from ..eybond_g_ascii_settings import (
     G_ASCII_SETTINGS_BY_VALUECLOUD_FIELD,
     GAsciiSettingDefinition,
@@ -152,8 +159,8 @@ class EybondGAsciiDriver(InverterDriver):
 
     key = _EYBOND_G_ASCII_DRIVER_KEY
     name = "EyeBond G-ASCII"
-    probe_timeout = 12.0
-    signature_timeout = 4.0
+    probe_timeout = G_ASCII_PROBE_TIMEOUT
+    signature_timeout = G_ASCII_SIGNATURE_TIMEOUT
     probe_targets = _EYBOND_G_ASCII_PROBE_TARGETS
     measurements = _eybond_g_ascii_measurements()
     binary_sensors = _eybond_g_ascii_binary_sensors()
@@ -699,7 +706,7 @@ async def _async_collect_eybond_g_ascii_secondary_values(
     *,
     runtime_state: dict[str, Any] | None = None,
 ) -> None:
-    semaphore = asyncio.Semaphore(3)
+    semaphore = asyncio.Semaphore(G_ASCII_MAX_CONCURRENT_COMMANDS)
 
     async def _fetch(command: str) -> tuple[str, str]:
         async with semaphore:
@@ -1017,7 +1024,7 @@ async def _async_collect_g_ascii_capability_readbacks(
         _set_capability_label(values, capability, cloud_value)
 
 
-_READBACK_TIMEOUT_SUPPRESSION_THRESHOLD = 3
+# (_READBACK_TIMEOUT_SUPPRESSION_THRESHOLD is imported from const.py)
 
 
 async def _capability_readback_request(
@@ -1473,7 +1480,7 @@ def _record_g_ascii_runtime_command_timing(
     values["eybond_g_ascii_runtime_command_count"] = len(timings)
 
 
-_OPTIONAL_COMMAND_TIMEOUT_BACKOFF_SECONDS = 600.0
+# (_OPTIONAL_COMMAND_TIMEOUT_BACKOFF_SECONDS is imported from const.py)
 
 
 def _bms_communication_readback_state(values: dict[str, Any]) -> bool | None:

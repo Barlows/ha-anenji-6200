@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
+from ..const import MODBUS_READ_RETRY_ATTEMPTS, MODBUS_READ_RETRY_DELAY
 from ..link_models import EybondLinkRoute, LinkRoute
 from ..link_transport import (
     PayloadLinkTransport,
@@ -412,7 +413,7 @@ class ModbusSession:
 
         request = build_read_request(self._slave_id, address, count, function=function)
         last_error: ModbusError | None = None
-        for attempt in range(2):
+        for attempt in range(MODBUS_READ_RETRY_ATTEMPTS):
             try:
                 response = await async_send_payload(
                     self._transport,
@@ -422,7 +423,7 @@ class ModbusSession:
             except asyncio.TimeoutError as exc:
                 last_error = ModbusError("request_timeout")
                 if attempt == 0:
-                    await asyncio.sleep(0.15)
+                    await asyncio.sleep(MODBUS_READ_RETRY_DELAY)
                     continue
                 raise last_error from exc
             try:
@@ -435,7 +436,7 @@ class ModbusSession:
             except ModbusError as exc:
                 last_error = exc
                 if attempt == 0 and _is_retryable_read_error(exc):
-                    await asyncio.sleep(0.15)
+                    await asyncio.sleep(MODBUS_READ_RETRY_DELAY)
                     continue
                 raise
         raise last_error or ModbusError("read_failed")

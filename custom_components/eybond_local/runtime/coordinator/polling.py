@@ -19,10 +19,13 @@ from ...const import (
     DEFAULT_POLL_INTERVAL,
     DEFAULT_POLL_MODE,
     DOMAIN,
+    POLL_DURATION_EWMA_CURRENT_WEIGHT,
+    POLL_DURATION_EWMA_PREVIOUS_WEIGHT,
     POLL_MODE_AUTO,
     POLL_MODE_MANUAL,
 )
 from ...drivers.registry import poll_policy_for_driver_key
+from ...integration_sensor_precision import _async_self_heal_sensor_display_precision
 from ...models import RuntimeSnapshot
 from .poll_projection import (
     COLLECTOR_POLL_CONTEXT_RUNTIME as _COLLECTOR_POLL_CONTEXT_RUNTIME,
@@ -323,7 +326,8 @@ class CoordinatorPollingMixin:
                 self._poll_duration_ewma_seconds = duration
             else:
                 self._poll_duration_ewma_seconds = (
-                    current_ewma * 0.7 + duration * 0.3
+                    current_ewma * POLL_DURATION_EWMA_PREVIOUS_WEIGHT
+                    + duration * POLL_DURATION_EWMA_CURRENT_WEIGHT
                 )
             recent = getattr(self, "_poll_recent_durations_seconds", None)
             if recent is None:
@@ -690,10 +694,6 @@ class CoordinatorPollingMixin:
         snapshot.values.update(self._tooling_values)
         snapshot.values.update(await self._proxy_capture_values(snapshot))
         self._prune_collector_values_for_connection(snapshot)
-        from ...integration_sensor_precision import (
-            _async_self_heal_sensor_display_precision,
-        )
-
         await _async_self_heal_sensor_display_precision(self.hass, self.config_entry)
         self._sync_inverter_protocol_ambiguity_notification()
         self.async_sync_device_registry(snapshot)

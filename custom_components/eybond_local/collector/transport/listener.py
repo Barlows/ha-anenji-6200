@@ -15,6 +15,20 @@ from ...collector_identity import (
     reconcile_pn,
     validated_collector_pn,
 )
+from ...const import (
+    IDENTITY_PROBE_DRAIN_TIMEOUT,
+    IDENTITY_PROBE_READ_TIMEOUT,
+    MAX_PARKED_SOCKETS,
+    MAX_SESSION_INVENTORY,
+    PARKED_IDENTITY_BUFFER_LIMIT,
+    PARKED_SOCKET_READ_SIZE,
+    PARKED_SOCKET_READ_TIMEOUT,
+    PARKED_SOCKET_TTL_SECONDS,
+    PENDING_FRAME_COMPLETION_TIMEOUT,
+    PENDING_INITIAL_CHUNK_READ_SIZE,
+    PENDING_INITIAL_CHUNK_READ_TIMEOUT,
+    WAIT_UNTIL_CONNECTED_TIMEOUT,
+)
 from ..identity_probe import (
     IdentityProbeRequest,
     build_identity_probe_request,
@@ -142,15 +156,15 @@ def _transparent_route_accepts_protocol_shape(
 
 
 class _SharedEybondListener:
-    _MAX_SESSION_INVENTORY = 20
     # Unclaimed collector callbacks are parked (held open passively) instead
     # of being closed: closing makes the collector firmware redial within
     # seconds, producing a permanent connect/close loop for collectors that
     # have no config entry. Parked sockets stay claimable by a later scan or
     # a newly added entry.
-    _MAX_PARKED_SOCKETS = 8
-    _PARKED_SOCKET_TTL_SECONDS = 900.0
-    _PARKED_IDENTITY_BUFFER_LIMIT = 512
+    _MAX_SESSION_INVENTORY = MAX_SESSION_INVENTORY
+    _MAX_PARKED_SOCKETS = MAX_PARKED_SOCKETS
+    _PARKED_SOCKET_TTL_SECONDS = PARKED_SOCKET_TTL_SECONDS
+    _PARKED_IDENTITY_BUFFER_LIMIT = PARKED_IDENTITY_BUFFER_LIMIT
 
     def __init__(self, *, host: str, port: int) -> None:
         self._host = host
@@ -1557,8 +1571,8 @@ class _SharedEybondListener:
                 break
             try:
                 data = await asyncio.wait_for(
-                    pending.reader.read(256),
-                    timeout=min(30.0, remaining),
+                    pending.reader.read(PARKED_SOCKET_READ_SIZE),
+                    timeout=min(PARKED_SOCKET_READ_TIMEOUT, remaining),
                 )
             except asyncio.TimeoutError:
                 continue
@@ -1985,7 +1999,7 @@ class _SharedEybondListener:
             ),
             name=f"collector_at_{remote_ip}",
         )
-        await connection.wait_until_connected(timeout=0.1)
+        await connection.wait_until_connected(timeout=WAIT_UNTIL_CONNECTED_TIMEOUT)
         return connection
 
     async def activate_pending_connection(
@@ -2046,7 +2060,7 @@ class _SharedEybondListener:
             ),
             name=f"collector_framed_{remote_ip}",
         )
-        await connection.wait_until_connected(timeout=0.1)
+        await connection.wait_until_connected(timeout=WAIT_UNTIL_CONNECTED_TIMEOUT)
         return connection
 
     async def _read_pending_initial_chunk(
@@ -2070,8 +2084,8 @@ class _SharedEybondListener:
             while True:
                 try:
                     chunk = await asyncio.wait_for(
-                        pending.reader.read(64),
-                        timeout=0.25,
+                        pending.reader.read(PENDING_INITIAL_CHUNK_READ_SIZE),
+                        timeout=PENDING_INITIAL_CHUNK_READ_TIMEOUT,
                     )
                     break
                 except asyncio.TimeoutError:
@@ -2108,7 +2122,7 @@ class _SharedEybondListener:
                     try:
                         chunk += await asyncio.wait_for(
                             pending.reader.readexactly(frame_len - len(chunk)),
-                            timeout=0.5,
+                            timeout=PENDING_FRAME_COMPLETION_TIMEOUT,
                         )
                     except asyncio.IncompleteReadError as exc:
                         chunk += exc.partial
@@ -2129,8 +2143,11 @@ class _SharedEybondListener:
         self._mark_session_state(pending.session_id, f"probing_identity_{session_protocol}")
         try:
             pending.writer.write(request.payload)
-            await asyncio.wait_for(pending.writer.drain(), timeout=1.5)
-            return await asyncio.wait_for(pending.reader.read(64), timeout=1.5)
+            await asyncio.wait_for(pending.writer.drain(), timeout=IDENTITY_PROBE_DRAIN_TIMEOUT)
+            return await asyncio.wait_for(
+                pending.reader.read(PENDING_INITIAL_CHUNK_READ_SIZE),
+                timeout=IDENTITY_PROBE_READ_TIMEOUT,
+            )
         except asyncio.TimeoutError:
             self._mark_session_state(pending.session_id, "identity_probe_timeout")
             return b""
@@ -2157,7 +2174,10 @@ class _SharedEybondListener:
             return known_pn
 
         try:
-            chunk = await asyncio.wait_for(pending.reader.read(64), timeout=0.25)
+            chunk = await asyncio.wait_for(
+                pending.reader.read(PENDING_INITIAL_CHUNK_READ_SIZE),
+                timeout=PENDING_INITIAL_CHUNK_READ_TIMEOUT,
+            )
         except asyncio.TimeoutError:
             chunk = b""
         except Exception:
@@ -2196,11 +2216,11 @@ class _SharedEybondListener:
         )
         try:
             pending.writer.write(request.payload)
-            await asyncio.wait_for(pending.writer.drain(), timeout=1.5)
+            await asyncio.wait_for(pending.writer.drain(), timeout=IDENTITY_PROBE_DRAIN_TIMEOUT)
             response, collector_pn, source = await self._read_identity_probe_response(
                 pending,
                 request,
-                timeout=1.5,
+                timeout=IDENTITY_PROBE_READ_TIMEOUT,
             )
         except asyncio.TimeoutError:
             self._mark_session_state(pending.session_id, "route_identity_probe_timeout")

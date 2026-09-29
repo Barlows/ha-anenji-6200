@@ -70,7 +70,9 @@ from .integration_registration import (
     _register_entry_network_reconcile,
     _register_entry_stop_shutdown,
 )
+from .passive_discovery import get_passive_callback_discovery
 from .platform_context import entity_setup_context
+from .runtime.coordinator import EybondLocalCoordinator
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -156,7 +158,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # reinterpret it as a normal PN-less collector or perform network I/O.
         raise ConfigEntryError("obsolete_pending_entry_not_removed")
 
-    from .runtime.coordinator import EybondLocalCoordinator
     from .services import async_setup_services
     from .support.download import async_register_download_views
 
@@ -247,8 +248,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # permanent removal. A later setup failure must leave the exact old socket
     # quarantined; otherwise it can leak into interactive discovery while the
     # entry itself is still unavailable.
-    from .passive_discovery import get_passive_callback_discovery
-
     discovery = get_passive_callback_discovery(hass)
     if discovery is not None:
         discovery.resume_entry_sessions(entry.entry_id)
@@ -265,8 +264,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Obsolete beta2 tombstone: it never started a coordinator or platforms.
         # Domain setup normally removes it before this hook can run.
         return True
-
-    from .runtime.coordinator import EybondLocalCoordinator
 
     coordinator: EybondLocalCoordinator = entry.runtime_data
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
@@ -292,7 +289,6 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
         REMOVAL_RESTART_CONFIRMED,
         async_finalize_collector_entry_removal,
     )
-    from .passive_discovery import get_passive_callback_discovery
     from .support.cloud_evidence import remove_cloud_evidence_for_entry
 
     discovery = get_passive_callback_discovery(hass)

@@ -15,7 +15,14 @@ from ...collector.protocol import (
     build_collector_request,
     decode_header,
 )
-from ...const import LOCAL_METADATA_DIR
+from ...const import (
+    ASCII_FIELD_SAMPLE_LIMIT,
+    ASCII_FRAME_MAX_SIZE,
+    ASCII_FRAME_MIN_BUFFER_SIZE,
+    LOCAL_METADATA_DIR,
+    READ_SAMPLE_LIMIT,
+    SHADOW_CLIENT_READ_SIZE,
+)
 from ...fixtures.utils import build_command_fixture_responses
 from ...payload.modbus import crc16_modbus
 from ..collector_cloud_proxy import JsonLineWriter
@@ -40,8 +47,7 @@ _ASCII_INCOMPLETE = object()
 _CLOUD_REDIRECT_AT_COMMAND_PREFIX = "CLDSRVHOST"
 
 # Bounded distinct value samples kept per register in the in-memory read map.
-_READ_SAMPLE_LIMIT = 8
-_ASCII_FIELD_SAMPLE_LIMIT = 8
+# (_READ_SAMPLE_LIMIT and _ASCII_FIELD_SAMPLE_LIMIT are imported from const.py)
 _G_ASCII_RUNTIME_FIELD_COMMANDS = {
     "eybond_g_ascii_gdat0_fields": "GPDAT0",
     "eybond_g_ascii_gpv_fields": "GPV",
@@ -558,7 +564,7 @@ class InProcessShadowLearningHandler:
         buffer = bytearray()
         try:
             while True:
-                chunk = await reader.read(4096)
+                chunk = await reader.read(SHADOW_CLIENT_READ_SIZE)
                 if not chunk:
                     break
                 buffer.extend(chunk)
@@ -1284,10 +1290,10 @@ def _consume_g_ascii_frame(buffer: bytearray) -> bytes | object | None:
         return None
     carriage = buffer.find(b"\r")
     if carriage < 0:
-        if len(buffer) < 64:
+        if len(buffer) < ASCII_FRAME_MIN_BUFFER_SIZE:
             return _ASCII_INCOMPLETE
         return None
-    if carriage > 128:
+    if carriage > ASCII_FRAME_MAX_SIZE:
         return None
     frame = bytes(buffer[: carriage + 1])
     body = frame[:-1]
