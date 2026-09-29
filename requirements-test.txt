@@ -21,3 +21,4 @@
 # with no Home Assistant coupling, so they can be bumped independently.
 aiohttp==3.13.3
 voluptuous==0.15.2
+hypothesis==6.112.1

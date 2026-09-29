@@ -154,3 +154,127 @@ Before opening a PR:
 ## License
 
 By contributing, you agree that your contributions will be licensed under [MPL-2.0](LICENSE), the same license as the rest of the project.
+
+---
+
+## Code Quality Standards
+
+These standards keep the codebase maintainable as it grows. They are enforced through code review and the quality gate.
+
+### Method and Class Length
+
+| Metric | Recommended | Hard Limit |
+|--------|-------------|------------|
+| Method length | ≤ 50 lines | ≤ 80 lines |
+| Class length | ≤ 500 lines | ≤ 800 lines |
+| Nesting depth | — | ≤ 4 levels |
+
+When a method or class exceeds the recommended length, consider extracting helper methods or splitting responsibilities. When it approaches the hard limit, it **must** be split.
+
+### Type Hints and Docstrings
+
+All public methods must have:
+
+- **Type hints** for parameters and return values
+- **Docstrings** describing purpose, parameters, and return values
+
+```python
+def read_register(self, address: int, count: int = 1) -> ReadResult:
+    """Read one or more holding registers.
+
+    Args:
+        address: The starting register address.
+        count: Number of registers to read (default 1).
+
+    Returns:
+        A ReadResult containing the raw register values.
+
+    Raises:
+        ModbusError: If the read operation fails.
+    """
+```
+
+### No Silent Failures
+
+Every error condition must be either **logged** or **raised** — never silently swallowed.
+
+```python
+# Bad — silent failure
+try:
+    result = parse_frame(data)
+except Exception:
+    return None
+
+# Good — log and re-raise
+try:
+    result = parse_frame(data)
+except ValueError as err:
+    LOGGER.warning("Failed to parse frame from %s: %s", peer_ip, err)
+    raise
+```
+
+### No God Objects
+
+When a class exceeds 500 lines or has more than ~15 public methods, split it by responsibility. Signs of a god object:
+
+- Mixing I/O, parsing, and business logic
+- Multiple unrelated constructor dependencies
+- Methods that only callers in one feature area use
+
+### Race Condition Prevention
+
+This integration deals with concurrent async I/O, UDP discovery, and TCP sessions. Follow these patterns:
+
+- **Use locks for shared mutable state.** The coordinator's runtime-operation lock is the model to follow.
+- **Never trust peer IP as identity.** Use the full collector PN (durable identity) via the session registry.
+- **One-shot triggers, not loops.** `callback_on_demand` sends exactly one UDP trigger per connect attempt — do not introduce continuous announcer loops.
+- **Fail closed at socket boundaries.** If a frame is malformed or truncated, close that socket and record a typed close reason. Never scan forward for convenient byte patterns.
+
+### Import Hygiene
+
+- **No circular dependencies.** If module A imports module B, module B must not import module A (directly or transitively through a chain).
+- **Layer dependencies flow downward only:** `transport → payload → driver → profile → register schema → HA entities`. Upper layers must never import from lower layers.
+- **No unused imports.** Remove imports that are no longer referenced.
+
+---
+
+## Refactoring Guidelines
+
+Refactoring is encouraged, but must be done carefully to avoid regressions.
+
+### Rules
+
+1. **Always run tests before and after.** The full suite must pass both before you start and after you finish:
+   ```bash
+   python3 -m unittest discover -s tests -v
+   python3 tools/quality_gate.py
+   ```
+
+2. **One refactoring per commit.** Do not mix refactoring with feature additions or bug fixes. This makes review and bisection possible.
+
+3. **Preserve behavior exactly.** Refactoring changes structure, not behavior. If you must change behavior, that is a separate commit with its own tests.
+
+4. **Add comments explaining WHY, not WHAT.** The code should be self-documenting for *what* it does. Comments should explain *why* a non-obvious approach was chosen:
+   ```python
+   # Bad — restates the code
+   # Increment the counter
+   counter += 1
+
+   # Good — explains the reasoning
+   # Compensate for the off-by-one in the PI30 protocol's
+   # register addressing (see SMG_PROTOCOL_MAPS.md)
+   counter += 1
+   ```
+
+5. **Update tests if behavior changes.** If a refactoring inadvertently changes behavior, the behavior change must be intentional, tested, and documented in the commit message.
+
+### Refactoring Checklist
+
+- [ ] Tests pass before starting
+- [ ] Only one refactoring in this commit
+- [ ] No behavior changes (or behavior changes are separately committed and tested)
+- [ ] New comments explain WHY, not WHAT
+- [ ] No new circular dependencies introduced
+- [ ] No god objects created or made worse
+- [ ] Tests pass after finishing
+- [ ] Quality gate passes after finishing
