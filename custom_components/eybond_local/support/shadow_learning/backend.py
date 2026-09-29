@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import asyncio
+import logging
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -27,6 +28,8 @@ from . import (
 from .protocol import resolve_shadow_learning_protocol_adapter
 from .read_evidence import ShadowReadRegisterEvidence, ShadowReadRoute
 
+
+logger = logging.getLogger(__name__)
 
 _SHADOW_TRACE_DIR = "shadow_learning_traces"
 _ASCII_INCOMPLETE = object()
@@ -268,6 +271,7 @@ class InProcessShadowLearningHandler:
         self._ascii_command_counts: dict[str, int] = {}
         self._ascii_field_samples: dict[str, list[str]] = {}
         self._read_event_count = 0
+        self._read_map_cache: dict[str, Any] | None = None
 
     @property
     def running(self) -> bool:
@@ -296,6 +300,9 @@ class InProcessShadowLearningHandler:
         live inverter — a single snapshot, flagged via ``value_source`` so
         downstream labeling never mistakes them for multi-snapshot evidence.
         """
+
+        if self._read_map_cache is not None:
+            return self._read_map_cache
 
         # Keep the historical address-only projection for diagnostics and
         # contribution compatibility.  Active read learning MUST consume only
@@ -361,6 +368,7 @@ class InProcessShadowLearningHandler:
                 for command, samples in sorted(self._ascii_field_samples.items())
             }
             payload["value_source"] = "seed_command_responses"
+        self._read_map_cache = payload
         return payload
 
     def _record_read_observation(
@@ -375,6 +383,7 @@ class InProcessShadowLearningHandler:
         values: list[int],
     ) -> None:
         self._read_event_count += 1
+        self._read_map_cache = None
         block_key = (
             devcode if type(devcode) is int else None,
             collector_addr if type(collector_addr) is int else None,
@@ -398,6 +407,7 @@ class InProcessShadowLearningHandler:
 
     def _record_ascii_read_observation(self, command: str, response_payload: bytes) -> None:
         self._read_event_count += 1
+        self._read_map_cache = None
         normalized = str(command or "").strip().upper()
         if not normalized:
             return
@@ -497,7 +507,11 @@ class InProcessShadowLearningHandler:
             except asyncio.CancelledError:
                 pass
             except Exception:
-                pass
+                logger.debug(
+                    "Task %s raised during stop: %s",
+                    task.get_name(),
+                    exc_info=True,
+                )
         self._tasks.clear()
 
         writer = self._writer

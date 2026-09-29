@@ -1101,6 +1101,11 @@ class _SharedEybondListener:
         # narrowing hint for an unidentified silent collector and can never claim
         # or disturb a socket already identified as a different collector.
         async with self._pending_route_lock:
+            # RACE FIX: Socket state could change between lock acquisition and
+            # claim. We re-validate that the socket is still registered and
+            # not reserved for a transparent route immediately before claiming.
+            # This prevents claiming a socket that was removed or reserved while
+            # we were waiting for the lock.
             normalized_session_id = str(session_id or "").strip()
             if normalized_session_id:
                 # The registry told us exactly which observed session is ours.
@@ -1110,7 +1115,10 @@ class _SharedEybondListener:
                 if self._reserved_for_transparent_route(pending):
                     return None
                 await self._pause_pending_sniff(pending)
+                # Re-validate after async pause: socket state may have changed
                 if not self._pending_socket_still_registered(pending):
+                    return None
+                if self._reserved_for_transparent_route(pending):
                     return None
                 return self._claim_pending_socket(pending)
 
@@ -1122,13 +1130,19 @@ class _SharedEybondListener:
                 if self._reserved_for_transparent_route(pending):
                     return None
                 await self._pause_pending_sniff(pending)
+                # Re-validate after async pause: socket state may have changed
                 if not self._pending_socket_still_registered(pending):
+                    return None
+                if self._reserved_for_transparent_route(pending):
                     return None
                 return self._claim_pending_socket(pending)
 
             matched = self._select_pending_socket_by_collector_pn(normalized_pn)
             if matched is not None:
                 if self._reserved_for_transparent_route(matched):
+                    return None
+                # Re-validate before claim: socket state may have changed
+                if not self._pending_socket_still_registered(matched):
                     return None
                 return self._claim_pending_socket(matched)
 
@@ -1167,6 +1181,9 @@ class _SharedEybondListener:
                     continue
                 await self._pause_pending_sniff(pending)
                 if not self._pending_socket_still_registered(pending):
+                    continue
+                # Re-validate after async pause: socket state may have changed
+                if self._reserved_for_transparent_route(pending):
                     continue
                 pending_pn = await self._identify_pending_socket_for_route(
                     pending,

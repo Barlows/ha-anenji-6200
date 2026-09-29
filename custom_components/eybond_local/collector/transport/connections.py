@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from abc import ABC, abstractmethod
 from time import monotonic
 from typing import Any, Callable
 
@@ -81,30 +82,29 @@ def _modbus_rtu_response_length(prefix: bytes) -> int | None:
     return None
 
 
-class _CollectorConnection:
+class _BaseCollectorConnection(ABC):
+    """Shared base for framed and AT collector connections.
+
+    Contains all common connection lifecycle, heartbeat, read/write loop,
+    request/response correlation, and disconnect logic. Subclasses implement
+    protocol-specific behavior through abstract methods.
+    """
+
     def __init__(
         self,
         *,
         remote_ip_hint: str = "",
-        heartbeat_interval: float,
         write_timeout: float,
     ) -> None:
-        self._heartbeat_interval = float(heartbeat_interval)
         self._write_timeout = float(write_timeout)
-        self._heartbeat_task: asyncio.Task[None] | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._connected = asyncio.Event()
-        self._pending: dict[int, asyncio.Future[tuple[EybondHeader, bytes]]] = {}
-        self._pending_fcode: dict[int, int] = {}
-        self._pending_at_response: asyncio.Future[CollectorAtResponse] | None = None
         self._request_lock = asyncio.Lock()
         self._write_lock = asyncio.Lock()
         self._tid = TIDCounter()
         self._collector = CollectorInfo(remote_ip=remote_ip_hint)
-        self._last_heartbeat_monotonic: float | None = None
-        self._last_liveness_monotonic: float | None = None
         self._session_id = ""
         self._session_identity_callback: Callable[[str, str, str], None] | None = None
         self._run_epoch = 0
@@ -120,6 +120,278 @@ class _CollectorConnection:
 
     @property
     def collector_info(self) -> CollectorInfo:
+        return _copy_collector_info(self._collector)
+
+    def set_write_timeout(self, timeout: float) -> None:
+        self._write_timeout = float(timeout)
+
+    async def wait_until_connected(self, timeout: float) -> bool:
+        if self.connected:
+            return True
+        try:
+            await asyncio.wait_for(self._connected.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return False
+        return self.connected
+
+    async def async_send_auxiliary_read(
+        self, payload: bytes, *, request_timeout: float,
+    ) -> bytes:
+        """Internal read-only side channel; never inferred by device discovery."""
+
+        owner = SocketSendOwner.capture(self)
+        try:
+            response = await self._auxiliary_session.send(
+                payload, writer=owner.writer, reader_task=self._reader_task,
+                request_lock=self._request_lock, write_lock=self._write_lock,
+                write_timeout=self._write_timeout, request_timeout=request_timeout,
+            )
+        except Exception:
+            owner.check_reply(self)
+            raise
+        owner.check_reply(self)
+        return response
+
+    async def run(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        *,
+        initial_bytes: bytes = b"",
+        session_id: str = "",
+        session_identity_callback: Callable[[str, str, str], None] | None = None,
+        session_closed_callback: Callable[[str, object], None] | None = None,
+        disconnect_callback: Callable[[object], None] | None = None,
+    ) -> None:
+        # The epoch marks THIS session as the connection's current owner.  A
+        # replacing run() bumps it before tearing the old session down, so the
+        # replaced session's ``finally`` below sees a stale epoch and must not
+        # touch shared state: its writer/tasks/pending futures were already
+        # torn down by the replacement, and running its disconnect_callback
+        # would drop the listener indexes the new session just registered
+        # (observed in the field as a live collector "vanishing" until redial).
+        self._run_epoch += 1
+        epoch = self._run_epoch
+        if self.connected:
+            self._collector.connection_replace_count += 1
+            logger.warning("Replacing active collector connection for %s", self._collector.remote_ip)
+            await self._disconnect(reason="replaced_active_connection")
+
+        peer = writer.get_extra_info("peername") or ("", None)
+        self._collector.remote_ip = peer[0] or self._collector.remote_ip
+        self._collector.remote_port = peer[1]
+        self._collector.connection_count += 1
+        self._collector.last_disconnect_reason = ""
+        self._auxiliary_session = AuxiliaryReadSession()
+        self._reader = reader
+        self._writer = writer
+        self._session_id = str(session_id or "").strip()
+        self._session_identity_callback = session_identity_callback
+        self._reset_session_state()
+        self._connected.set()
+
+        self._log_connected()
+
+        current_task = asyncio.current_task()
+        self._start_heartbeat_task()
+        prefixed_reader = _PrefixedAsyncReader(reader, initial_bytes)
+        self._reader_task = asyncio.create_task(
+            self._read_loop(prefixed_reader),
+            name=self._reader_task_name(),
+        )
+        try:
+            await self._reader_task
+        finally:
+            # EOF/reset is the physical session-lifetime boundary. Publish it
+            # before bounded writer/task cleanup: wait_closed() may legitimately
+            # consume another five seconds on a rebooting collector, but recovery
+            # must not misreport that already-observed disconnect as a timeout.
+            # Session ids are socket-scoped, and the listener callback removes
+            # only this exact id, so an overlapping successor remains untouched.
+            if session_id and session_closed_callback is not None:
+                session_closed_callback(session_id, self)
+            # RACE FIX: The epoch check below is a TOCTOU race. A replacement
+            # connection could increment _run_epoch between the check and the
+            # disconnect_callback invocation, causing the callback to fire for
+            # the replacement connection. By capturing the epoch once and using
+            # it consistently, and by re-checking immediately before the callback,
+            # we minimize the window. The _disconnect call is also guarded by
+            # the same epoch to ensure we only disconnect our own session.
+            current_epoch = self._run_epoch
+            if current_epoch == epoch:
+                await self._disconnect(skip_task=current_task)
+            # Re-check: a replacement may have started while the disconnect
+            # above was awaiting; the callback must not fire for it then.
+            if self._run_epoch == current_epoch and disconnect_callback is not None:
+                disconnect_callback(self)
+
+    async def disconnect(self) -> None:
+        await self._disconnect(reason="manual_disconnect")
+
+    async def _async_write(self, frame: bytes, *, owner: SocketSendOwner | None = None) -> None:
+        owner = owner or SocketSendOwner.capture(self)
+        async with self._write_lock:
+            owner.check(self)
+            writer = owner.writer
+            writer.write(frame)
+            try:
+                await asyncio.wait_for(writer.drain(), timeout=self._write_timeout)
+                owner.check_reply(self)
+            except asyncio.TimeoutError as exc:
+                owner.check_reply(self)
+                raise ConnectionError("collector_write_timeout") from exc
+
+    def _record_session_identity(self, collector_pn: str, source: str) -> None:
+        callback = self._session_identity_callback
+        session_id = self._session_id
+        if callback is None or not session_id or not collector_pn:
+            return
+        callback(session_id, collector_pn, source)
+
+    def _apply_response_metadata(self, response: CollectorAtResponse) -> None:
+        if response.command == "DTUPN" and response.value:
+            self._collector.collector_pn = reconcile_pn(
+                self._collector.collector_pn,
+                response.value,
+            )
+            self._record_session_identity(response.value, "at_dtupn")
+        elif response.command == "FWVER" and response.value:
+            self._collector.smartess_collector_version = response.value
+        elif response.command == "CLDSRVHOST1" and response.value:
+            self._collector.collector_server_endpoint = response.value
+            apply_collector_cloud_family_observation(
+                self._collector,
+                collector_cloud_family_observation_from_endpoint(response.value),
+            )
+
+    async def _disconnect(
+        self,
+        skip_task: asyncio.Task[Any] | None = None,
+        *,
+        reason: str = "",
+    ) -> None:
+        had_session = self._compute_had_session()
+        if had_session:
+            self._collector.disconnect_count += 1
+            self._collector.last_disconnect_reason = (
+                reason
+                or self._collector.last_disconnect_reason
+                or "collector_disconnected"
+            )
+            self._collector.retained_disconnect_reason = (
+                self._collector.last_disconnect_reason
+            )
+
+        # Detach the session from shared state and close the writer BEFORE
+        # cancelling the reader: cancelling the reader wakes the session's
+        # run() coroutine, and anything observing the connection at that
+        # moment (the replaced run's finally, a concurrent waiter) must
+        # already see the old session fully torn down — not a half-open
+        # writer that only closes a few event-loop steps later.
+        heartbeat_task = self._detach_heartbeat_task()
+        reader_task = self._reader_task
+        self._reader_task = None
+        writer = self._writer
+        self._auxiliary_session.close()
+        self._reader = None
+        self._writer = None
+        self._connected.clear()
+        self._detach_session_state()
+
+        # Request ownership ends synchronously with this physical session.
+        # After the first await a successor may already own these shared fields.
+        self._fail_pending_futures()
+
+        # Fence all old I/O before the first cleanup await; wait_closed() can
+        # be slow. The reader's session guard also rejects a completed read
+        # that wins the race with cancellation.
+        if writer:
+            try:
+                writer.close()
+            except Exception:
+                pass
+        if reader_task and reader_task is not skip_task:
+            reader_task.cancel()
+        if heartbeat_task and heartbeat_task is not skip_task:
+            heartbeat_task.cancel()
+
+        if heartbeat_task and heartbeat_task is not skip_task:
+            await _cancel_and_join_task(heartbeat_task)
+
+        if writer:
+            await _close_writer_bounded(writer)
+
+        if reader_task and reader_task is not skip_task:
+            await _cancel_and_join_task(reader_task)
+
+    # ------------------------------------------------------------------
+    # Abstract / overridable hooks for protocol-specific behavior
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    async def _read_loop(
+        self,
+        reader: asyncio.StreamReader | _PrefixedAsyncReader,
+    ) -> None:
+        """Protocol-specific read loop. Must be implemented by subclasses."""
+        ...
+
+    @abstractmethod
+    def _fail_pending_futures(self) -> None:
+        """Fail all pending request futures with ConnectionError."""
+        ...
+
+    @abstractmethod
+    def _detach_session_state(self) -> None:
+        """Reset per-session state (called during disconnect)."""
+        ...
+
+    @abstractmethod
+    def _reset_session_state(self) -> None:
+        """Reset per-session state (called during run)."""
+        ...
+
+    @abstractmethod
+    def _compute_had_session(self) -> bool:
+        """Return whether this connection had an active session."""
+        ...
+
+    def _start_heartbeat_task(self) -> None:
+        """Start the heartbeat task. Override in subclasses that need it."""
+        return None
+
+    def _detach_heartbeat_task(self) -> asyncio.Task[None] | None:
+        """Detach and return the heartbeat task. Override in subclasses that have one."""
+        return None
+
+    def _log_connected(self) -> None:
+        """Log the connection establishment. Override for protocol-specific messages."""
+        logger.info("Collector connected from %s:%s", self._collector.remote_ip, self._collector.remote_port)
+
+    def _reader_task_name(self) -> str:
+        """Return the name for the reader task."""
+        return f"eybond_reader_{self._collector.remote_ip}"
+
+
+class _CollectorConnection(_BaseCollectorConnection):
+    def __init__(
+        self,
+        *,
+        remote_ip_hint: str = "",
+        heartbeat_interval: float,
+        write_timeout: float,
+    ) -> None:
+        super().__init__(remote_ip_hint=remote_ip_hint, write_timeout=write_timeout)
+        self._heartbeat_interval = float(heartbeat_interval)
+        self._heartbeat_task: asyncio.Task[None] | None = None
+        self._pending: dict[int, asyncio.Future[tuple[EybondHeader, bytes]]] = {}
+        self._pending_fcode: dict[int, int] = {}
+        self._pending_at_response: asyncio.Future[CollectorAtResponse] | None = None
+        self._last_heartbeat_monotonic: float | None = None
+        self._last_liveness_monotonic: float | None = None
+
+    @property
+    def collector_info(self) -> CollectorInfo:
         self._collector.heartbeat_age_seconds = self._heartbeat_age_seconds()
         self._collector.heartbeat_fresh = self._has_fresh_heartbeat()
         return _copy_collector_info(self._collector)
@@ -127,8 +399,54 @@ class _CollectorConnection:
     def set_heartbeat_interval(self, interval: float) -> None:
         self._heartbeat_interval = float(interval)
 
-    def set_write_timeout(self, timeout: float) -> None:
-        self._write_timeout = float(timeout)
+    # ------------------------------------------------------------------
+    # Abstract method implementations
+    # ------------------------------------------------------------------
+
+    def _fail_pending_futures(self) -> None:
+        for future in self._pending.values():
+            if not future.done():
+                future.set_exception(ConnectionError("collector_disconnected"))
+        self._pending.clear()
+        self._pending_fcode.clear()
+
+        at_future = self._pending_at_response
+        self._pending_at_response = None
+        if at_future is not None and not at_future.done():
+            at_future.set_exception(ConnectionError("collector_disconnected"))
+
+    def _detach_session_state(self) -> None:
+        self._last_heartbeat_monotonic = None
+        self._last_liveness_monotonic = None
+        self._session_id = ""
+        self._session_identity_callback = None
+
+    def _reset_session_state(self) -> None:
+        self._last_heartbeat_monotonic = None
+        self._last_liveness_monotonic = None
+
+    def _compute_had_session(self) -> bool:
+        pending_drop_count = sum(1 for future in self._pending.values() if not future.done())
+        return (
+            self._reader is not None
+            or self._writer is not None
+            or self._connected.is_set()
+            or pending_drop_count > 0
+        )
+
+    def _start_heartbeat_task(self) -> None:
+        self._heartbeat_task = asyncio.create_task(
+            self._heartbeat_loop(),
+            name=f"eybond_heartbeat_{self._collector.remote_ip}",
+        )
+
+    def _detach_heartbeat_task(self) -> asyncio.Task[None] | None:
+        heartbeat_task = self._heartbeat_task
+        self._heartbeat_task = None
+        return heartbeat_task
+
+    def _log_connected(self) -> None:
+        logger.info("Collector connected from %s:%s", self._collector.remote_ip, self._collector.remote_port)
 
     def _heartbeat_age_seconds(self) -> float | None:
         if self._last_heartbeat_monotonic is None:
@@ -150,15 +468,6 @@ class _CollectorConnection:
     def _has_fresh_liveness(self) -> bool:
         age = self._liveness_age_seconds()
         return age is not None and age <= self._heartbeat_freshness_window()
-
-    async def wait_until_connected(self, timeout: float) -> bool:
-        if self.connected:
-            return True
-        try:
-            await asyncio.wait_for(self._connected.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
-            return False
-        return self.connected
 
     async def wait_until_heartbeat(self, timeout: float) -> bool:
         if self._has_fresh_heartbeat():
@@ -257,24 +566,6 @@ class _CollectorConnection:
                     self._pending_fcode.pop(tid, None)
                 finish_request_future(future)
 
-    async def async_send_auxiliary_read(
-        self, payload: bytes, *, request_timeout: float,
-    ) -> bytes:
-        """Internal read-only side channel; never inferred by device discovery."""
-
-        owner = SocketSendOwner.capture(self)
-        try:
-            response = await self._auxiliary_session.send(
-                payload, writer=owner.writer, reader_task=self._reader_task,
-                request_lock=self._request_lock, write_lock=self._write_lock,
-                write_timeout=self._write_timeout, request_timeout=request_timeout,
-            )
-        except Exception:
-            owner.check_reply(self)
-            raise
-        owner.check_reply(self)
-        return response
-
     async def async_query(self, command: str, *, request_timeout: float) -> CollectorAtResponse:
         owner = SocketSendOwner.capture(self)
 
@@ -319,69 +610,6 @@ class _CollectorConnection:
             self._apply_at_response_metadata(response)
             return response
 
-    async def run(
-        self,
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
-        *,
-        initial_bytes: bytes = b"",
-        session_id: str = "",
-        session_identity_callback: Callable[[str, str, str], None] | None = None,
-        session_closed_callback: Callable[[str, object], None] | None = None,
-        disconnect_callback: Callable[[object], None] | None = None,
-    ) -> None:
-        # The epoch marks THIS session as the connection's current owner.  A
-        # replacing run() bumps it before tearing the old session down, so the
-        # replaced session's ``finally`` below sees a stale epoch and must not
-        # touch shared state: its writer/tasks/pending futures were already
-        # torn down by the replacement, and running its disconnect_callback
-        # would drop the listener indexes the new session just registered
-        # (observed in the field as a live collector "vanishing" until redial).
-        self._run_epoch += 1
-        epoch = self._run_epoch
-        if self.connected:
-            self._collector.connection_replace_count += 1
-            logger.warning("Replacing active collector connection for %s", self._collector.remote_ip)
-            await self._disconnect(reason="replaced_active_connection")
-
-        peer = writer.get_extra_info("peername") or ("", None)
-        self._collector.remote_ip = peer[0] or self._collector.remote_ip
-        self._collector.remote_port = peer[1]
-        self._collector.connection_count += 1
-        self._collector.last_disconnect_reason = ""
-        self._last_heartbeat_monotonic = None
-        self._last_liveness_monotonic = None
-        self._auxiliary_session = AuxiliaryReadSession()
-        self._reader = reader
-        self._writer = writer
-        self._session_id = str(session_id or "").strip()
-        self._session_identity_callback = session_identity_callback
-        self._connected.set()
-
-        logger.info("Collector connected from %s:%s", self._collector.remote_ip, self._collector.remote_port)
-
-        current_task = asyncio.current_task()
-        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(), name=f"eybond_heartbeat_{self._collector.remote_ip}")
-        prefixed_reader = _PrefixedAsyncReader(reader, initial_bytes)
-        self._reader_task = asyncio.create_task(self._read_loop(prefixed_reader), name=f"eybond_reader_{self._collector.remote_ip}")
-        try:
-            await self._reader_task
-        finally:
-            # EOF/reset is the physical session-lifetime boundary. Publish it
-            # before bounded writer/task cleanup: wait_closed() may legitimately
-            # consume another five seconds on a rebooting collector, but recovery
-            # must not misreport that already-observed disconnect as a timeout.
-            # Session ids are socket-scoped, and the listener callback removes
-            # only this exact id, so an overlapping successor remains untouched.
-            if session_id and session_closed_callback is not None:
-                session_closed_callback(session_id, self)
-            if self._run_epoch == epoch:
-                await self._disconnect(skip_task=current_task)
-            # Re-check: a replacement may have started while the disconnect
-            # above was awaiting; the callback must not fire for it then.
-            if self._run_epoch == epoch and disconnect_callback is not None:
-                disconnect_callback(self)
-
     async def _heartbeat_loop(self) -> None:
         try:
             while self.connected:
@@ -395,42 +623,6 @@ class _CollectorConnection:
             raise
         except Exception as exc:
             logger.debug("Heartbeat loop stopped for %s: %s", self._collector.remote_ip, exc)
-
-    async def _async_write(self, frame: bytes, *, owner: SocketSendOwner | None = None) -> None:
-        owner = owner or SocketSendOwner.capture(self)
-        async with self._write_lock:
-            owner.check(self)
-            writer = owner.writer
-            writer.write(frame)
-            try:
-                await asyncio.wait_for(writer.drain(), timeout=self._write_timeout)
-                owner.check_reply(self)
-            except asyncio.TimeoutError as exc:
-                owner.check_reply(self)
-                raise ConnectionError("collector_write_timeout") from exc
-
-    def _apply_at_response_metadata(self, response: CollectorAtResponse) -> None:
-        if response.command == "DTUPN" and response.value:
-            self._collector.collector_pn = reconcile_pn(
-                self._collector.collector_pn,
-                response.value,
-            )
-            self._record_session_identity(response.value, "at_dtupn")
-        elif response.command == "FWVER" and response.value:
-            self._collector.smartess_collector_version = response.value
-        elif response.command == "CLDSRVHOST1" and response.value:
-            self._collector.collector_server_endpoint = response.value
-            apply_collector_cloud_family_observation(
-                self._collector,
-                collector_cloud_family_observation_from_endpoint(response.value),
-            )
-
-    def _record_session_identity(self, collector_pn: str, source: str) -> None:
-        callback = self._session_identity_callback
-        session_id = self._session_id
-        if callback is None or not session_id or not collector_pn:
-            return
-        callback(session_id, collector_pn, source)
 
     def _handle_at_response(self, payload: bytes) -> None:
         try:
@@ -449,7 +641,7 @@ class _CollectorConnection:
             future.set_result(response)
             return
 
-        self._apply_at_response_metadata(response)
+        self._apply_response_metadata(response)
         logger.debug(
             "Unsolicited collector AT response remote=%s command=%s value=%s",
             self._collector.remote_ip,
@@ -646,92 +838,8 @@ class _CollectorConnection:
         except asyncio.CancelledError:
             raise
 
-    async def disconnect(self) -> None:
-        await self._disconnect(reason="manual_disconnect")
 
-    async def _disconnect(
-        self,
-        skip_task: asyncio.Task[Any] | None = None,
-        *,
-        reason: str = "",
-    ) -> None:
-        pending_drop_count = sum(1 for future in self._pending.values() if not future.done())
-        had_session = (
-            self._reader is not None
-            or self._writer is not None
-            or self._connected.is_set()
-            or pending_drop_count > 0
-        )
-        if pending_drop_count:
-            self._collector.pending_request_drop_count += pending_drop_count
-        if had_session:
-            self._collector.disconnect_count += 1
-            self._collector.last_disconnect_reason = (
-                reason
-                or self._collector.last_disconnect_reason
-                or "collector_disconnected"
-            )
-            self._collector.retained_disconnect_reason = (
-                self._collector.last_disconnect_reason
-            )
-
-        # Detach the session from shared state and close the writer BEFORE
-        # cancelling the reader: cancelling the reader wakes the session's
-        # run() coroutine, and anything observing the connection at that
-        # moment (the replaced run's finally, a concurrent waiter) must
-        # already see the old session fully torn down — not a half-open
-        # writer that only closes a few event-loop steps later.
-        heartbeat_task = self._heartbeat_task
-        self._heartbeat_task = None
-        reader_task = self._reader_task
-        self._reader_task = None
-        writer = self._writer
-        self._auxiliary_session.close()
-        self._reader = None
-        self._writer = None
-        self._connected.clear()
-        self._last_heartbeat_monotonic = None
-        self._last_liveness_monotonic = None
-        self._session_id = ""
-        self._session_identity_callback = None
-
-        # Request ownership ends synchronously with this physical session.
-        # After the first await a successor may already own these shared fields.
-        for future in self._pending.values():
-            if not future.done():
-                future.set_exception(ConnectionError("collector_disconnected"))
-        self._pending.clear()
-        self._pending_fcode.clear()
-
-        at_future = self._pending_at_response
-        self._pending_at_response = None
-        if at_future is not None and not at_future.done():
-            at_future.set_exception(ConnectionError("collector_disconnected"))
-
-        # Fence all old I/O before the first cleanup await; wait_closed() can
-        # be slow. The reader's session guard also rejects a completed read
-        # that wins the race with cancellation.
-        if writer:
-            try:
-                writer.close()
-            except Exception:
-                pass
-        if reader_task and reader_task is not skip_task:
-            reader_task.cancel()
-        if heartbeat_task and heartbeat_task is not skip_task:
-            heartbeat_task.cancel()
-
-        if heartbeat_task and heartbeat_task is not skip_task:
-            await _cancel_and_join_task(heartbeat_task)
-
-        if writer:
-            await _close_writer_bounded(writer)
-
-        if reader_task and reader_task is not skip_task:
-            await _cancel_and_join_task(reader_task)
-
-
-class _CollectorAtConnection:
+class _CollectorAtConnection(_BaseCollectorConnection):
     def __init__(
         self,
         *,
@@ -741,22 +849,12 @@ class _CollectorAtConnection:
         raw_passthrough_frame_format: str = "",
         raw_passthrough_min_interval_ms: int = 0,
     ) -> None:
-        self._write_timeout = float(write_timeout)
-        self._reader_task: asyncio.Task[None] | None = None
-        self._reader: asyncio.StreamReader | None = None
-        self._writer: asyncio.StreamWriter | None = None
-        self._connected = asyncio.Event()
-        self._request_lock = asyncio.Lock()
-        self._write_lock = asyncio.Lock()
+        super().__init__(remote_ip_hint=remote_ip_hint, write_timeout=write_timeout)
         self._pending_response: asyncio.Future[CollectorAtResponse] | None = None
         self._pending_raw_response: asyncio.Future[bytes] | None = None
         self._pending_raw_protocol = ""
         self._pending_framed_response: dict[int, asyncio.Future[tuple[EybondHeader, bytes]]] = {}
         self._pending_framed_fcode: dict[int, int] = {}
-        self._tid = TIDCounter()
-        self._collector = CollectorInfo(remote_ip=remote_ip_hint)
-        self._session_id = ""
-        self._session_identity_callback: Callable[[str, str, str], None] | None = None
         self._raw_passthrough_bootstrap = str(raw_passthrough_bootstrap or "").strip().lower()
         self._raw_passthrough_frame_format = (
             str(raw_passthrough_frame_format or "").strip().lower()
@@ -768,29 +866,12 @@ class _CollectorAtConnection:
         self._raw_passthrough_last_write_monotonic = 0.0
         self._raw_passthrough_bootstrapped = False
         self._mixed_frame_observed = False
-        self._run_epoch = 0
-        self._auxiliary_session = AuxiliaryReadSession()
-
-    @property
-    def connected(self) -> bool:
-        writer = self._writer
-        if writer is None or writer.is_closing():
-            return False
-        reader_task = self._reader_task
-        return reader_task is None or not reader_task.done()
-
-    @property
-    def collector_info(self) -> CollectorInfo:
-        return _copy_collector_info(self._collector)
 
     @property
     def mixed_frame_observed(self) -> bool:
         """Return whether this exact AT session answered a framed request."""
 
         return self._mixed_frame_observed
-
-    def set_write_timeout(self, timeout: float) -> None:
-        self._write_timeout = float(timeout)
 
     def set_raw_passthrough_bootstrap(self, mode: str) -> None:
         normalized = str(mode or "").strip().lower()
@@ -804,33 +885,6 @@ class _CollectorAtConnection:
 
     def set_raw_passthrough_min_interval_ms(self, value: int) -> None:
         self._raw_passthrough_min_interval = max(0.0, float(value or 0) / 1000.0)
-
-    async def wait_until_connected(self, timeout: float) -> bool:
-        if self.connected:
-            return True
-        try:
-            await asyncio.wait_for(self._connected.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
-            return False
-        return self.connected
-
-    async def async_send_auxiliary_read(
-        self, payload: bytes, *, request_timeout: float,
-    ) -> bytes:
-        """Internal read-only side channel; never inferred by device discovery."""
-
-        owner = SocketSendOwner.capture(self)
-        try:
-            response = await self._auxiliary_session.send(
-                payload, writer=owner.writer, reader_task=self._reader_task,
-                request_lock=self._request_lock, write_lock=self._write_lock,
-                write_timeout=self._write_timeout, request_timeout=request_timeout,
-            )
-        except Exception:
-            owner.check_reply(self)
-            raise
-        owner.check_reply(self)
-        return response
 
     async def async_query(self, command: str, *, request_timeout: float) -> CollectorAtResponse:
         owner = SocketSendOwner.capture(self)
@@ -1126,84 +1180,6 @@ class _CollectorAtConnection:
         # a replacement session or allow the old raw payload to migrate there.
         owner.check(self)
         self._raw_passthrough_bootstrapped = True
-
-    async def run(
-        self,
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
-        *,
-        initial_bytes: bytes = b"",
-        session_id: str = "",
-        session_identity_callback: Callable[[str, str, str], None] | None = None,
-        session_closed_callback: Callable[[str, object], None] | None = None,
-        disconnect_callback: Callable[[object], None] | None = None,
-    ) -> None:
-        # Same epoch discipline as _CollectorConnection.run: a replaced
-        # session's ``finally`` must not tear down or unindex its successor.
-        self._run_epoch += 1
-        epoch = self._run_epoch
-        if self.connected:
-            self._collector.connection_replace_count += 1
-            logger.warning("Replacing active AT collector connection for %s", self._collector.remote_ip)
-            await self._disconnect(reason="replaced_active_connection")
-
-        peer = writer.get_extra_info("peername") or ("", None)
-        self._collector.remote_ip = peer[0] or self._collector.remote_ip
-        self._collector.remote_port = peer[1]
-        self._collector.connection_count += 1
-        self._collector.last_disconnect_reason = ""
-        self._auxiliary_session = AuxiliaryReadSession()
-        self._reader = reader
-        self._writer = writer
-        self._session_id = str(session_id or "").strip()
-        self._session_identity_callback = session_identity_callback
-        self._raw_passthrough_bootstrapped = False
-        # Data-plane evidence belongs to this physical session only. A reconnect
-        # must positively negotiate raw serial vs FC4 again.
-        self._collector.inverter_forward_mode = ""
-        self._mixed_frame_observed = False
-        self._connected.set()
-
-        logger.info(
-            "Collector AT connection from %s:%s session=%s",
-            self._collector.remote_ip,
-            self._collector.remote_port,
-            self._session_id or "unknown",
-        )
-
-        current_task = asyncio.current_task()
-        prefixed_reader = _PrefixedAsyncReader(reader, initial_bytes)
-        self._reader_task = asyncio.create_task(
-            self._read_loop(prefixed_reader),
-            name=f"collector_at_reader_{self._collector.remote_ip}",
-        )
-        try:
-            await self._reader_task
-        finally:
-            # Same physical-session boundary as the framed connection: publish
-            # EOF/reset before bounded writer cleanup, never after it.
-            if session_id and session_closed_callback is not None:
-                session_closed_callback(session_id, self)
-            if self._run_epoch == epoch:
-                await self._disconnect(skip_task=current_task)
-            if self._run_epoch == epoch and disconnect_callback is not None:
-                disconnect_callback(self)
-
-    async def disconnect(self) -> None:
-        await self._disconnect(reason="manual_disconnect")
-
-    async def _async_write(self, payload: bytes, *, owner: SocketSendOwner | None = None) -> None:
-        owner = owner or SocketSendOwner.capture(self)
-        async with self._write_lock:
-            owner.check(self)
-            writer = owner.writer
-            writer.write(payload)
-            try:
-                await asyncio.wait_for(writer.drain(), timeout=self._write_timeout)
-                owner.check_reply(self)
-            except asyncio.TimeoutError as exc:
-                owner.check_reply(self)
-                raise ConnectionError("collector_write_timeout") from exc
 
     async def _read_loop(
         self,
@@ -1531,60 +1507,11 @@ class _CollectorAtConnection:
             response.value,
         )
 
-    def _apply_response_metadata(self, response: CollectorAtResponse) -> None:
-        if response.command == "DTUPN" and response.value:
-            self._collector.collector_pn = reconcile_pn(
-                self._collector.collector_pn,
-                response.value,
-            )
-            self._record_session_identity(response.value, "at_dtupn")
-        elif response.command == "FWVER" and response.value:
-            self._collector.smartess_collector_version = response.value
-        elif response.command == "CLDSRVHOST1" and response.value:
-            self._collector.collector_server_endpoint = response.value
-            apply_collector_cloud_family_observation(
-                self._collector,
-                collector_cloud_family_observation_from_endpoint(response.value),
-            )
+    # ------------------------------------------------------------------
+    # Abstract method implementations
+    # ------------------------------------------------------------------
 
-    def _record_session_identity(self, collector_pn: str, source: str) -> None:
-        callback = self._session_identity_callback
-        session_id = self._session_id
-        if callback is None or not session_id or not collector_pn:
-            return
-        callback(session_id, collector_pn, source)
-
-    async def _disconnect(
-        self,
-        skip_task: asyncio.Task[Any] | None = None,
-        *,
-        reason: str = "",
-    ) -> None:
-        had_session = self._reader is not None or self._writer is not None or self._connected.is_set()
-        if had_session:
-            self._collector.disconnect_count += 1
-            self._collector.last_disconnect_reason = (
-                reason
-                or self._collector.last_disconnect_reason
-                or "collector_disconnected"
-            )
-            self._collector.retained_disconnect_reason = (
-                self._collector.last_disconnect_reason
-            )
-
-        # Same ordering rule as _CollectorConnection._disconnect: detach and
-        # close the writer before the reader cancellation wakes the session.
-        reader_task = self._reader_task
-        self._reader_task = None
-        writer = self._writer
-        self._auxiliary_session.close()
-        self._reader = None
-        self._writer = None
-        self._connected.clear()
-        self._session_id = ""
-        self._session_identity_callback = None
-
-        # Do not let old wait_closed()/reader cleanup cancel a newer session.
+    def _fail_pending_futures(self) -> None:
         future = self._pending_response
         self._pending_response = None
         if future is not None and not future.done():
@@ -1602,16 +1529,31 @@ class _CollectorAtConnection:
         self._pending_framed_response.clear()
         self._pending_framed_fcode.clear()
 
-        if writer:
-            try:
-                writer.close()
-            except Exception:
-                pass
-        if reader_task and reader_task is not skip_task:
-            reader_task.cancel()
+    def _detach_session_state(self) -> None:
+        self._session_id = ""
+        self._session_identity_callback = None
 
-        if writer:
-            await _close_writer_bounded(writer)
+    def _reset_session_state(self) -> None:
+        self._raw_passthrough_bootstrapped = False
+        # Data-plane evidence belongs to this physical session only. A reconnect
+        # must positively negotiate raw serial vs FC4 again.
+        self._collector.inverter_forward_mode = ""
+        self._mixed_frame_observed = False
 
-        if reader_task and reader_task is not skip_task:
-            await _cancel_and_join_task(reader_task)
+    def _compute_had_session(self) -> bool:
+        return (
+            self._reader is not None
+            or self._writer is not None
+            or self._connected.is_set()
+        )
+
+    def _log_connected(self) -> None:
+        logger.info(
+            "Collector AT connection from %s:%s session=%s",
+            self._collector.remote_ip,
+            self._collector.remote_port,
+            self._session_id or "unknown",
+        )
+
+    def _reader_task_name(self) -> str:
+        return f"collector_at_reader_{self._collector.remote_ip}"

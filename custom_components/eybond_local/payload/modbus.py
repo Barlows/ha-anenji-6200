@@ -43,17 +43,28 @@ class ModbusWriteRequestFrame:
         return len(self.values)
 
 
-def crc16_modbus(data: bytes) -> int:
-    """Compute Modbus CRC16."""
-
-    crc = 0xFFFF
-    for byte in data:
-        crc ^= byte
+def _build_crc16_modbus_table() -> list[int]:
+    table = []
+    for byte in range(256):
+        crc = byte
         for _ in range(8):
             if crc & 0x0001:
                 crc = (crc >> 1) ^ 0xA001
             else:
                 crc >>= 1
+        table.append(crc)
+    return table
+
+
+_CRC16_MODBUS_TABLE = _build_crc16_modbus_table()
+
+
+def crc16_modbus(data: bytes) -> int:
+    """Compute Modbus CRC16 using a precomputed lookup table."""
+
+    crc = 0xFFFF
+    for byte in data:
+        crc = (crc >> 8) ^ _CRC16_MODBUS_TABLE[(crc ^ byte) & 0xFF]
     return crc & 0xFFFF
 
 

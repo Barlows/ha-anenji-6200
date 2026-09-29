@@ -227,31 +227,30 @@ class CallbackSessionRegistry:
         """
 
         coalesced: list[CallbackSession] = []
+        pn_index: dict[str, int] = {}
         for session in sessions:
             if not session.collector_pn:
                 coalesced.append(session)
                 continue
-            for index, existing in enumerate(coalesced):
-                if not existing.collector_pn:
+            pn = session.collector_pn
+            idx = pn_index.get(pn)
+            if idx is not None:
+                existing = coalesced[idx]
+                if existing.collector_pn and _pn_is_same_identity(existing.collector_pn, pn):
+                    keep_new = False
+                    if session.has_strong_identity and not existing.has_strong_identity:
+                        keep_new = True
+                    elif (
+                        session.has_strong_identity == existing.has_strong_identity
+                        and len(pn) > len(existing.collector_pn)
+                    ):
+                        keep_new = True
+                    if keep_new:
+                        merged_pn = _prefer_full_pn(existing.collector_pn, pn)
+                        coalesced[idx] = replace(session, collector_pn=merged_pn)
                     continue
-                if not _pn_is_same_identity(existing.collector_pn, session.collector_pn):
-                    continue
-                # Same collector observed twice (short + full / weak + strong):
-                # keep the strongest, most complete identity.
-                keep_new = False
-                if session.has_strong_identity and not existing.has_strong_identity:
-                    keep_new = True
-                elif (
-                    session.has_strong_identity == existing.has_strong_identity
-                    and len(session.collector_pn) > len(existing.collector_pn)
-                ):
-                    keep_new = True
-                if keep_new:
-                    merged_pn = _prefer_full_pn(existing.collector_pn, session.collector_pn)
-                    coalesced[index] = replace(session, collector_pn=merged_pn)
-                break
-            else:
-                coalesced.append(session)
+            pn_index[pn] = len(coalesced)
+            coalesced.append(session)
         return coalesced
 
     def _normalized_sessions(self) -> list[CallbackSession]:
@@ -420,9 +419,14 @@ class CallbackSessionRegistry:
             if sid and existing.session_id and sid != existing.session_id:
                 raise ValueError(f"claim_session_mismatch:{existing.session_id}:{sid}")
 
+        # RACE FIX: observed_sessions() was called multiple times in this method,
+        # creating a TOCTOU race where the session set could change between calls.
+        # By reading once and reusing, we ensure a consistent view of the sessions
+        # throughout the claim operation.
+        observed = self.observed_sessions()
         # Enrich the durable PN from the strongest matching observed session.
         matched: CallbackSession | None = None
-        for session in self.observed_sessions():
+        for session in observed:
             if sid and session.session_id == sid:
                 matched = session
                 break

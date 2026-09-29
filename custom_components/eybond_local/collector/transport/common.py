@@ -113,8 +113,9 @@ async def _cancel_and_join_task(task: "asyncio.Task[Any]") -> None:
         if attempts >= 20 and not task.done():
             # A task that survives 20 cancellations is swallowing
             # CancelledError; waiting longer would recreate the very hang
-            # this helper exists to prevent.
-            logger.error(
+            # this helper exists to prevent. Log a warning so the
+            # abandoned task is visible in diagnostics.
+            logger.warning(
                 "Session task %s ignored %d cancellations; abandoning join",
                 task.get_name(),
                 attempts,

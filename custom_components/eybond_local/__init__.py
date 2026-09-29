@@ -78,6 +78,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Tracks consecutive failures of the passive-discovery listener bootstrap
+# so persistent issues escalate from exception-level to warning-level.
+_listener_bootstrap_failures = 0
+
 _COMPONENT_SETUP_COMPLETE_KEY = "component_setup_complete"
 _COMPONENT_SETUP_RELOAD_WAITERS_KEY = "component_setup_reload_waiters"
 
@@ -371,7 +375,21 @@ async def _async_ensure_listener_entry(
     except Exception:
         # The collector entry remains valid even if an older HA core or a
         # concurrent setup flow rejects the service-entry bootstrap.
-        logger.exception("Failed to ensure EyeBond passive-discovery listener entry")
+        # Track consecutive failures and escalate to a warning after a
+        # threshold so persistent issues are visible in the log.
+        global _listener_bootstrap_failures
+        _listener_bootstrap_failures += 1
+        if _listener_bootstrap_failures >= 3:
+            logger.warning(
+                "Failed to ensure EyeBond passive-discovery listener entry "
+                "(%d consecutive failures)",
+                _listener_bootstrap_failures,
+                exc_info=True,
+            )
+        else:
+            logger.exception(
+                "Failed to ensure EyeBond passive-discovery listener entry"
+            )
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -383,7 +401,14 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
         "consume_entry_reload_suppression",
         None,
     )
-    if callable(consume_reload_suppression) and consume_reload_suppression():
-        return
+    # RACE FIX: The check-then-call pattern on consume_reload_suppression is a
+    # TOCTOU race: the callable could be replaced or its internal state could
+    # change between the callable() check and the invocation. By capturing the
+    # callable once and invoking it directly (letting TypeError propagate if it
+    # became non-callable), we ensure the check and call are atomic with respect
+    # to the local reference.
+    if callable(consume_reload_suppression):
+        if consume_reload_suppression():
+            return
 
     await hass.config_entries.async_reload(entry.entry_id)

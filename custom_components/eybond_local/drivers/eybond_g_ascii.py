@@ -699,136 +699,127 @@ async def _async_collect_eybond_g_ascii_secondary_values(
     *,
     runtime_state: dict[str, Any] | None = None,
 ) -> None:
-    gtmp = await _optional_request(session, values, "GTMP", runtime_state=runtime_state)
-    if gtmp:
-        fields = parse_space_fields(gtmp)
-        _set_float(values, "pv_side_temperature", fields, 0)
-        _set_float(values, "charger_temperature", fields, 1)
-        _set_float(values, "ambient_temperature", fields, 2)
-        _set_float(values, "low_voltage_mppt_temperature_1", fields, 3)
-        _set_float(values, "low_voltage_mppt_temperature_2", fields, 4)
+    semaphore = asyncio.Semaphore(3)
 
-    gline = await _optional_request(session, values, "GLINE", runtime_state=runtime_state)
-    if gline:
-        fields = parse_space_fields(gline)
-        values["eybond_g_ascii_gline_fields"] = " ".join(fields)
-        _set_float(values, "grid_voltage", fields, 0)
-        _set_float(values, "grid_frequency", fields, 1)
-        _set_float(values, "mains_input_voltage", fields, 0)
-        _set_float(values, "mains_frequency", fields, 1)
-        _set_float(values, "grid_loss_high_voltage", fields, 2)
-        _set_float(values, "grid_loss_low_voltage", fields, 3)
-        _set_float(values, "grid_restore_high_voltage", fields, 4)
-        _set_float(values, "grid_restore_low_voltage", fields, 5)
-        _set_float(values, "grid_loss_high_frequency", fields, 6)
-        _set_float(values, "grid_loss_low_frequency", fields, 7)
-        _set_float(values, "output_load_percentage", fields, 9)
-        _set_scaled_float(values, "grid_energy_today", fields, 10, divisor=100.0)
-        _set_combined_scaled_counter(values, "grid_energy_total", fields, 11, 12, divisor=100.0)
+    async def _fetch(command: str) -> tuple[str, str]:
+        async with semaphore:
+            result = await _optional_request(session, values, command, runtime_state=runtime_state)
+        return command, result
 
-    gbat = await _optional_request(session, values, "GBAT", runtime_state=runtime_state)
-    if gbat:
-        fields = parse_space_fields(gbat)
-        values["eybond_g_ascii_gbat_fields"] = " ".join(fields)
-        _set_float(values, "battery_voltage", fields, 0)
-        _set_float_preserve_existing_nonzero(values, "battery_current", fields, 1)
-        _set_float(values, "battery_cell_count", fields, 2)
-        _set_float(values, "battery_discharge_cutoff_voltage", fields, 3)
-        _set_float(values, "battery_discharge_alarm_voltage", fields, 4)
+    commands = [
+        "GTMP", "GLINE", "GBAT", "GBUS", "GCHG", "GOP",
+        "GINV", "GWS", "BL", "FAN???", "TCQN????", "DATE??????", "TIME??????",
+    ]
+    results = await asyncio.gather(*(_fetch(cmd) for cmd in commands))
 
-    gbus = await _optional_request(session, values, "GBUS", runtime_state=runtime_state)
-    if gbus:
-        fields = parse_space_fields(gbus)
-        _set_float(values, "bus_voltage", fields, 0)
-        _set_float(values, "bus_reference_start_voltage", fields, 1)
-        _set_float(values, "bus_reference_voltage", fields, 2)
-
-    gchg = await _optional_request(session, values, "GCHG", runtime_state=runtime_state)
-    if gchg:
-        fields = parse_space_fields(gchg)
-        values["eybond_g_ascii_gchg_fields"] = " ".join(fields)
-        _set_float(values, "bus_voltage", fields, 0)
-        _set_float(values, "charging_voltage", fields, 1)
-        _set_float(values, "battery_cell_count", fields, 2)
-        _set_float(values, "charging_current", fields, 3)
-        _set_float(values, "constant_voltage_charging_voltage", fields, 6)
-        _set_float(values, "float_charging_voltage", fields, 7)
-        _set_float(values, "equalization_charging_voltage", fields, 8)
-        _set_float(values, "max_charging_current", fields, 9)
-        _set_float(values, "constant_voltage_charging_time", fields, 10)
-        _set_float(values, "equalization_charging_time", fields, 11)
-        _set_float(values, "equalization_timeout", fields, 12)
-        _set_float(values, "equalization_interval", fields, 13)
-        _set_bool_flag(values, "equalization_enabled", fields, 14)
-        _set_str(values, "battery_type_code", fields, 15)
-        _set_float(values, "low_power_discharge_time", fields, 16)
-        _set_str(values, "charging_mode_code", fields, 17)
-
-    gop = await _optional_request(session, values, "GOP", runtime_state=runtime_state)
-    if gop:
-        fields = parse_space_fields(gop)
-        values["eybond_g_ascii_gop_fields"] = " ".join(fields)
-        _set_float(values, "output_voltage", fields, 0)
-        _set_float(values, "output_frequency", fields, 1)
-        _set_float(values, "output_current", fields, 2)
-        _set_float(values, "output_low_current", fields, 3)
-        _set_float(values, "output_active_power", fields, 4)
-        _set_float(values, "output_apparent_power", fields, 6)
-        _set_float(values, "output_low_current_power", fields, 7)
-        _set_float(values, "output_half_wave_apparent_power", fields, 8)
-        _set_float(values, "output_load_percentage", fields, 9)
-        _set_scaled_float(values, "output_energy_today", fields, 12, divisor=100.0)
-        _set_combined_scaled_counter(values, "output_energy_total", fields, 13, 14, divisor=100.0)
-
-    ginv = await _optional_request(session, values, "GINV", runtime_state=runtime_state)
-    if ginv:
-        fields = parse_space_fields(ginv)
-        _set_float(values, "inverter_voltage", fields, 0)
-        _set_float(values, "inverter_frequency", fields, 1)
-        _set_float(values, "inverter_current", fields, 2)
-
-    gws = await _optional_request(session, values, "GWS", runtime_state=runtime_state)
-    if gws:
-        fields = parse_space_fields(gws)
-        values["eybond_g_ascii_gws_fields"] = " ".join(fields)
-        _set_str(values, "fault_code", fields, 0)
-        _set_str(values, "warning_status_1", fields, 1)
-        _set_str(values, "warning_status_2", fields, 2)
-
-    bl = await _optional_request(session, values, "BL", runtime_state=runtime_state)
-    if bl:
-        text = bl.strip()
-        if text.startswith("BL"):
-            text = text[2:]
-        try:
-            values["battery_capacity"] = float(text)
-        except ValueError:
-            pass
-
-    fan = await _optional_request(session, values, "FAN???", runtime_state=runtime_state)
-    if fan:
-        fields = parse_space_fields(fan)
-        values["eybond_g_ascii_fan_fields"] = " ".join(fields)
-        _set_float(values, "fan_speed_percentage", fields, 0)
-        _set_float(values, "fan1_speed_detected", fields, 1)
-        _set_float(values, "fan2_speed_detected", fields, 2)
-        _set_bool_flag(values, "fan1_stopped", fields, 3)
-        _set_bool_flag(values, "fan2_stopped", fields, 4)
-
-    tcqn = await _optional_request(session, values, "TCQN????", runtime_state=runtime_state)
-    if tcqn:
-        fields = parse_space_fields(tcqn)
-        _set_float(values, "equalization_elapsed_hours", fields, 0)
-
-    date = await _optional_request(session, values, "DATE??????", runtime_state=runtime_state)
-    if date:
-        fields = parse_space_fields(date)
-        _set_offset_2000_date(values, "inverter_date", fields)
-
-    time_value = await _optional_request(session, values, "TIME??????", runtime_state=runtime_state)
-    if time_value:
-        fields = parse_space_fields(time_value)
-        _set_hms_time(values, "inverter_time", fields)
+    for command, result in results:
+        if not result:
+            continue
+        if command == "GTMP":
+            fields = parse_space_fields(result)
+            _set_float(values, "pv_side_temperature", fields, 0)
+            _set_float(values, "charger_temperature", fields, 1)
+            _set_float(values, "ambient_temperature", fields, 2)
+            _set_float(values, "low_voltage_mppt_temperature_1", fields, 3)
+            _set_float(values, "low_voltage_mppt_temperature_2", fields, 4)
+        elif command == "GLINE":
+            fields = parse_space_fields(result)
+            values["eybond_g_ascii_gline_fields"] = " ".join(fields)
+            _set_float(values, "grid_voltage", fields, 0)
+            _set_float(values, "grid_frequency", fields, 1)
+            _set_float(values, "mains_input_voltage", fields, 0)
+            _set_float(values, "mains_frequency", fields, 1)
+            _set_float(values, "grid_loss_high_voltage", fields, 2)
+            _set_float(values, "grid_loss_low_voltage", fields, 3)
+            _set_float(values, "grid_restore_high_voltage", fields, 4)
+            _set_float(values, "grid_restore_low_voltage", fields, 5)
+            _set_float(values, "grid_loss_high_frequency", fields, 6)
+            _set_float(values, "grid_loss_low_frequency", fields, 7)
+            _set_float(values, "output_load_percentage", fields, 9)
+            _set_scaled_float(values, "grid_energy_today", fields, 10, divisor=100.0)
+            _set_combined_scaled_counter(values, "grid_energy_total", fields, 11, 12, divisor=100.0)
+        elif command == "GBAT":
+            fields = parse_space_fields(result)
+            values["eybond_g_ascii_gbat_fields"] = " ".join(fields)
+            _set_float(values, "battery_voltage", fields, 0)
+            _set_float_preserve_existing_nonzero(values, "battery_current", fields, 1)
+            _set_float(values, "battery_cell_count", fields, 2)
+            _set_float(values, "battery_discharge_cutoff_voltage", fields, 3)
+            _set_float(values, "battery_discharge_alarm_voltage", fields, 4)
+        elif command == "GBUS":
+            fields = parse_space_fields(result)
+            _set_float(values, "bus_voltage", fields, 0)
+            _set_float(values, "bus_reference_start_voltage", fields, 1)
+            _set_float(values, "bus_reference_voltage", fields, 2)
+        elif command == "GCHG":
+            fields = parse_space_fields(result)
+            values["eybond_g_ascii_gchg_fields"] = " ".join(fields)
+            _set_float(values, "bus_voltage", fields, 0)
+            _set_float(values, "charging_voltage", fields, 1)
+            _set_float(values, "battery_cell_count", fields, 2)
+            _set_float(values, "charging_current", fields, 3)
+            _set_float(values, "constant_voltage_charging_voltage", fields, 6)
+            _set_float(values, "float_charging_voltage", fields, 7)
+            _set_float(values, "equalization_charging_voltage", fields, 8)
+            _set_float(values, "max_charging_current", fields, 9)
+            _set_float(values, "constant_voltage_charging_time", fields, 10)
+            _set_float(values, "equalization_charging_time", fields, 11)
+            _set_float(values, "equalization_timeout", fields, 12)
+            _set_float(values, "equalization_interval", fields, 13)
+            _set_bool_flag(values, "equalization_enabled", fields, 14)
+            _set_str(values, "battery_type_code", fields, 15)
+            _set_float(values, "low_power_discharge_time", fields, 16)
+            _set_str(values, "charging_mode_code", fields, 17)
+        elif command == "GOP":
+            fields = parse_space_fields(result)
+            values["eybond_g_ascii_gop_fields"] = " ".join(fields)
+            _set_float(values, "output_voltage", fields, 0)
+            _set_float(values, "output_frequency", fields, 1)
+            _set_float(values, "output_current", fields, 2)
+            _set_float(values, "output_low_current", fields, 3)
+            _set_float(values, "output_active_power", fields, 4)
+            _set_float(values, "output_apparent_power", fields, 6)
+            _set_float(values, "output_low_current_power", fields, 7)
+            _set_float(values, "output_half_wave_apparent_power", fields, 8)
+            _set_float(values, "output_load_percentage", fields, 9)
+            _set_scaled_float(values, "output_energy_today", fields, 12, divisor=100.0)
+            _set_combined_scaled_counter(values, "output_energy_total", fields, 13, 14, divisor=100.0)
+        elif command == "GINV":
+            fields = parse_space_fields(result)
+            _set_float(values, "inverter_voltage", fields, 0)
+            _set_float(values, "inverter_frequency", fields, 1)
+            _set_float(values, "inverter_current", fields, 2)
+        elif command == "GWS":
+            fields = parse_space_fields(result)
+            values["eybond_g_ascii_gws_fields"] = " ".join(fields)
+            _set_str(values, "fault_code", fields, 0)
+            _set_str(values, "warning_status_1", fields, 1)
+            _set_str(values, "warning_status_2", fields, 2)
+        elif command == "BL":
+            text = result.strip()
+            if text.startswith("BL"):
+                text = text[2:]
+            try:
+                values["battery_capacity"] = float(text)
+            except ValueError:
+                pass
+        elif command == "FAN???":
+            fields = parse_space_fields(result)
+            values["eybond_g_ascii_fan_fields"] = " ".join(fields)
+            _set_float(values, "fan_speed_percentage", fields, 0)
+            _set_float(values, "fan1_speed_detected", fields, 1)
+            _set_float(values, "fan2_speed_detected", fields, 2)
+            _set_bool_flag(values, "fan1_stopped", fields, 3)
+            _set_bool_flag(values, "fan2_stopped", fields, 4)
+        elif command == "TCQN????":
+            fields = parse_space_fields(result)
+            _set_float(values, "equalization_elapsed_hours", fields, 0)
+        elif command == "DATE??????":
+            fields = parse_space_fields(result)
+            _set_offset_2000_date(values, "inverter_date", fields)
+        elif command == "TIME??????":
+            fields = parse_space_fields(result)
+            _set_hms_time(values, "inverter_time", fields)
 
 async def _async_collect_eybond_g_ascii_bms_values(
     session: AsciiLineSession,
