@@ -49,7 +49,10 @@ from .common import (
     _seed_connection_collector_pn,
     _spawn_tracked_task,
 )
+from .connection_manager import ConnectionManager
 from .connections import _CollectorAtConnection, _CollectorConnection
+from .owner_counter import OwnerCounter
+from .route_reservation import RouteReservationManager
 from .tcp_acceptor import CollectorTcpAcceptor
 
 logger = logging.getLogger(__name__)
@@ -171,31 +174,46 @@ class _SharedEybondListener:
         self._port = int(port)
         self._server: CollectorTcpAcceptor | None = None
         self._ref_count = 0
-        self._connections: dict[str, _CollectorConnection] = {}
-        self._at_connections: dict[str, _CollectorAtConnection] = {}
-        self._connections_by_pn: dict[str, _CollectorConnection] = {}
-        self._at_connections_by_pn: dict[str, _CollectorAtConnection] = {}
-        self._session_payload_connections: dict[str, _CollectorConnection] = {}
-        self._session_at_connections: dict[str, _CollectorAtConnection] = {}
-        self._pending_sockets: dict[str, _PendingCollectorSocket] = {}
-        self._last_connection_ip = ""
-        self._last_at_connection_ip = ""
-        self._last_pending_ip = ""
-        self._payload_owner_counts: dict[str, int] = {}
-        self._at_owner_counts: dict[str, int] = {}
-        self._payload_pn_owner_counts: dict[str, int] = {}
-        self._at_pn_owner_counts: dict[str, int] = {}
-        # DURABLE runtime confirmed protocol owner (PN-validated live evidence).
-        # This is the ONLY source of active protocol-owner authority: onboarding
-        # never registers an owner from an inferred/expected hint.
-        self._session_protocol_owner_counts: dict[str, int] = {}
         self._session_seq = 0
         self._session_inventory: dict[str, _CollectorSessionInventoryEntry] = {}
-        self._pending_route_lock = asyncio.Lock()
-        self._exclusive_route_seq = 0
-        self._exclusive_routes: dict[int, _ExclusiveCollectorRouteReservation] = {}
         self._connection_watcher_seq = 0
         self._connection_watchers: dict[int, tuple[str, Callable[[str], None]]] = {}
+        # Composition: delegate to focused helper classes
+        self._owner_counter = OwnerCounter()
+        self._connection_manager = ConnectionManager()
+        self._route_manager = RouteReservationManager()
+
+    # --- Property accessors for backward compatibility -------------------------
+    # These properties delegate to the helper classes, allowing existing code
+    # to continue working while the actual state is managed by the helpers.
+
+    @property
+    def _pending_sockets(self) -> dict[str, _PendingCollectorSocket]:
+        return self._connection_manager.get_pending_sockets()
+
+    @property
+    def _exclusive_routes(self) -> dict[int, _ExclusiveCollectorRouteReservation]:
+        return self._route_manager.get_active_routes()
+
+    @property
+    def _connections(self) -> dict[str, _CollectorConnection]:
+        return self._connection_manager._connections
+
+    @property
+    def _at_connections(self) -> dict[str, _CollectorAtConnection]:
+        return self._connection_manager._at_connections
+
+    @property
+    def _connections_by_pn(self) -> dict[str, _CollectorConnection]:
+        return self._connection_manager._connections_by_pn
+
+    @property
+    def _at_connections_by_pn(self) -> dict[str, _CollectorAtConnection]:
+        return self._connection_manager._at_connections_by_pn
+
+    @property
+    def _session_protocol_owner_counts(self) -> dict[str, int]:
+        return self._owner_counter._session_protocol_owner_counts
 
     def add_connection_watcher(
         self,
@@ -257,75 +275,42 @@ class _SharedEybondListener:
             await self._server.wait_closed()
             self._server = None
 
-        for pending in tuple(self._pending_sockets.values()):
-            await self._close_pending_socket(pending)
-        self._pending_sockets.clear()
-
-        for connection in self._unique_connections():
-            await connection.disconnect()
-        self._connections.clear()
-        self._connections_by_pn.clear()
-        for connection in self._unique_at_connections():
-            await connection.disconnect()
-        self._at_connections.clear()
-        self._at_connections_by_pn.clear()
-        self._session_payload_connections.clear()
-        self._session_at_connections.clear()
-        self._last_connection_ip = ""
-        self._last_at_connection_ip = ""
-        self._last_pending_ip = ""
-        self._payload_owner_counts.clear()
-        self._at_owner_counts.clear()
-        self._payload_pn_owner_counts.clear()
-        self._at_pn_owner_counts.clear()
-        self._session_protocol_owner_counts.clear()
-        self._exclusive_routes.clear()
+        await self._connection_manager.disconnect_all()
+        self._owner_counter.clear()
+        self._route_manager.clear()
         self._session_inventory.clear()
 
         return True
 
     def register_payload_owner(self, collector_ip: str) -> None:
-        owner = str(collector_ip or "").strip()
-        self._payload_owner_counts[owner] = self._payload_owner_counts.get(owner, 0) + 1
+        self._owner_counter.register_payload_owner(collector_ip)
 
     def register_payload_pn_owner(self, collector_pn: str) -> None:
-        owner = str(collector_pn or "").strip()
-        if not owner:
-            return
-        self._payload_pn_owner_counts[owner] = self._payload_pn_owner_counts.get(owner, 0) + 1
+        self._owner_counter.register_payload_pn_owner(collector_pn)
 
     def unregister_payload_owner(self, collector_ip: str) -> None:
-        self._decrement_owner_count(self._payload_owner_counts, collector_ip)
+        self._owner_counter.unregister_payload_owner(collector_ip)
 
     def unregister_payload_pn_owner(self, collector_pn: str) -> None:
-        self._decrement_owner_count(self._payload_pn_owner_counts, collector_pn)
+        self._owner_counter.unregister_payload_pn_owner(collector_pn)
 
     def register_at_owner(self, collector_ip: str) -> None:
-        owner = str(collector_ip or "").strip()
-        self._at_owner_counts[owner] = self._at_owner_counts.get(owner, 0) + 1
+        self._owner_counter.register_at_owner(collector_ip)
 
     def register_at_pn_owner(self, collector_pn: str) -> None:
-        owner = str(collector_pn or "").strip()
-        if not owner:
-            return
-        self._at_pn_owner_counts[owner] = self._at_pn_owner_counts.get(owner, 0) + 1
+        self._owner_counter.register_at_pn_owner(collector_pn)
 
     def unregister_at_owner(self, collector_ip: str) -> None:
-        self._decrement_owner_count(self._at_owner_counts, collector_ip)
+        self._owner_counter.unregister_at_owner(collector_ip)
 
     def unregister_at_pn_owner(self, collector_pn: str) -> None:
-        self._decrement_owner_count(self._at_pn_owner_counts, collector_pn)
+        self._owner_counter.unregister_at_pn_owner(collector_pn)
 
     def register_session_protocol_owner(self, session_protocol: str) -> None:
-        owner = str(session_protocol or "").strip().lower()
-        if not owner:
-            return
-        self._session_protocol_owner_counts[owner] = (
-            self._session_protocol_owner_counts.get(owner, 0) + 1
-        )
+        self._owner_counter.register_session_protocol_owner(session_protocol)
 
     def unregister_session_protocol_owner(self, session_protocol: str) -> None:
-        self._decrement_owner_count(self._session_protocol_owner_counts, session_protocol)
+        self._owner_counter.unregister_session_protocol_owner(session_protocol)
 
     def register_exclusive_collector_route(
         self,
@@ -341,19 +326,13 @@ class _SharedEybondListener:
         after the tool stops, but they must not consume the reconnect that a
         proxy/shadow route is waiting for.
         """
-
-        self._exclusive_route_seq += 1
-        token = self._exclusive_route_seq
-        self._exclusive_routes[token] = _ExclusiveCollectorRouteReservation(
-            collector_ip=str(collector_ip or "").strip(),
-            collector_pn=str(collector_pn or "").strip(),
-            baseline_session_ids=frozenset(self._pending_sockets),
-            transparent=bool(transparent),
-            expected_session_protocol=str(
-                expected_session_protocol or ""
-            ).strip().lower(),
+        return self._route_manager.register_exclusive_collector_route(
+            collector_ip=collector_ip,
+            collector_pn=collector_pn,
+            transparent=transparent,
+            expected_session_protocol=expected_session_protocol,
+            baseline_session_ids=frozenset(self._connection_manager.get_pending_sockets()),
         )
-        return token
 
     async def pop_pending_socket_for_transparent_route(
         self,
