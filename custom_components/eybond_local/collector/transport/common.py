@@ -101,7 +101,9 @@ def _spawn_tracked_task(coro: Any, *, name: str) -> "asyncio.Task[Any]":
 # Bounds every writer teardown: wait_closed() on a peer that vanished with
 # unflushed data (collector rebooting mid-frame) otherwise blocks until the
 # OS-level TCP timeout — minutes, observed hanging Home Assistant shutdown.
-# (_WRITER_CLOSE_TIMEOUT is imported from const.py)
+# Canonical value lives in const.py; this alias is part of this module's
+# existing private surface and is re-exported by collector/transport/__init__.py.
+_WRITER_CLOSE_TIMEOUT = WRITER_CLOSE_TIMEOUT
 
 
 async def _cancel_and_join_task(task: "asyncio.Task[Any]") -> None:
@@ -230,8 +232,10 @@ def _short_ascii(value: bytes, *, limit: int = 160) -> str:
     return text
 
 
-# (_AT_TEXT_MIXED_FRAME_READ_TIMEOUT and _AT_TEXT_RESPONSE_IDLE_TIMEOUT
-# are imported from const.py)
+# Canonical values live in const.py; these aliases preserve this module's
+# existing private surface for sibling imports.
+_AT_TEXT_MIXED_FRAME_READ_TIMEOUT = AT_TEXT_MIXED_FRAME_READ_TIMEOUT
+_AT_TEXT_RESPONSE_IDLE_TIMEOUT = AT_TEXT_RESPONSE_IDLE_TIMEOUT
 _AT_TEXT_MAX_MIXED_FRAME_PAYLOAD_LEN = MAX_EYBOND_PAYLOAD_SIZE
 _AT_TEXT_MIXED_FRAME_FCODES = RUNTIME_EYBOND_FCODES
 

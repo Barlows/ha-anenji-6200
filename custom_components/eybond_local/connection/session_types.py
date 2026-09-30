@@ -53,6 +53,24 @@ def _state_from_inventory(inventory_state: str, identity_source: str) -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class PermanentOwnedSessionCertification:
+    """A registry-issued permanent-owner recovery capability (Batch 8).
+
+    The typed, exact-type capability a recovery run UNDER an existing permanent
+    owner produces — deliberately DISTINCT from the onboarding prepared-handoff
+    slot. It certifies exactly one ``(owner_id, session_id, collector_pn)``
+    triple and asserts nothing about an ownership transfer. Only the registry
+    constructs it (``certify_permanent_owned_session``) and only the registry
+    re-verifies it (``reverify_permanent_owned_session``); a forged look-alike
+    fails the strict ``type() is`` re-check at commit time.
+    """
+
+    owner_id: str
+    session_id: str
+    collector_pn: str
+
+
+@dataclass(frozen=True, slots=True)
 class CallbackSession:
     """One normalized inbound collector session with ownership state."""
 
