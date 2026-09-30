@@ -802,3 +802,56 @@ def _proxy_overview(**overrides):
     return ProxyCaptureOverview(**values)
 
 
+class ConfigFlowDeadSurfaceGuards(unittest.TestCase):
+    def test_removed_test_only_helpers_do_not_return(self) -> None:
+        package = REPO_ROOT / "custom_components/eybond_local"
+
+        def _methods(pattern: str) -> set[str]:
+            if pattern == "config_*.py":
+                paths = (
+                    package / "config_flow.py",
+                    package / "config_entry.py",
+                    *sorted((package / "flows" / "config").glob("*.py")),
+                )
+            elif pattern == "options_*.py":
+                paths = (
+                    package / "options_flow.py",
+                    *sorted((package / "flows" / "options").glob("*.py")),
+                )
+            else:
+                raise AssertionError(f"unknown lifecycle family: {pattern}")
+            methods: set[str] = set()
+            for path in paths:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+                for node in tree.body:
+                    if not isinstance(node, ast.ClassDef):
+                        continue
+                    methods.update(
+                        item.name
+                        for item in node.body
+                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    )
+            return methods
+
+        config_methods = _methods("config_*.py")
+        options_methods = _methods("options_*.py")
+
+        self.assertTrue(
+            {
+                "_peer_label_plural",
+                "_endpoint_originality_hint",
+                "_onboarding_first_present_value",
+                "_onboarding_confirm_measurement",
+                "_onboarding_confirm_battery_connection",
+                "_default_control_summary",
+                "_scan_result_status_code",
+                "_scan_result_sort_key",
+            }.isdisjoint(config_methods)
+        )
+        self.assertTrue(
+            {
+                "_shadow_learning_settings_dat",
+                "_shadow_learning_observed_writes",
+                "_smartess_cloud_exported_next_step",
+            }.isdisjoint(options_methods)
+        )

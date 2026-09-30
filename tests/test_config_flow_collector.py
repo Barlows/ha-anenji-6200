@@ -802,3 +802,83 @@ def _proxy_overview(**overrides):
     return ProxyCaptureOverview(**values)
 
 
+class CollectorOnlyResultTests(unittest.TestCase):
+    """The certified identity becomes a COLLECTOR-only result -- nothing invented.
+
+    The flow no longer runs any pre-entry detection, so this result is everything
+    the entry is built from. It must record the collector we triggered, never
+    Home Assistant's own address.
+    """
+
+    FULL_PN = "V001020SYN62344022"
+    HA_IP = "192.0.2.10"
+    COLLECTOR_IP = "192.0.2.55"
+
+    def _result(self):
+        from custom_components.eybond_local.config_flow import EybondLocalConfigFlow
+        from custom_components.eybond_local.connection.callback_identity import (
+            CallbackIdentityOutcome,
+        )
+
+        flow = EybondLocalConfigFlow.__new__(EybondLocalConfigFlow)
+        settings = {
+            "server_ip": self.HA_IP,          # HA: where the collector dials IN
+            "collector_ip": self.COLLECTOR_IP,  # the collector: what we trigger
+            "tcp_port": 18899,
+        }
+        outcome = CallbackIdentityOutcome(
+            result="",
+            collector_pn=self.FULL_PN,
+            session_id="s-new",
+            session_protocol="eybond_framed",
+            identity_source="fc2_parameter_2",
+            handoff_owner="callback_verification:x",
+        )
+        with patch.object(
+            EybondLocalConfigFlow, "_current_connection_type", return_value="eybond"
+        ):
+            return flow._collector_only_result(settings, outcome)
+
+    def test_target_ip_is_the_collector_not_home_assistant(self) -> None:
+        candidate = self._result().collector
+        self.assertEqual(candidate.target_ip, self.COLLECTOR_IP)
+        self.assertEqual(candidate.ip, self.COLLECTOR_IP)
+        # HA's own address must never be recorded as the collector's target.
+        self.assertNotEqual(candidate.target_ip, self.HA_IP)
+        self.assertNotEqual(candidate.ip, self.HA_IP)
+
+    def test_result_carries_only_what_the_transaction_proved(self) -> None:
+        result = self._result()
+        candidate = result.collector
+        self.assertEqual(candidate.collector.collector_pn, self.FULL_PN)
+        self.assertEqual(candidate.session_protocol, "eybond_framed")
+        self.assertTrue(candidate.connected)
+        self.assertEqual(candidate.source, "callback_identity")
+        # No inverter match and no high confidence -> manual_confirm, never a
+        # detection summary claiming knowledge we do not have.
+        self.assertIsNone(result.match)
+        self.assertNotEqual(getattr(result, "confidence", ""), "high")
+
+    def test_entry_persists_the_collector_address_and_pn(self) -> None:
+        # The candidate is what the entry is built from: its ip becomes
+        # CONF_COLLECTOR_IP and its PN becomes CONF_COLLECTOR_PN. Neither may be
+        # HA's address.
+        from custom_components.eybond_local.const import (
+            CONF_COLLECTOR_IP,
+            CONF_COLLECTOR_PN,
+        )
+
+        candidate = self._result().collector
+        data = {
+            CONF_COLLECTOR_IP: candidate.ip,
+            CONF_COLLECTOR_PN: candidate.collector.collector_pn,
+        }
+        self.assertEqual(data[CONF_COLLECTOR_IP], self.COLLECTOR_IP)
+        self.assertEqual(data[CONF_COLLECTOR_PN], self.FULL_PN)
+        self.assertNotIn(self.HA_IP, data.values())
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+

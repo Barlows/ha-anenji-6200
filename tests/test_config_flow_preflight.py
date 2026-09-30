@@ -802,3 +802,33 @@ def _proxy_overview(**overrides):
     return ProxyCaptureOverview(**values)
 
 
+class PreflightEffectiveMetadataTests(unittest.TestCase):
+    # The fallback logic (persisted snapshot, else live base schema) now lives on
+    # coordinator.shadow_learning_effective_metadata so the preview preflight and
+    # the actual start path (async_start_shadow_learning) share ONE implementation
+    # and cannot drift. This method is now a thin delegation; the fallback itself
+    # is covered in test_coordinator_device_hierarchy.
+
+    def test_preflight_delegates_live_fallback(self) -> None:
+        fallback = {
+            "effective_owner_key": "modbus_smg",
+            "profile_name": "",
+            "register_schema_name": "modbus_smg/base.json",
+        }
+        coordinator = types.SimpleNamespace(shadow_learning_effective_metadata=fallback)
+
+        self.assertIs(
+            EybondLocalOptionsFlow._preflight_effective_metadata(coordinator), fallback
+        )
+
+    def test_preflight_delegates_persisted_snapshot(self) -> None:
+        snapshot = types.SimpleNamespace(
+            register_schema_name="modbus_smg/models/smg_6200.json"
+        )
+        coordinator = types.SimpleNamespace(shadow_learning_effective_metadata=snapshot)
+
+        self.assertIs(
+            EybondLocalOptionsFlow._preflight_effective_metadata(coordinator), snapshot
+        )
+
+

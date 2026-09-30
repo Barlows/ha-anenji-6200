@@ -802,3 +802,51 @@ def _proxy_overview(**overrides):
     return ProxyCaptureOverview(**values)
 
 
+class OptionsTransitionNatPrefillTests(unittest.IsolatedAsyncioTestCase):
+    """Blocker 7: the confirm form never presents local bind values as the
+    externally-advertised endpoint."""
+
+    def _flow(self, data):
+        entry = type("_Entry", (), {})()
+        entry.data = data
+        entry.options = {}
+        entry.entry_id = "entry-1"
+        entry.runtime_data = None
+        flow = EybondLocalOptionsFlow(entry)
+        flow.hass = _FakeHass()
+        flow.context = {}
+        flow._transition_target_strategy = "callback_on_demand"
+        return flow
+
+    async def test_no_confirmed_advertised_endpoint_means_empty_fields(self) -> None:
+        flow = self._flow(
+            {
+                "connection_type": "eybond",
+                "server_ip": "192.168.1.50",
+                "tcp_port": 8899,
+                "collector_ip": "192.168.1.55",
+                "connection_strategy": "inbound",
+            }
+        )
+        prefill = flow._transition_prefill()
+        # The LOCAL bind address/port are NOT promoted to the advertised
+        # endpoint: the fields stay empty and explicitly require input.
+        self.assertEqual(prefill["host"], "")
+        self.assertEqual(prefill["port"], 0)
+
+    async def test_confirmed_advertised_endpoint_prefills_verbatim(self) -> None:
+        flow = self._flow(
+            {
+                "connection_type": "eybond",
+                "server_ip": "192.168.1.50",
+                "tcp_port": 8899,
+                "advertised_server_ip": "public.example",
+                "advertised_tcp_port": 18899,
+                "connection_strategy": "inbound",
+            }
+        )
+        prefill = flow._transition_prefill()
+        self.assertEqual(prefill["host"], "public.example")
+        self.assertEqual(prefill["port"], 18899)
+
+

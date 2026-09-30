@@ -802,3 +802,53 @@ def _proxy_overview(**overrides):
     return ProxyCaptureOverview(**values)
 
 
+class ManualRecoveryFailureExplanationTests(unittest.IsolatedAsyncioTestCase):
+    """The recovery-failed screen shows a human sentence, not a raw code."""
+
+    def _make_flow(self):
+        flow = EybondLocalConfigFlow()
+        flow.hass = _FakeHass(None)
+        flow.context = {}
+        flow._callback_continuation._certified_pn = "V001020SYN62344022"
+        flow._callback_continuation._expected_pn = "V001020SYN62344022"
+        return flow
+
+    async def test_each_silent_reason_maps_to_a_distinct_sentence(self) -> None:
+        flow = self._make_flow()
+        codes = [
+            "recovery_silent_session_ambiguous",
+            "recovery_identity_mismatch",
+            "recovery_silent_probe_failed",
+            "recovery_silent_probe_unavailable",
+            "callback_recovery_timeout",
+            "inbound_reconnect_timeout",
+        ]
+        sentences = {}
+        for code in codes:
+            flow._manual_recovery_error = code
+            result = await flow.async_step_manual_recovery_failed()
+            self.assertEqual(result["type"], "menu")
+            self.assertEqual(result["step_id"], "manual_recovery_failed")
+            explanation = result["description_placeholders"]["failure_explanation"]
+            # A real sentence, never the raw code or a backticked token.
+            self.assertNotIn("`", explanation)
+            self.assertNotIn(code, explanation)
+            self.assertGreater(len(explanation), 20)
+            sentences[code] = explanation
+            # The explicit next actions are preserved.
+            self.assertIn("manual_probe_again", result["menu_options"])
+            self.assertIn("manual_edit_settings", result["menu_options"])
+            self.assertNotIn("manual_save", result["menu_options"])
+        # The observable causes are DISTINGUISHABLE to the user.
+        self.assertEqual(len(set(sentences.values())), len(codes))
+
+    async def test_unknown_code_falls_back_without_leaking_it(self) -> None:
+        flow = self._make_flow()
+        flow._manual_recovery_error = "some_internal_code_42"
+        result = await flow.async_step_manual_recovery_failed()
+        explanation = result["description_placeholders"]["failure_explanation"]
+        self.assertNotIn("some_internal_code_42", explanation)
+        self.assertNotIn("`", explanation)
+        self.assertGreater(len(explanation), 20)
+
+

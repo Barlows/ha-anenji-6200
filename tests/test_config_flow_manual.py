@@ -802,3 +802,147 @@ def _proxy_overview(**overrides):
     return ProxyCaptureOverview(**values)
 
 
+class ManualSilentBootstrapFlowTests(unittest.IsolatedAsyncioTestCase):
+    """The silent-session UX: honest taxonomy + explicit protocol retry."""
+
+    FULL_PN = "V001020SYN62344022"
+
+    def _make_flow(self):
+        flow = EybondLocalConfigFlow()
+        flow.hass = _FakeHass(None)
+        flow.context = {}
+        flow._local_ip = "192.168.1.50"
+        flow._auto_config = {"server_ip": "192.168.1.50"}
+        flow._interface_options = [
+            {
+                "name": "eth0",
+                "ip": "192.168.1.50",
+                "label": "eth0 - 192.168.1.50",
+                "network": "192.168.0.0/16",
+                "broadcast": "192.168.255.255",
+            }
+        ]
+        return flow
+
+    def _manual_input(self):
+        return {
+            "server_ip": "192.168.1.50",
+            "tcp_port": 18899,
+            "udp_port": 58899,
+            "collector_ip": "192.168.1.60",
+            "discovery_target": "192.168.1.255",
+            "discovery_interval": 3,
+            "heartbeat_interval": 60,
+            "driver_hint": "auto",
+            "connection_strategy": "callback_on_demand",
+        }
+
+    async def test_silent_result_offers_bootstrap_options(self) -> None:
+        from custom_components.eybond_local.connection.callback_identity import (
+            CallbackIdentityOutcome,
+            IDENTITY_SESSION_SILENT,
+        )
+
+        flow = self._make_flow()
+        from custom_components.eybond_local.connection.callback_identity import (
+            SilentSessionBootstrapOffer,
+        )
+
+        outcome = CallbackIdentityOutcome(
+            result=IDENTITY_SESSION_SILENT,
+            silent_bootstrap_offer=SilentSessionBootstrapOffer("s-silent-7"),
+        )
+        with patch.object(
+            admission_transaction_module,
+            "async_run_callback_identity_transaction",
+            return_value=outcome,
+        ):
+            result = await flow.async_step_manual(self._manual_input())
+
+        self.assertEqual(result["type"], "menu")
+        self.assertEqual(result["step_id"], "manual_confirm")
+        self.assertEqual(flow._manual_result.last_error, "callback_session_silent")
+        self.assertEqual(flow._callback_continuation._silent_offer.session_id, "s-silent-7")
+        options = result["menu_options"]
+        self.assertIn("manual_bootstrap_framed", options)
+        self.assertIn("manual_bootstrap_at", options)
+        self.assertNotIn("manual_save", options)
+        # The summary is honest: the session ARRIVED (never "did not call back").
+        summary = result["description_placeholders"]["probe_summary"]
+        self.assertIn("collector connected", summary.lower())
+
+    async def test_plain_timeout_offers_no_bootstrap_options(self) -> None:
+        from custom_components.eybond_local.connection.callback_identity import (
+            CallbackIdentityOutcome,
+            IDENTITY_TIMEOUT,
+        )
+
+        flow = self._make_flow()
+        outcome = CallbackIdentityOutcome(result=IDENTITY_TIMEOUT)
+        with patch.object(
+            admission_transaction_module,
+            "async_run_callback_identity_transaction",
+            return_value=outcome,
+        ):
+            result = await flow.async_step_manual(self._manual_input())
+
+        self.assertEqual(result["step_id"], "manual_confirm")
+        self.assertNotIn("manual_bootstrap_framed", result["menu_options"])
+        self.assertNotIn("manual_bootstrap_at", result["menu_options"])
+
+    async def test_bootstrap_step_passes_the_typed_intent(self) -> None:
+        from custom_components.eybond_local.connection.callback_identity import (
+            CallbackIdentityOutcome,
+            IDENTITY_SESSION_SILENT,
+            OnboardingWireProbeIntent,
+        )
+
+        flow = self._make_flow()
+        from custom_components.eybond_local.connection.callback_identity import (
+            SilentSessionBootstrapOffer,
+        )
+
+        silent = CallbackIdentityOutcome(
+            result=IDENTITY_SESSION_SILENT,
+            silent_bootstrap_offer=SilentSessionBootstrapOffer("s-silent-9"),
+        )
+        seen_requests: list = []
+
+        async def _tx(_hass, request, **_kwargs):
+            seen_requests.append(request)
+            return silent
+
+        with patch.object(
+            admission_transaction_module,
+            "async_run_callback_identity_transaction",
+            side_effect=_tx,
+        ):
+            await flow.async_step_manual(self._manual_input())
+            framed = await flow.async_step_manual_bootstrap_framed()
+            # The silent target from THIS attempt re-arms the next retry.
+            self.assertEqual(flow._callback_continuation._silent_offer.session_id, "s-silent-9")
+            at = await flow.async_step_manual_bootstrap_at()
+
+        self.assertEqual(len(seen_requests), 3)
+        self.assertIsNone(seen_requests[0].bootstrap_probe)
+        probe_framed = seen_requests[1].bootstrap_probe
+        self.assertIs(type(probe_framed), OnboardingWireProbeIntent)
+        self.assertEqual(probe_framed.protocol, "eybond_framed")
+        self.assertEqual(probe_framed.session_id, "s-silent-9")
+        self.assertEqual(probe_framed.source, "explicit_user_selection")
+        probe_at = seen_requests[2].bootstrap_probe
+        self.assertEqual(probe_at.protocol, "at_text")
+        self.assertEqual(probe_at.session_id, "s-silent-9")
+        del framed, at
+
+    async def test_bootstrap_without_target_returns_to_menu(self) -> None:
+        flow = self._make_flow()
+        flow._manual_config = self._manual_input()
+        flow._callback_continuation._silent_offer = None
+        flow._manual_result = OnboardingResult(connection_mode="manual")
+
+        result = await flow.async_step_manual_bootstrap_framed()
+
+        self.assertEqual(result["step_id"], "manual_confirm")
+
+
