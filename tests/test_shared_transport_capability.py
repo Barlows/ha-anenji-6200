@@ -96,3 +96,59 @@ async def _wait_for_writer_buffer(writer: _FakeWriter, expected: bytes) -> None:
         await asyncio.sleep(0.01)
 
 
+class SessionCapabilityInventoryTests(unittest.TestCase):
+    def test_later_at_identity_is_supplemental_and_never_rewrites_framed_primary(self) -> None:
+        listener = _SharedEybondListener(host="127.0.0.1", port=8899)
+        session_id = "hybrid-e500"
+        pn = "E50000200000000001"
+        listener._remember_session(
+            session_id=session_id,
+            remote_ip="192.0.2.55",
+            remote_port=41000,
+        )
+        listener._pending_sockets[session_id] = _PendingCollectorSocket(
+            session_id=session_id,
+            remote_ip="192.0.2.55",
+            remote_port=41000,
+            reader=object(),  # type: ignore[arg-type]
+            writer=_FakeWriter(),  # type: ignore[arg-type]
+        )
+        listener._mark_session_first_bytes(
+            session_id,
+            build_collector_request(
+                1,
+                pn[:16].encode("ascii"),
+                devcode=2376,
+                collector_addr=1,
+                fcode=1,
+            ),
+        )
+        listener._mark_session_identity(session_id, pn, "framed_heartbeat")
+        first_prefix = listener._session_inventory[session_id].first_bytes_prefix_hex
+        listener._mark_session_first_bytes(
+            session_id,
+            f"AT+DTUPN:{pn}\r\n".encode("ascii"),
+        )
+        listener._mark_session_identity(session_id, pn, "at_dtupn")
+
+        entry = listener._session_inventory[session_id]
+        self.assertEqual(entry.protocol_shape, "eybond_framed")
+        self.assertEqual(entry.first_bytes_prefix_hex, first_prefix)
+        self.assertEqual(
+            entry.observed_protocol_shapes,
+            {"eybond_framed", "at_text"},
+        )
+        self.assertEqual(
+            entry.collector_identity_sources,
+            {"framed_heartbeat", "at_dtupn"},
+        )
+        observed = listener.discovered_collector_sessions()[0]
+        self.assertEqual(observed["protocol_shape"], "eybond_framed")
+        self.assertEqual(
+            set(observed["collector_identity_sources"]),
+            {"framed_heartbeat", "at_dtupn"},
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
