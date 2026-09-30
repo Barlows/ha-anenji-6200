@@ -41,6 +41,17 @@ Validate declarative runtime profiles directly:
 python3 tools/validate_profiles.py
 ```
 
+Check that every intra-package relative import still resolves to a real name:
+
+```bash
+python3 tools/check_imports.py
+```
+
+This runs as the first quality gate step. `compileall` only parses; it never
+resolves imports, so a name deleted from a module it was re-exported from
+otherwise breaks `import custom_components.eybond_local` at runtime while
+still passing compilation and the test suite's import guards.
+
 ## Maintain the inverter model catalog
 
 Validate catalog records and source references:

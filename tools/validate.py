@@ -641,6 +641,7 @@ def run_affected(base: str) -> None:
     """Run fast checks, cheap catalogs, and tests selected from changed files."""
 
     paths = run_fast(base)
+    _run((sys.executable, "tools/check_imports.py"))
     _run((sys.executable, "tools/validate_profiles.py"))
     _run((sys.executable, "tools/model_catalog.py", "validate"))
     tests = affected_test_files(paths)

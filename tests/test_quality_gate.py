@@ -43,10 +43,14 @@ class QualityGateTests(unittest.TestCase):
     def test_build_steps_without_refresh_uses_check_mode(self) -> None:
         steps = build_quality_gate_steps(python_executable="python3", refresh_generated=False)
         step_keys = [step.key for step in steps]
+        by_key = {step.key: step for step in steps}
 
+        # Import resolution runs first so a broken import fails the gate before
+        # any slower step runs.
         self.assertEqual(
-            step_keys[:5],
+            step_keys[:6],
             [
+                "check_imports",
                 "validate_profiles",
                 "validate_model_catalog",
                 "check_public_docs",
@@ -57,16 +61,23 @@ class QualityGateTests(unittest.TestCase):
         self.assertIn("check_model_catalog", step_keys)
         self.assertNotIn("refresh_support_matrix", step_keys)
         self.assertNotIn("check_support_matrix", step_keys)
-        self.assertEqual(steps[0].command, ("python3", str(TOOLS_DIR / "validate_profiles.py")))
         self.assertEqual(
-            steps[1].command,
+            by_key["check_imports"].command,
+            ("python3", str(TOOLS_DIR / "check_imports.py")),
+        )
+        self.assertEqual(
+            by_key["validate_profiles"].command,
+            ("python3", str(TOOLS_DIR / "validate_profiles.py")),
+        )
+        self.assertEqual(
+            by_key["validate_model_catalog"].command,
             ("python3", str(TOOLS_DIR / "model_catalog.py"), "validate"),
         )
         self.assertEqual(
-            steps[4].command,
+            by_key["compileall"].command,
             ("python3", "-m", "compileall", str(PACKAGE_DIR), str(TOOLS_DIR)),
         )
-        for step in steps[5:]:
+        for step in steps[step_keys.index("compileall") + 1 :]:
             self.assertIn("--check", step.command)
 
     def test_build_steps_with_refresh_writes_then_checks(self) -> None:
