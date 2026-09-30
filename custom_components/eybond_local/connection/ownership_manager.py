@@ -14,7 +14,7 @@ from ..collector_identity import (
     pn_is_same_identity as _pn_is_same_identity,
     prefer_full_pn as _prefer_full_pn,
 )
-from .session_registry import (
+from .session_types import (
     SESSION_STATE_ACTIVE,
     SESSION_STATE_CLAIMED,
     SESSION_STATE_CLOSED,
