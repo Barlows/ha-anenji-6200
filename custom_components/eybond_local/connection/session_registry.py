@@ -115,15 +115,26 @@ class CallbackSessionRegistry:
     """
 
     sessions_source: Callable[[], Iterable[Mapping[str, object]]] | None = None
-    _claims: dict[str, _Claim] = field(default_factory=dict)
     _observer: SessionObserver = field(default_factory=SessionObserver)
     _ownership: OwnershipManager = field(default_factory=OwnershipManager)
+
+    @property
+    def _claims(self) -> dict[str, _Claim]:
+        """The one claim store, owned by OwnershipManager.
+
+        Claims must be readable through both the registry's certification and
+        handoff logic and OwnershipManager.attach_owner(). Keeping a second
+        dict here meant claim() recorded ownership where attach_owner() never
+        looked, so a claimed session was still published as a discovery
+        candidate.
+        """
+        return self._ownership._claims
 
     # --- observation ----------------------------------------------------------
 
     def _raw_sessions(self) -> tuple[Mapping[str, object], ...]:
         """Return raw session dicts from the listener inventory."""
-        return self._observer.raw_sessions()
+        return self._observer.raw_sessions(self.sessions_source)
 
     @staticmethod
     def _normalize(raw: Mapping[str, object]) -> CallbackSession:
@@ -170,7 +181,7 @@ class CallbackSessionRegistry:
     ) -> CallbackSession | None:
         """Return the best currently observed socket for one collector PN."""
         return self._observer.current_session_for_pn(
-            collector_pn, require_exact=require_exact
+            collector_pn, require_exact=require_exact, source=self.sessions_source
         )
 
     # --- ownership ------------------------------------------------------------

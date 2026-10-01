@@ -39,18 +39,22 @@ class SessionObserver:
     This class handles the read-only session observation pipeline:
     raw session dicts -> normalized CallbackSession -> coalesced view.
 
-    It does NOT own any mutable state (claims, handoffs) -- it is a pure
-    observer that can be unit-tested independently.
+    It does NOT own any mutable state (claims, handoffs, or the session
+    source) -- it is a pure observer that can be unit-tested independently.
+    The registry owns ``sessions_source`` and passes it in explicitly, because
+    an observer that read its own copy of it would silently observe nothing
+    whenever the two ever fell out of step.
     """
 
-    sessions_source: Callable[[], Iterable[Mapping[str, object]]] | None = None
-
-    def raw_sessions(self) -> tuple[Mapping[str, object], ...]:
+    def raw_sessions(
+        self,
+        source: Callable[[], Iterable[Mapping[str, object]]] | None,
+    ) -> tuple[Mapping[str, object], ...]:
         """Return raw session dicts from the listener inventory."""
-        if self.sessions_source is None:
+        if source is None:
             return ()
         try:
-            return tuple(self.sessions_source() or ())
+            return tuple(source() or ())
         except Exception:
             return ()
 
@@ -81,52 +85,71 @@ class SessionObserver:
         Distinct full PNs are always kept distinct -- this is what keeps two
         collectors behind one NAT peer IP separate. Peer IP is never used to
         merge or split.
+
+        Matching is by IDENTITY, not by string equality: a weak short PN and
+        the full PN it is a prefix of are the same collector even though the
+        two strings differ, so every candidate is compared against what has
+        already been kept. Keying an index by the raw PN string silently skips
+        exactly these pairs, which is the case coalescing exists to collapse.
         """
         coalesced: list[CallbackSession] = []
-        pn_index: dict[str, int] = {}
         for session in sessions:
             if not session.collector_pn:
                 coalesced.append(session)
                 continue
-            pn = session.collector_pn
-            idx = pn_index.get(pn)
-            if idx is not None:
-                existing = coalesced[idx]
-                if existing.collector_pn and _pn_is_same_identity(existing.collector_pn, pn):
-                    keep_new = False
-                    if session.has_strong_identity and not existing.has_strong_identity:
-                        keep_new = True
-                    elif (
-                        session.has_strong_identity == existing.has_strong_identity
-                        and len(pn) > len(existing.collector_pn)
-                    ):
-                        keep_new = True
-                    if keep_new:
-                        merged_pn = _prefer_full_pn(existing.collector_pn, pn)
-                        coalesced[idx] = replace(session, collector_pn=merged_pn)
+            for index, existing in enumerate(coalesced):
+                if not existing.collector_pn:
                     continue
-            pn_index[pn] = len(coalesced)
-            coalesced.append(session)
+                if not _pn_is_same_identity(existing.collector_pn, session.collector_pn):
+                    continue
+                # Same collector observed twice (short + full / weak + strong):
+                # keep the strongest, most complete identity.
+                keep_new = False
+                if session.has_strong_identity and not existing.has_strong_identity:
+                    keep_new = True
+                elif (
+                    session.has_strong_identity == existing.has_strong_identity
+                    and len(session.collector_pn) > len(existing.collector_pn)
+                ):
+                    keep_new = True
+                if keep_new:
+                    merged_pn = _prefer_full_pn(existing.collector_pn, session.collector_pn)
+                    coalesced[index] = replace(session, collector_pn=merged_pn)
+                break
+            else:
+                coalesced.append(session)
         return coalesced
 
-    def normalized_sessions(self) -> list[CallbackSession]:
+    def normalized_sessions(
+        self,
+        source: Callable[[], Iterable[Mapping[str, object]]] | None,
+    ) -> list[CallbackSession]:
         """Return per-socket normalized sessions (pre-coalesce) with owner attached."""
-        normalized = [self.normalize(raw) for raw in self.raw_sessions()]
+        normalized = [self.normalize(raw) for raw in self.raw_sessions(source)]
         return [session for session in normalized if session.session_id]
 
-    def observed_sessions(self) -> tuple[CallbackSession, ...]:
+    def observed_sessions(
+        self,
+        source: Callable[[], Iterable[Mapping[str, object]]] | None,
+    ) -> tuple[CallbackSession, ...]:
         """Return coalesced observed sessions with ownership state attached."""
-        return tuple(self.coalesce(self.normalized_sessions()))
+        return tuple(self.coalesce(self.normalized_sessions(source)))
 
-    def observed_sessions_per_socket(self) -> tuple[CallbackSession, ...]:
+    def observed_sessions_per_socket(
+        self,
+        source: Callable[[], Iterable[Mapping[str, object]]] | None,
+    ) -> tuple[CallbackSession, ...]:
         """Return per-socket sessions (no short/full coalescing), owner attached."""
-        return tuple(self.normalized_sessions())
+        return tuple(self.normalized_sessions(source))
 
-    def list_unclaimed_sessions(self) -> tuple[CallbackSession, ...]:
+    def list_unclaimed_sessions(
+        self,
+        source: Callable[[], Iterable[Mapping[str, object]]] | None,
+    ) -> tuple[CallbackSession, ...]:
         """Return observed sessions that no config entry owns yet."""
         return tuple(
             session
-            for session in self.observed_sessions()
+            for session in self.observed_sessions(source)
             if not session.owner_entry_id and session.discoverable
         )
 
@@ -135,6 +158,7 @@ class SessionObserver:
         collector_pn: object,
         *,
         require_exact: bool = False,
+        source: Callable[[], Iterable[Mapping[str, object]]] | None = None,
     ) -> CallbackSession | None:
         """Return the best currently observed socket for one collector PN."""
         pn = _normalize_pn(collector_pn)
@@ -142,7 +166,7 @@ class SessionObserver:
             return None
         best: CallbackSession | None = None
         best_rank: tuple[int, int, int] | None = None
-        for session in self.normalized_sessions():
+        for session in self.normalized_sessions(source):
             if session.state == SESSION_STATE_CLOSED:
                 continue
             if require_exact:

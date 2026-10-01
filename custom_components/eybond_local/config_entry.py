@@ -265,33 +265,13 @@ class EntryCommitFlowMixin:
         # Collision guard (item 7): a DIFFERENT config entry may already own
         # collector:{pn}. Refuse to repair into a duplicate; leave this entry
         # PN-less and release the attempt's claim.
-        for other in self.hass.config_entries.async_entries(DOMAIN):
-            if getattr(other, "entry_id", None) == entry.entry_id:
-                continue
-            if (
-                str(getattr(other, "unique_id", "") or "")
-                == f"collector:{verified_full_pn}"
-            ):
-                self._callback_continuation.release_terminal_owner()
-                return self.async_abort(reason="already_configured")
+        collision = self._detect_entry_collision(entry, verified_full_pn)
+        if collision is not None:
+            return collision
 
-        new_data = dict(entry.data)
-        new_options = dict(entry.options)
-        # Retain the verified route, including an explicitly corrected listener
-        # port. An old option override must not silently restore the broken route
-        # after reload. Identity repair does not change driver/control policy.
-        for key, value in build_manual_entry_settings(
-            self._current_connection_type(), self._manual_config,
-        ).items():
-            if key == CONF_DRIVER_HINT:
-                continue
-            new_data[key] = value
-            if key in new_options:
-                new_options[key] = value
-        new_data[CONF_COLLECTOR_PN] = verified_full_pn
-        new_data[CONF_COLLECTOR_IP] = collector_ip
-        if CONF_COLLECTOR_IP in new_options:
-            new_options[CONF_COLLECTOR_IP] = collector_ip
+        new_data, new_options = self._merge_reconfigure_data(
+            entry, verified_full_pn, collector_ip,
+        )
         # Identity repair re-binds the durable PN; it does NOT re-decide how the
         # collector connects. The entry's canonical strategy (the user's choice)
         # is preserved untouched. Only an entry from before the canonical axis
@@ -334,6 +314,167 @@ class EntryCommitFlowMixin:
             recovery=self._callback_continuation.terminal_input,
         )
 
+    def _build_entry_title(
+        self,
+        collector_pn: str,
+        collector_ip: str,
+        detected_model: str = "",
+        detected_serial: str = "",
+    ) -> str:
+        """Construct the installation title for a new config entry."""
+        return installation_title(
+            collector_pn=collector_pn,
+            collector_ip=collector_ip,
+            detected_model=detected_model,
+            detected_serial=detected_serial,
+        )
+
+    def _apply_metadata_to_entry_data(
+        self,
+        data: dict[str, Any],
+        result: OnboardingResult | None,
+        user_input: dict[str, Any] | None,
+    ) -> None:
+        """Apply all metadata functions and detection strategy to the entry data."""
+        collector_capabilities = _result_collector_capabilities(result)
+        _apply_confirmed_session_protocol_evidence(data, result)
+        if collector_capabilities.virtual_bridge:
+            data["collector_virtual_bridge"] = True
+            data["collector_bridge_kind"] = "esp-collector"
+        _apply_collector_profile_metadata(data, result)
+        _apply_smartess_detection_metadata(data, result)
+        _apply_collector_cloud_family_metadata(data, result)
+        _apply_collector_first_entry_semantics(data)
+        detection_strategy = (user_input or {}).get(
+            CONF_DRIVER_DETECTION_STRATEGY,
+            DEFAULT_DRIVER_DETECTION_STRATEGY,
+        )
+        data[CONF_DRIVER_DETECTION_STRATEGY] = (
+            detection_strategy
+            if type(detection_strategy) is str
+            and detection_strategy in DRIVER_DETECTION_STRATEGIES
+            else DEFAULT_DRIVER_DETECTION_STRATEGY
+        )
+
+    def _build_entry_data_from_result(
+        self,
+        result: OnboardingResult,
+        user_input: dict[str, Any] | None,
+        connection_type: str,
+        collector_pn: str,
+        connection_settings: dict[str, Any],
+        stored_connection_mode: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Build the data and options dicts for a detected-result entry."""
+        data = {
+            CONF_CONNECTION_TYPE: connection_type,
+            **connection_settings,
+            CONF_CONNECTION_MODE: stored_connection_mode,
+            # ``control_mode`` is durable user intent.  Runtime driver binding
+            # supplies the temporary write interlock while inverter detection
+            # is pending; a new entry must not masquerade as user Read-only.
+            CONF_CONTROL_MODE: DEFAULT_CONTROL_MODE,
+            CONF_COLLECTOR_PN: collector_pn,
+            CONF_DETECTION_CONFIDENCE: "none",
+            CONF_DETECTED_MODEL: "",
+            CONF_DETECTED_SERIAL: "",
+        }
+        self._apply_metadata_to_entry_data(data, result, user_input)
+        poll_interval = int(
+            (user_input or {}).get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)
+        )
+        poll_mode = str(
+            (user_input or {}).get(CONF_POLL_MODE, DEFAULT_POLL_MODE)
+            or DEFAULT_POLL_MODE
+        )
+        if poll_mode not in {POLL_MODE_AUTO, POLL_MODE_MANUAL}:
+            poll_mode = DEFAULT_POLL_MODE
+        options = {
+            CONF_POLL_INTERVAL: poll_interval,
+            CONF_POLL_MODE: poll_mode,
+        }
+        _apply_collector_profile_metadata(options, result)
+        return data, options
+
+    def _build_manual_entry_data(
+        self,
+        user_input: dict[str, Any],
+        result: OnboardingResult | None,
+        connection_type: str,
+        collector_ip: str,
+        collector_pn: str,
+        detected_model: str,
+        detected_serial: str,
+        connection_mode: str,
+        driver_hint: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Build the data and options dicts for a manual entry."""
+        data = with_driver_hint(
+            build_manual_entry_settings(connection_type, user_input),
+            driver_hint=driver_hint,
+        )
+        data.setdefault(CONF_CONNECTION_TYPE, connection_type)
+        data[CONF_CONTROL_MODE] = DEFAULT_CONTROL_MODE
+        data[CONF_COLLECTOR_IP] = collector_ip
+        data[CONF_DETECTION_CONFIDENCE] = "none"
+        data[CONF_CONNECTION_MODE] = connection_mode
+        data[CONF_COLLECTOR_PN] = collector_pn
+        data[CONF_DETECTED_MODEL] = detected_model
+        data[CONF_DETECTED_SERIAL] = detected_serial
+        self._apply_metadata_to_entry_data(data, result, user_input)
+        options = {
+            CONF_POLL_INTERVAL: DEFAULT_POLL_INTERVAL,
+            CONF_POLL_MODE: DEFAULT_POLL_MODE,
+        }
+        _apply_collector_profile_metadata(options, result)
+        return data, options
+
+    def _detect_entry_collision(
+        self,
+        entry: ConfigEntry,
+        verified_full_pn: str,
+    ) -> ConfigFlowResult | None:
+        """Check if another entry already owns the verified PN.
+
+        Returns the abort result on collision, or ``None`` if the PN is free.
+        """
+        for other in self.hass.config_entries.async_entries(DOMAIN):
+            if getattr(other, "entry_id", None) == entry.entry_id:
+                continue
+            if (
+                str(getattr(other, "unique_id", "") or "")
+                == f"collector:{verified_full_pn}"
+            ):
+                self._callback_continuation.release_terminal_owner()
+                return self.async_abort(reason="already_configured")
+        return None
+
+    def _merge_reconfigure_data(
+        self,
+        entry: ConfigEntry,
+        verified_full_pn: str,
+        collector_ip: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Merge verified identity and manual settings into the existing entry."""
+        new_data = dict(entry.data)
+        new_options = dict(entry.options)
+        # Retain the verified route, including an explicitly corrected listener
+        # port. An old option override must not silently restore the broken route
+        # after reload. Identity repair does not change driver/control policy.
+        for key, value in build_manual_entry_settings(
+            self._current_connection_type(), self._manual_config,
+        ).items():
+            if key == CONF_DRIVER_HINT:
+                continue
+            new_data[key] = value
+            if key in new_options:
+                new_options[key] = value
+        new_data[CONF_COLLECTOR_PN] = verified_full_pn
+        new_data[CONF_COLLECTOR_IP] = collector_ip
+        if CONF_COLLECTOR_IP in new_options:
+            new_options[CONF_COLLECTOR_IP] = collector_ip
+        return new_data, new_options
+
     async def _async_create_entry_from_result(
         self,
         user_input: dict[str, Any] | None = None,
@@ -361,15 +502,12 @@ class EntryCommitFlowMixin:
         await self.async_set_unique_id(unique_id)
         self._abort_if_unique_id_configured()
 
-        title = installation_title(
+        title = self._build_entry_title(
             collector_pn=collector_pn,
             collector_ip=collector_ip or self._auto_config.get(CONF_COLLECTOR_IP, ""),
-            detected_model="",
-            detected_serial="",
         )
 
         connection_type = result.connection_type or self._current_connection_type()
-        collector_capabilities = _result_collector_capabilities(result)
         result_connection_mode = str(result.connection_mode or "").strip()
         is_verified_callback_route = verified_callback_route is not None
         is_passive_callback = bool(
@@ -410,51 +548,14 @@ class EntryCommitFlowMixin:
             stored_connection_mode = (
                 "known_ip" if collector_ip else result_connection_mode
             )
-        data = {
-            CONF_CONNECTION_TYPE: connection_type,
-            **connection_settings,
-            CONF_CONNECTION_MODE: stored_connection_mode,
-            # ``control_mode`` is durable user intent.  Runtime driver binding
-            # supplies the temporary write interlock while inverter detection
-            # is pending; a new entry must not masquerade as user Read-only.
-            CONF_CONTROL_MODE: DEFAULT_CONTROL_MODE,
-            CONF_COLLECTOR_PN: collector_pn,
-            CONF_DETECTION_CONFIDENCE: "none",
-            CONF_DETECTED_MODEL: "",
-            CONF_DETECTED_SERIAL: "",
-        }
-        _apply_confirmed_session_protocol_evidence(data, result)
-        if collector_capabilities.virtual_bridge:
-            data["collector_virtual_bridge"] = True
-            data["collector_bridge_kind"] = "esp-collector"
-        _apply_collector_profile_metadata(data, result)
-        _apply_smartess_detection_metadata(data, result)
-        _apply_collector_cloud_family_metadata(data, result)
-        _apply_collector_first_entry_semantics(data)
-        detection_strategy = (user_input or {}).get(
-            CONF_DRIVER_DETECTION_STRATEGY,
-            DEFAULT_DRIVER_DETECTION_STRATEGY,
+        data, options = self._build_entry_data_from_result(
+            result=result,
+            user_input=user_input,
+            connection_type=connection_type,
+            collector_pn=collector_pn,
+            connection_settings=connection_settings,
+            stored_connection_mode=stored_connection_mode,
         )
-        data[CONF_DRIVER_DETECTION_STRATEGY] = (
-            detection_strategy
-            if type(detection_strategy) is str
-            and detection_strategy in DRIVER_DETECTION_STRATEGIES
-            else DEFAULT_DRIVER_DETECTION_STRATEGY
-        )
-        poll_interval = int(
-            (user_input or {}).get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)
-        )
-        poll_mode = str(
-            (user_input or {}).get(CONF_POLL_MODE, DEFAULT_POLL_MODE)
-            or DEFAULT_POLL_MODE
-        )
-        if poll_mode not in {POLL_MODE_AUTO, POLL_MODE_MANUAL}:
-            poll_mode = DEFAULT_POLL_MODE
-        options = {
-            CONF_POLL_INTERVAL: poll_interval,
-            CONF_POLL_MODE: poll_mode,
-        }
-        _apply_collector_profile_metadata(options, result)
         # Stamp the explicit connection architecture axes onto the new entry so
         # its transport ownership / endpoint control is opaque state, not derived
         # from hostnames at runtime. First-add never writes an endpoint, so fresh
@@ -645,7 +746,7 @@ class EntryCommitFlowMixin:
         await self.async_set_unique_id(f"collector:{collector_pn}")
         self._abort_if_unique_id_configured()
 
-        title = installation_title(
+        title = self._build_entry_title(
             collector_pn=collector_pn,
             collector_ip=collector_ip,
             detected_model=detected_model,
@@ -657,42 +758,17 @@ class EntryCommitFlowMixin:
             if result is not None
             else self._current_connection_type()
         )
-        data = with_driver_hint(
-            build_manual_entry_settings(connection_type, user_input),
+        data, options = self._build_manual_entry_data(
+            user_input=user_input,
+            result=result,
+            connection_type=connection_type,
+            collector_ip=collector_ip,
+            collector_pn=collector_pn,
+            detected_model=detected_model,
+            detected_serial=detected_serial,
+            connection_mode=connection_mode,
             driver_hint=driver_hint,
         )
-        data.setdefault(CONF_CONNECTION_TYPE, connection_type)
-        data[CONF_CONTROL_MODE] = DEFAULT_CONTROL_MODE
-        collector_capabilities = _result_collector_capabilities(result)
-        data[CONF_COLLECTOR_IP] = collector_ip
-        data[CONF_DETECTION_CONFIDENCE] = "none"
-        data[CONF_CONNECTION_MODE] = connection_mode
-        data[CONF_COLLECTOR_PN] = collector_pn
-        data[CONF_DETECTED_MODEL] = detected_model
-        data[CONF_DETECTED_SERIAL] = detected_serial
-        if collector_capabilities.virtual_bridge:
-            data["collector_virtual_bridge"] = True
-            data["collector_bridge_kind"] = "esp-collector"
-        _apply_collector_profile_metadata(data, result)
-        _apply_smartess_detection_metadata(data, result)
-        _apply_collector_cloud_family_metadata(data, result)
-        _apply_confirmed_session_protocol_evidence(data, result)
-        _apply_collector_first_entry_semantics(data)
-        detection_strategy = user_input.get(
-            CONF_DRIVER_DETECTION_STRATEGY,
-            DEFAULT_DRIVER_DETECTION_STRATEGY,
-        )
-        data[CONF_DRIVER_DETECTION_STRATEGY] = (
-            detection_strategy
-            if type(detection_strategy) is str
-            and detection_strategy in DRIVER_DETECTION_STRATEGIES
-            else DEFAULT_DRIVER_DETECTION_STRATEGY
-        )
-        options = {
-            CONF_POLL_INTERVAL: DEFAULT_POLL_INTERVAL,
-            CONF_POLL_MODE: DEFAULT_POLL_MODE,
-        }
-        _apply_collector_profile_metadata(options, result)
         # The user explicitly stated how this collector connects, so that value is
         # the canonical strategy for EVERY terminal path -- an immediately
         # recognised NORMAL entry. It goes to

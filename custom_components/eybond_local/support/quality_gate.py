@@ -65,6 +65,11 @@ def build_quality_gate_steps(
 
     steps: list[QualityGateStep] = [
         QualityGateStep(
+            key="check_imports",
+            title="Check intra-package imports resolve",
+            command=(python_executable, str(TOOLS_DIR / "check_imports.py")),
+        ),
+        QualityGateStep(
             key="validate_profiles",
             title="Validate declarative profiles",
             command=(python_executable, str(TOOLS_DIR / "validate_profiles.py")),

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
+from ..const import MODBUS_READ_RETRY_ATTEMPTS, MODBUS_READ_RETRY_DELAY
 from ..link_models import EybondLinkRoute, LinkRoute
 from ..link_transport import (
     PayloadLinkTransport,
@@ -43,17 +44,28 @@ class ModbusWriteRequestFrame:
         return len(self.values)
 
 
-def crc16_modbus(data: bytes) -> int:
-    """Compute Modbus CRC16."""
-
-    crc = 0xFFFF
-    for byte in data:
-        crc ^= byte
+def _build_crc16_modbus_table() -> list[int]:
+    table = []
+    for byte in range(256):
+        crc = byte
         for _ in range(8):
             if crc & 0x0001:
                 crc = (crc >> 1) ^ 0xA001
             else:
                 crc >>= 1
+        table.append(crc)
+    return table
+
+
+_CRC16_MODBUS_TABLE = _build_crc16_modbus_table()
+
+
+def crc16_modbus(data: bytes) -> int:
+    """Compute Modbus CRC16 using a precomputed lookup table."""
+
+    crc = 0xFFFF
+    for byte in data:
+        crc = (crc >> 8) ^ _CRC16_MODBUS_TABLE[(crc ^ byte) & 0xFF]
     return crc & 0xFFFF
 
 
@@ -401,7 +413,7 @@ class ModbusSession:
 
         request = build_read_request(self._slave_id, address, count, function=function)
         last_error: ModbusError | None = None
-        for attempt in range(2):
+        for attempt in range(MODBUS_READ_RETRY_ATTEMPTS):
             try:
                 response = await async_send_payload(
                     self._transport,
@@ -411,7 +423,7 @@ class ModbusSession:
             except asyncio.TimeoutError as exc:
                 last_error = ModbusError("request_timeout")
                 if attempt == 0:
-                    await asyncio.sleep(0.15)
+                    await asyncio.sleep(MODBUS_READ_RETRY_DELAY)
                     continue
                 raise last_error from exc
             try:
@@ -424,7 +436,7 @@ class ModbusSession:
             except ModbusError as exc:
                 last_error = exc
                 if attempt == 0 and _is_retryable_read_error(exc):
-                    await asyncio.sleep(0.15)
+                    await asyncio.sleep(MODBUS_READ_RETRY_DELAY)
                     continue
                 raise
         raise last_error or ModbusError("read_failed")
