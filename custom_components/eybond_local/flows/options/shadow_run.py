@@ -717,6 +717,12 @@ class ShadowLearningRunMixin:
             local_register_snapshot,
             run_collector_pn,
         )
+        if isinstance(metadata_evidence, dict):
+            # The published runtime/support artifact is the orchestration
+            # record, so replace its provider-owned evidence with the detached,
+            # locally enriched record.  This keeps the review and exported
+            # evidence on one exact snapshot without mutating the outcome.
+            result["metadata_evidence"] = metadata_evidence
         self._shadow_learning_state["orchestration"] = result
         self._update_shadow_learning_plan(source_id, result)
         self._update_shadow_learning_session_status(learning_engine, result)

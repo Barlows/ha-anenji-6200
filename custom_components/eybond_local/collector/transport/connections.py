@@ -134,24 +134,6 @@ class _BaseCollectorConnection(ABC):
             return False
         return self.connected
 
-    async def async_send_auxiliary_read(
-        self, payload: bytes, *, request_timeout: float,
-    ) -> bytes:
-        """Internal read-only side channel; never inferred by device discovery."""
-
-        owner = SocketSendOwner.capture(self)
-        try:
-            response = await self._auxiliary_session.send(
-                payload, writer=owner.writer, reader_task=self._reader_task,
-                request_lock=self._request_lock, write_lock=self._write_lock,
-                write_timeout=self._write_timeout, request_timeout=request_timeout,
-            )
-        except Exception:
-            owner.check_reply(self)
-            raise
-        owner.check_reply(self)
-        return response
-
     async def run(
         self,
         reader: asyncio.StreamReader,
@@ -374,6 +356,28 @@ class _BaseCollectorConnection(ABC):
 
 
 class _CollectorConnection(_BaseCollectorConnection):
+    # Deliberately per-implementation, not shared on the base class: this is
+    # the transport boundary's explicit side channel and the two socket
+    # protocols are each required to own it (see
+    # tests/test_transport_module_boundaries.py).
+    async def async_send_auxiliary_read(
+        self, payload: bytes, *, request_timeout: float,
+    ) -> bytes:
+        """Internal read-only side channel; never inferred by device discovery."""
+
+        owner = SocketSendOwner.capture(self)
+        try:
+            response = await self._auxiliary_session.send(
+                payload, writer=owner.writer, reader_task=self._reader_task,
+                request_lock=self._request_lock, write_lock=self._write_lock,
+                write_timeout=self._write_timeout, request_timeout=request_timeout,
+            )
+        except Exception:
+            owner.check_reply(self)
+            raise
+        owner.check_reply(self)
+        return response
+
     def __init__(
         self,
         *,
@@ -840,6 +844,28 @@ class _CollectorConnection(_BaseCollectorConnection):
 
 
 class _CollectorAtConnection(_BaseCollectorConnection):
+    # Deliberately per-implementation, not shared on the base class: this is
+    # the transport boundary's explicit side channel and the two socket
+    # protocols are each required to own it (see
+    # tests/test_transport_module_boundaries.py).
+    async def async_send_auxiliary_read(
+        self, payload: bytes, *, request_timeout: float,
+    ) -> bytes:
+        """Internal read-only side channel; never inferred by device discovery."""
+
+        owner = SocketSendOwner.capture(self)
+        try:
+            response = await self._auxiliary_session.send(
+                payload, writer=owner.writer, reader_task=self._reader_task,
+                request_lock=self._request_lock, write_lock=self._write_lock,
+                write_timeout=self._write_timeout, request_timeout=request_timeout,
+            )
+        except Exception:
+            owner.check_reply(self)
+            raise
+        owner.check_reply(self)
+        return response
+
     def __init__(
         self,
         *,

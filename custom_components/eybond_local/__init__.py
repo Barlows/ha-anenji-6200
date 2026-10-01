@@ -71,6 +71,7 @@ from .integration_registration import (
     _register_entry_stop_shutdown,
 )
 from .platform_context import entity_setup_context
+from .support.listener_bootstrap import BootstrapFailureLog
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -78,9 +79,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Tracks consecutive failures of the passive-discovery listener bootstrap
-# so persistent issues escalate from exception-level to warning-level.
-_listener_bootstrap_failures = 0
+# Repeated passive-discovery bootstrap failures escalate from exception-level
+# to warning-level; see support/listener_bootstrap.py for the policy.
+_listener_bootstrap_log = BootstrapFailureLog()
 
 _COMPONENT_SETUP_COMPLETE_KEY = "component_setup_complete"
 _COMPONENT_SETUP_RELOAD_WAITERS_KEY = "component_setup_reload_waiters"
@@ -156,10 +157,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # reinterpret it as a normal PN-less collector or perform network I/O.
         raise ConfigEntryError("obsolete_pending_entry_not_removed")
 
-    # Deferred: runtime.coordinator pulls in homeassistant.helpers.update_coordinator,
-    # homeassistant.components and homeassistant.helpers.device_registry, which the
-    # stub-only unit lane does not provide. Importing it here would load the whole
-    # coordinator chain at package-import time.
+    # Deferred: runtime.coordinator needs homeassistant helpers the stub lane lacks.
     from .runtime.coordinator import EybondLocalCoordinator
     from .services import async_setup_services
     from .support.download import async_register_download_views
@@ -379,21 +377,9 @@ async def _async_ensure_listener_entry(
     except Exception:
         # The collector entry remains valid even if an older HA core or a
         # concurrent setup flow rejects the service-entry bootstrap.
-        # Track consecutive failures and escalate to a warning after a
-        # threshold so persistent issues are visible in the log.
-        global _listener_bootstrap_failures
-        _listener_bootstrap_failures += 1
-        if _listener_bootstrap_failures >= 3:
-            logger.warning(
-                "Failed to ensure EyeBond passive-discovery listener entry "
-                "(%d consecutive failures)",
-                _listener_bootstrap_failures,
-                exc_info=True,
-            )
-        else:
-            logger.exception(
-                "Failed to ensure EyeBond passive-discovery listener entry"
-            )
+        _listener_bootstrap_log.record_failure(
+            "Failed to ensure EyeBond passive-discovery listener entry"
+        )
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -405,12 +391,8 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
         "consume_entry_reload_suppression",
         None,
     )
-    # RACE FIX: The check-then-call pattern on consume_reload_suppression is a
-    # TOCTOU race: the callable could be replaced or its internal state could
-    # change between the callable() check and the invocation. By capturing the
-    # callable once and invoking it directly (letting TypeError propagate if it
-    # became non-callable), we ensure the check and call are atomic with respect
-    # to the local reference.
+    # Resolve the hook once, then consult it: a re-lookup between the
+    # callable() check and the call could see a different object.
     if callable(consume_reload_suppression):
         if consume_reload_suppression():
             return
