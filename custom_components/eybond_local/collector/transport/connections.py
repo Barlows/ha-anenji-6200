@@ -586,7 +586,7 @@ class _CollectorConnection(_BaseCollectorConnection):
                 if self._pending_at_response is future:
                     self._pending_at_response = None
                 finish_request_future(future)
-            self._apply_at_response_metadata(response)
+            self._apply_response_metadata(response)
             return response
 
     async def async_write(
@@ -611,7 +611,7 @@ class _CollectorConnection(_BaseCollectorConnection):
                 if self._pending_at_response is future:
                     self._pending_at_response = None
                 finish_request_future(future)
-            self._apply_at_response_metadata(response)
+            self._apply_response_metadata(response)
             return response
 
     async def _heartbeat_loop(self) -> None:

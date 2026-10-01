@@ -182,6 +182,10 @@ class _SharedEybondListener:
         self._owner_counter = OwnerCounter()
         self._connection_manager = ConnectionManager()
         self._route_manager = RouteReservationManager()
+        # Serialises pending-socket -> route promotion across the accept path.
+        # Deliberately listener-scoped rather than per-helper: the four critical
+        # sections it guards span the pending-socket table and the route table.
+        self._pending_route_lock = asyncio.Lock()
 
     # --- Property accessors for backward compatibility -------------------------
     # These properties delegate to the helper classes, allowing existing code
@@ -214,6 +218,59 @@ class _SharedEybondListener:
     @property
     def _session_protocol_owner_counts(self) -> dict[str, int]:
         return self._owner_counter._session_protocol_owner_counts
+
+    @property
+    def _session_payload_connections(self) -> dict[str, _CollectorConnection]:
+        return self._connection_manager._session_payload_connections
+
+    # These three are read AND written across the accept path, so they need
+    # setters as well as getters. Routing them through the connection manager
+    # keeps a single value: a listener-local copy would drift from the one the
+    # manager maintains when registering a pending socket.
+
+    @property
+    def _last_connection_ip(self) -> str:
+        return self._connection_manager._last_connection_ip
+
+    @_last_connection_ip.setter
+    def _last_connection_ip(self, value: str) -> None:
+        self._connection_manager._last_connection_ip = value
+
+    @property
+    def _last_at_connection_ip(self) -> str:
+        return self._connection_manager._last_at_connection_ip
+
+    @_last_at_connection_ip.setter
+    def _last_at_connection_ip(self, value: str) -> None:
+        self._connection_manager._last_at_connection_ip = value
+
+    @property
+    def _last_pending_ip(self) -> str:
+        return self._connection_manager._last_pending_ip
+
+    @_last_pending_ip.setter
+    def _last_pending_ip(self, value: str) -> None:
+        self._connection_manager._last_pending_ip = value
+
+    @property
+    def _session_at_connections(self) -> dict[str, _CollectorAtConnection]:
+        return self._connection_manager._session_at_connections
+
+    @property
+    def _payload_owner_counts(self) -> dict[str, int]:
+        return self._owner_counter._payload_owner_counts
+
+    @property
+    def _at_owner_counts(self) -> dict[str, int]:
+        return self._owner_counter._at_owner_counts
+
+    @property
+    def _payload_pn_owner_counts(self) -> dict[str, int]:
+        return self._owner_counter._payload_pn_owner_counts
+
+    @property
+    def _at_pn_owner_counts(self) -> dict[str, int]:
+        return self._owner_counter._at_pn_owner_counts
 
     def add_connection_watcher(
         self,
