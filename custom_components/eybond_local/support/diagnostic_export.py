@@ -15,7 +15,6 @@ the raw result stays local and only the shareable file can be downloaded.
 from __future__ import annotations
 
 import json
-import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -30,8 +29,6 @@ from .masking import (
 )
 from .proxy_capture.trace import anonymize_proxy_trace_line
 
-
-logger = logging.getLogger(__name__)
 
 _SMG_SERIAL_REGISTER_START = 186
 _SMG_SERIAL_REGISTER_END = 197
@@ -172,21 +169,15 @@ def export_diagnostic_run(
     text_path = root / f"{stem}.txt"
     shareable_path = root / f"{stem}.share.json"
 
-    try:
-        result_path.write_text(
-            json.dumps(local_payload, indent=2, ensure_ascii=False, sort_keys=True),
-            encoding="utf-8",
-        )
-        text_path.write_text(result.output, encoding="utf-8")
-        shareable_path.write_text(
-            json.dumps(shareable_payload, indent=2, ensure_ascii=False, sort_keys=True),
-            encoding="utf-8",
-        )
-    except OSError:
-        logger.exception(
-            "Failed to write diagnostic export files for entry %s", entry_id
-        )
-        raise
+    result_path.write_text(
+        json.dumps(local_payload, indent=2, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    text_path.write_text(result.output, encoding="utf-8")
+    shareable_path.write_text(
+        json.dumps(shareable_payload, indent=2, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
 
     download_path: Path | None = None
     if publish_download_copy:

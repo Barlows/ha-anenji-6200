@@ -9,9 +9,15 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from .connections import _CollectorAtConnection, _CollectorConnection
+
+if TYPE_CHECKING:
+    # _PendingCollectorSocket is defined in listener.py, which imports this
+    # module, so a runtime import here would be circular. It is only used in
+    # annotations, which `from __future__ import annotations` leaves unevaluated.
+    from .listener import _PendingCollectorSocket
 
 logger = logging.getLogger(__name__)
 

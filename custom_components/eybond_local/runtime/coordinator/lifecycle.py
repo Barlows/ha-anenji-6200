@@ -4,24 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Protocol, runtime_checkable
 
 from homeassistant.components import persistent_notification
 
 from ...const import CONF_COLLECTOR_PN, DOMAIN
-from ...passive_discovery import get_callback_session_registry
 
 logger = logging.getLogger(__name__)
-
-
-@runtime_checkable
-class _RuntimeObserverProtocol(Protocol):
-    """Protocol for runtime observer/watcher registration methods."""
-
-    def set_runtime_snapshot_observer(self, observer) -> None: ...
-    def set_inverter_overlay_applier(self, applier) -> None: ...
-    def set_collector_connection_watcher(self, watcher) -> None: ...
-    def set_inverter_detection_observer(self, observer) -> None: ...
 
 
 class CoordinatorLifecycleMixin:
@@ -60,6 +48,8 @@ class CoordinatorLifecycleMixin:
 
         entry_id = str(getattr(self.config_entry, "entry_id", "") or "").strip()
         try:
+            from ...passive_discovery import get_callback_session_registry
+
             registry = get_callback_session_registry(self.hass)
         except Exception:
             # A minimal standalone/test runtime may not install the domain
@@ -115,6 +105,7 @@ class CoordinatorLifecycleMixin:
         """
 
         from ...connection.session_registry import PermanentOwnedSessionCertification
+        from ...passive_discovery import get_callback_session_registry
 
         if type(certification) is not PermanentOwnedSessionCertification:
             return False
@@ -148,6 +139,8 @@ class CoordinatorLifecycleMixin:
         timeout: float,
     ) -> bool:
         """Load-only recovery postcondition: payload connected to the owned PN."""
+
+        from ...passive_discovery import get_callback_session_registry
 
         entry_id = str(self.config_entry.entry_id or "").strip()
         collector_pn = str(
@@ -195,10 +188,27 @@ class CoordinatorLifecycleMixin:
             await self._support_package_flight.cancel()
             await self._local_register_collection.async_shutdown()
             self._cancel_proxy_capture_deadline_refresh()
-            if isinstance(self._runtime, _RuntimeObserverProtocol):
-                self._runtime.set_runtime_snapshot_observer(None)
-                self._runtime.set_inverter_overlay_applier(None)
-                self._runtime.set_collector_connection_watcher(None)
+            set_snapshot_observer = getattr(
+                self._runtime,
+                "set_runtime_snapshot_observer",
+                None,
+            )
+            if callable(set_snapshot_observer):
+                set_snapshot_observer(None)
+            set_overlay_applier = getattr(
+                self._runtime,
+                "set_inverter_overlay_applier",
+                None,
+            )
+            if callable(set_overlay_applier):
+                set_overlay_applier(None)
+            set_connection_watcher = getattr(
+                self._runtime,
+                "set_collector_connection_watcher",
+                None,
+            )
+            if callable(set_connection_watcher):
+                set_connection_watcher(None)
             try:
                 await self.async_stop_shadow_learning(
                     reason="shutdown",

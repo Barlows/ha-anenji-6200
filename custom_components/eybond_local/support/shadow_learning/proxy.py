@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
@@ -17,8 +16,6 @@ from ..cloud_session_wire import consume_cloud_message
 from ..collector_cloud_proxy import JsonLineWriter
 from .backend import InProcessShadowLearningHandler, ShadowLearningSeed, utc_now_iso
 
-
-logger = logging.getLogger(__name__)
 
 _COLLECTOR_FORWARD_FCODES = frozenset({1, 2, 3, 22, 23, 24, 31, 32, 50})
 _CLOUD_CORRELATED_RESPONSE_FCODES = frozenset({2, 3})
@@ -477,12 +474,7 @@ class InProcessFailClosedShadowProxyHandler:
                         continue
 
                     header = decode_header(payload[:HEADER_SIZE])
-                    # RACE FIX: The check-then-pop pattern on pending_requests is a
-                    # TOCTOU race: another coroutine could pop the entry between
-                    # the get() and pop() calls. Using pop() with a default ensures
-                    # atomic removal - if the entry was already removed, we get None
-                    # and skip the forward, which is the correct behavior.
-                    pending = pending_requests.pop(int(header.tid), None)
+                    pending = pending_requests.get(int(header.tid))
                     if pending is not None:
                         allow_forward, reason = _is_allowlisted_correlated_response(
                             header=header,
@@ -490,6 +482,7 @@ class InProcessFailClosedShadowProxyHandler:
                             pending=pending,
                         )
                         if allow_forward:
+                            pending_requests.pop(int(header.tid), None)
                             async with collector_write_lock:
                                 collector_writer.write(payload)
                                 await collector_writer.drain()
@@ -587,9 +580,6 @@ class InProcessFailClosedShadowProxyHandler:
     async def _append_event(self, kind: str, direction: str, payload: dict[str, Any]) -> None:
         writer = self._writer
         if writer is None:
-            logger.debug(
-                "Dropping %s event (%s): no writer attached", kind, direction
-            )
             return
         await writer.write(
             {

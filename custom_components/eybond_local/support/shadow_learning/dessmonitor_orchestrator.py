@@ -24,7 +24,6 @@ from ...dessmonitor_cloud import (
 from . import ShadowWriteObservation, utc_now_iso
 from .cloud_dispatch import async_dispatch_cloud_action
 from .orchestrator import summarize_shadow_learning_attempts
-from .utilities import _elapsed_ms, _safe_read_map
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -242,7 +241,20 @@ async def _wait_for_observations(
             return observed
 
 
+def _safe_read_map(
+    callback: Callable[[], dict[str, Any]] | None,
+) -> dict[str, Any]:
+    if callback is None:
+        return {}
+    try:
+        value = callback()
+    except Exception:
+        return {}
+    return dict(value) if type(value) is dict else {}
 
+
+def _elapsed_ms(started: float) -> int:
+    return max(0, int(round((time.monotonic() - started) * 1000.0)))
 
 
 async def async_orchestrate_dessmonitor_shadow_learning(

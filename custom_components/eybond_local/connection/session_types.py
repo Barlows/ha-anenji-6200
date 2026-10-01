@@ -47,7 +47,7 @@ def _state_from_inventory(inventory_state: str, identity_source: str) -> str:
         return SESSION_STATE_CLAIMED
     if inventory_state in _CLOSED_INVENTORY_STATES:
         return SESSION_STATE_CLOSED
-    if _identity_is_strong(identity_source):
+    if _identity_source_is_strong(identity_source):
         return SESSION_STATE_IDENTIFIED_STRONG
     return SESSION_STATE_IDENTIFIED_WEAK
 
@@ -91,7 +91,7 @@ class CallbackSession:
 
     @property
     def has_strong_identity(self) -> bool:
-        return _identity_is_strong(self.identity_source)
+        return _identity_source_is_strong(self.identity_source)
 
     @property
     def claimed(self) -> bool:

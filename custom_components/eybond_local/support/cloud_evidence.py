@@ -5,16 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
-import logging
-import os
 from pathlib import Path
 from typing import Any
 
 from ..const import LOCAL_CLOUD_EVIDENCE_DIR, LOCAL_METADATA_DIR
 from ..smartess_cloud import fetch_device_bundle_for_collector as fetch_smartess_device_bundle_for_collector
 from ..valuecloud_cloud import fetch_device_bundle_for_collector as fetch_valuecloud_device_bundle_for_collector
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,16 +319,8 @@ def export_cloud_evidence(
     stem = _filename_stem(evidence)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     destination = root / f"{stem}_{timestamp}.json"
-    # RACE FIX: The exists() check followed by write_text() is a TOCTOU race.
-    # Another process could create the file between the check and the write.
-    # Using os.open with O_CREAT | O_EXCL ensures atomic creation - if the file
-    # exists, we get FileExistsError immediately without a race window.
-    if not overwrite:
-        try:
-            fd = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.close(fd)
-        except FileExistsError:
-            raise FileExistsError(destination)
+    if destination.exists() and not overwrite:
+        raise FileExistsError(destination)
     tmp_path = destination.with_suffix(destination.suffix + ".tmp")
     tmp_path.write_text(
         json.dumps(evidence, ensure_ascii=False, indent=2, sort_keys=False) + "\n",
@@ -361,16 +349,10 @@ def _prune_older_files_for_stem(
         # retained until identity-scoped cleanup; known providers prune only
         # their own history below.
         return
-    keep_mtime = keep.stat().st_mtime
     for path in root.glob(f"{stem}_*.json"):
         if path == keep:
             continue
         if normalized_provider:
-            try:
-                if path.stat().st_mtime > keep_mtime:
-                    continue
-            except OSError:
-                continue
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, UnicodeError, json.JSONDecodeError):
@@ -382,9 +364,6 @@ def _prune_older_files_for_stem(
         try:
             path.unlink()
         except OSError:
-            logger.debug(
-                "Failed to prune cloud evidence file %s", path, exc_info=True
-            )
             continue
 
 
@@ -425,9 +404,6 @@ def remove_cloud_evidence_for_entry(
         try:
             path.unlink()
         except OSError:
-            logger.debug(
-                "Failed to remove cloud evidence file %s", path, exc_info=True
-            )
             continue
         deleted.append(path)
     return deleted

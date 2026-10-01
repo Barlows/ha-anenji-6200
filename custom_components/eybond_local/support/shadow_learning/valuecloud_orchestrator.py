@@ -25,14 +25,6 @@ from ...valuecloud_cloud import (
 from . import ShadowWriteObservation, utc_now_iso
 from .cloud_dispatch import async_dispatch_cloud_action
 from .orchestrator import summarize_shadow_learning_attempts
-from .utilities import (
-    _async_session_ready_for_attempt,
-    _attach_attempt_observation,
-    _collect_run_observations,
-    _elapsed_ms,
-    _resolve_live_observation_cursor,
-    _safe_read_map,
-)
 
 
 logger = logging.getLogger(__name__)
@@ -554,7 +546,26 @@ def _known_field_ids(
     return known
 
 
+def _safe_read_map(read_map_snapshot: Callable[[], dict[str, Any]] | None) -> dict[str, Any]:
+    if read_map_snapshot is None:
+        return {}
+    try:
+        read_map = read_map_snapshot()
+    except Exception:
+        return {}
+    return read_map if isinstance(read_map, dict) else {}
 
+
+def _resolve_live_observation_cursor(
+    *,
+    observation_cursor: Callable[[], int] | None,
+    current_observations_since: Callable[[int], tuple[ShadowWriteObservation, ...]] | None,
+) -> int:
+    if observation_cursor is not None:
+        return int(observation_cursor())
+    if current_observations_since is not None:
+        return len(tuple(current_observations_since(0) or ()))
+    return 0
 
 
 async def _wait_for_attempt_observations(
@@ -588,6 +599,55 @@ async def _wait_for_attempt_observations(
             return observations
 
 
+async def _async_session_ready_for_attempt(
+    *,
+    is_session_ready: Callable[[], bool] | None,
+    wait_until_session_ready: Callable[[], Awaitable[bool]] | None,
+) -> bool:
+    """Wait for a safe proxy window without weakening the live-route gate."""
+
+    if is_session_ready is None or bool(is_session_ready()):
+        return True
+    if wait_until_session_ready is None:
+        return False
+    return bool(await wait_until_session_ready())
+
+
+def _attach_attempt_observation(
+    *,
+    attempt: dict[str, Any],
+    observations: tuple[ShadowWriteObservation, ...],
+) -> None:
+    if observations:
+        observation = observations[0]
+        attempt["observation_count"] = len(observations)
+        attempt["observation"] = observation.to_json_dict()
+        attempt["match_mode"] = "post_attempt_cursor"
+        return
+    attempt["reason"] = "timeout_no_observed_write"
+
+
+def _normalize_captured_not_applied_status(attempt: dict[str, Any]) -> None:
+    if not isinstance(attempt.get("observation"), dict):
+        return
+    if attempt.get("status") == _CONTROL_STATUS_SENT and _attempt_has_success_response(attempt):
+        attempt["status"] = _CONTROL_STATUS_CAPTURED_NOT_APPLIED
+        attempt["proxy_capture_result"] = "captured_not_applied"
+        attempt["cloud_ack_after_proxy_nack"] = True
+        return
+    rejection = attempt.get("cloud_rejection")
+    if attempt.get("status") == _CONTROL_STATUS_ERROR and isinstance(
+        rejection, dict
+    ):
+        attempt["status"] = _CONTROL_STATUS_CAPTURED_NOT_APPLIED
+        attempt["proxy_capture_result"] = "captured_not_applied"
+        attempt["cloud_nack_response"] = dict(rejection)
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, int(round((time.monotonic() - started_at) * 1000.0)))
+
+
 def _attempt_has_success_response(attempt: dict[str, Any]) -> bool:
     response = attempt.get("response")
     if not isinstance(response, dict):
@@ -607,21 +667,15 @@ def _attempt_is_unproxied_success_candidate(attempt: dict[str, Any]) -> bool:
     )
 
 
-def _normalize_captured_not_applied_status(attempt: dict[str, Any]) -> None:
-    if not isinstance(attempt.get("observation"), dict):
-        return
-    if attempt.get("status") == _CONTROL_STATUS_SENT and _attempt_has_success_response(attempt):
-        attempt["status"] = _CONTROL_STATUS_CAPTURED_NOT_APPLIED
-        attempt["proxy_capture_result"] = "captured_not_applied"
-        attempt["cloud_ack_after_proxy_nack"] = True
-        return
-    rejection = attempt.get("cloud_rejection")
-    if attempt.get("status") == _CONTROL_STATUS_ERROR and isinstance(
-        rejection, dict
-    ):
-        attempt["status"] = _CONTROL_STATUS_CAPTURED_NOT_APPLIED
-        attempt["proxy_capture_result"] = "captured_not_applied"
-        attempt["cloud_nack_response"] = dict(rejection)
+def _collect_run_observations(
+    *,
+    run_cursor_start: int | None,
+    current_observations_since: Callable[[int], tuple[ShadowWriteObservation, ...]] | None,
+    attempt_observations: tuple[ShadowWriteObservation, ...],
+) -> tuple[ShadowWriteObservation, ...]:
+    if run_cursor_start is not None and current_observations_since is not None:
+        return tuple(current_observations_since(run_cursor_start) or ())
+    return tuple(attempt_observations)
 
 
 __all__ = [

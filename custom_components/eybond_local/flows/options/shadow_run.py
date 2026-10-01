@@ -667,82 +667,17 @@ class ShadowLearningRunMixin:
         (``_async_run_control_discovery``); this method only stops the session
         itself on its own successful exit.
         """
+
+        # The progress step already primed the bar at 0%. Give the frontend a
+        # brief moment to actually paint that empty bar before the first non-zero
+        # value, so the determinate scale renders correctly from the start instead
+        # of mis-drawing the very first fill (an HA progress-dialog quirk).
         await asyncio.sleep(0.5)
         source_id = self._control_discovery_learning_source(coordinator)
         learning_engine = self._control_discovery_learning_engine(coordinator)
         if not learning_engine.available or learning_engine.method is None:
             raise RuntimeError("cloud_learning_source_unavailable")
 
-        preflight = await self._preflight_discovery(coordinator, learning_engine)
-        run_collector_pn = preflight.get("collector_pn")
-        if (
-            type(run_collector_pn) is not str
-            or not run_collector_pn
-            or validated_collector_pn(run_collector_pn) != run_collector_pn
-        ):
-            raise RuntimeError("shadow_learning_collector_identity_invalid")
-
-        requires_shadow_route = learning_engine.method.requires_shadow_route
-        local_register_snapshot = await self._capture_local_register_snapshot(
-            coordinator, learning_engine
-        )
-
-        current_collector_pn = getattr(coordinator, "smartess_collector_pn", "")
-        if (
-            type(current_collector_pn) is not str
-            or validated_collector_pn(current_collector_pn) != current_collector_pn
-            or not pn_is_same_identity(run_collector_pn, current_collector_pn)
-        ):
-            raise RuntimeError("shadow_learning_collector_identity_changed")
-
-        outcome = await self._execute_learning(
-            coordinator,
-            learning_engine,
-            run_collector_pn,
-            username,
-            password,
-            requires_shadow_route,
-        )
-        identity = outcome.identity
-        result = dict(outcome.result)
-        read_bindings = outcome.read_bindings
-        metadata_evidence = outcome.metadata_evidence
-
-        if result.get("metadata_only") is True:
-            self._log_metadata_only_result(source_id, result, metadata_evidence)
-
-        metadata_evidence = self._enrich_metadata_evidence(
-            coordinator,
-            metadata_evidence,
-            local_register_snapshot,
-            run_collector_pn,
-        )
-        self._shadow_learning_state["orchestration"] = result
-        self._update_shadow_learning_plan(source_id, result)
-        self._update_shadow_learning_session_status(learning_engine, result)
-        self._publish_shadow_learning_artifacts(coordinator)
-
-        orchestration = dict(self._shadow_learning_state.get("orchestration") or {})
-        self._validate_orchestration_result(orchestration)
-
-        self._set_control_discovery_progress(0.88, "building")
-        correlation = result.get("correlation")
-        read_map = result.get("read_map")
-        if isinstance(correlation, dict):
-            await self._async_generate_control_discovery_overlay(
-                coordinator,
-                identity=identity,
-                correlation=correlation,
-                read_map=read_map if isinstance(read_map, dict) else None,
-                read_bindings=read_bindings,
-            )
-
-        await self._finalize_discovery(coordinator, learning_engine, requires_shadow_route)
-        self._update_discovery_result(orchestration, metadata_evidence)
-        return None
-
-    async def _preflight_discovery(self, coordinator, learning_engine) -> dict[str, Any]:
-        """Run preflight checks and return the preflight snapshot."""
         self._set_control_discovery_progress(0.01, "preflight")
         if learning_engine.method.requires_shadow_route:
             preflight_started = time.monotonic()
@@ -777,52 +712,55 @@ class ShadowLearningRunMixin:
                 if blockers
                 else "shadow_learning_preflight_blocked"
             )
-        return preflight
+        run_collector_pn = preflight.get("collector_pn")
+        if (
+            type(run_collector_pn) is not str
+            or not run_collector_pn
+            or validated_collector_pn(run_collector_pn) != run_collector_pn
+        ):
+            raise RuntimeError("shadow_learning_collector_identity_invalid")
 
-    async def _capture_local_register_snapshot(
-        self, coordinator, learning_engine
-    ) -> LocalRegisterSnapshot | None:
-        """Capture local register snapshot if the engine supports it."""
-        if not learning_engine.evidence_capabilities.local_register_snapshot:
-            return None
-        capture_local = getattr(
-            coordinator,
-            "async_capture_local_register_snapshot",
-            None,
-        )
-        if not callable(capture_local):
-            return None
-        self._set_control_discovery_progress(0.06, "capturing_local")
-        try:
-            candidate_snapshot = await capture_local()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.debug(
-                "Local register snapshot unavailable for cloud learning: %s",
-                type(exc).__name__,
-            )
-            return None
-        if type(candidate_snapshot) is LocalRegisterSnapshot:
-            return candidate_snapshot
-        return None
-
-    async def _execute_learning(
-        self,
-        coordinator,
-        learning_engine,
-        run_collector_pn: str,
-        username: str,
-        password: str,
-        requires_shadow_route: bool,
-    ):
-        """Execute the learning engine and return the outcome."""
+        # The engine owns login/fetch/parse and, only when declared, the exact
+        # provider-specific ordering around a temporary route.  Metadata-only
+        # engines receive inert route callbacks so an implementation mistake
+        # fails closed instead of mutating the collector endpoint.
+        requires_shadow_route = learning_engine.method.requires_shadow_route
         shadow_runtime = (
             self._shadow_learning_runtime(coordinator)
             if requires_shadow_route
             else None
         )
         runner = learning_engine.learning_runner()
+        local_register_snapshot: LocalRegisterSnapshot | None = None
+        if learning_engine.evidence_capabilities.local_register_snapshot:
+            capture_local = getattr(
+                coordinator,
+                "async_capture_local_register_snapshot",
+                None,
+            )
+            if callable(capture_local):
+                self._set_control_discovery_progress(0.06, "capturing_local")
+                try:
+                    candidate_snapshot = await capture_local()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # supplemental read-only evidence
+                    logger.debug(
+                        "Local register snapshot unavailable for cloud learning: %s",
+                        type(exc).__name__,
+                    )
+                else:
+                    if type(candidate_snapshot) is LocalRegisterSnapshot:
+                        local_register_snapshot = candidate_snapshot
+
+        current_collector_pn = getattr(coordinator, "smartess_collector_pn", "")
+        if (
+            type(current_collector_pn) is not str
+            or validated_collector_pn(current_collector_pn)
+            != current_collector_pn
+            or not pn_is_same_identity(run_collector_pn, current_collector_pn)
+        ):
+            raise RuntimeError("shadow_learning_collector_identity_changed")
 
         async def _start_shadow_route() -> None:
             if not requires_shadow_route:
@@ -833,7 +771,7 @@ class ShadowLearningRunMixin:
             self._shadow_learning_state["session"] = dict(session or {})
             self._publish_shadow_learning_artifacts(coordinator)
 
-        return await runner.async_run(
+        outcome = await runner.async_run(
             executor=self.hass.async_add_executor_job,
             collector_pn=run_collector_pn,
             username=username,
@@ -863,74 +801,75 @@ class ShadowLearningRunMixin:
                 else self._forbid_metadata_only_learning
             ),
         )
-
-    def _log_metadata_only_result(
-        self, source_id: str, result: dict[str, Any], metadata_evidence: dict[str, Any]
-    ) -> None:
-        """Log metadata-only result details."""
-        unavailable_actions = (
-            metadata_evidence.get("unavailable_actions")
-            if isinstance(metadata_evidence, dict)
-            else None
-        )
-        logger.info(
-            "Cloud read-only evidence ready entry=%s source=%s "
-            "metadata_fields=%d semantic_candidates=%d semantic_unknown=%d "
-            "unavailable_actions=%d history_status=%s history_series=%d "
-            "history_points=%d history_failures=%d",
-            getattr(self._config_entry, "entry_id", ""),
-            source_id,
-            int(result.get("metadata_field_count") or 0),
-            int(result.get("semantic_candidate_count") or 0),
-            int(result.get("semantic_unknown_count") or 0),
-            len(unavailable_actions)
-            if isinstance(unavailable_actions, list)
-            else 0,
-            str(result.get("history_status") or ""),
-            int(result.get("history_series_count") or 0),
-            int(result.get("history_point_count") or 0),
-            int(result.get("history_failed_series_count") or 0),
-        )
-
-    def _enrich_metadata_evidence(
-        self,
-        coordinator,
-        metadata_evidence: dict[str, Any],
-        local_register_snapshot: LocalRegisterSnapshot | None,
-        run_collector_pn: str,
-    ) -> dict[str, Any]:
-        """Enrich metadata evidence with local coverage."""
-        if not isinstance(metadata_evidence, dict):
-            return metadata_evidence
-        try:
-            local_register_series = getattr(
-                coordinator,
-                "latest_local_register_series",
-                None,
+        current_collector_pn = getattr(coordinator, "smartess_collector_pn", "")
+        if (
+            type(current_collector_pn) is not str
+            or validated_collector_pn(current_collector_pn)
+            != current_collector_pn
+            or not pn_is_same_identity(run_collector_pn, current_collector_pn)
+        ):
+            raise RuntimeError("shadow_learning_collector_identity_changed")
+        identity = outcome.identity
+        result = dict(outcome.result)
+        read_bindings = outcome.read_bindings
+        metadata_evidence = outcome.metadata_evidence
+        if result.get("metadata_only") is True:
+            unavailable_actions = (
+                metadata_evidence.get("unavailable_actions")
+                if isinstance(metadata_evidence, dict)
+                else None
             )
-        except Exception:
-            local_register_series = None
-        try:
-            local_register_context = getattr(
-                coordinator,
-                "local_register_overlay_context",
-                None,
+            logger.info(
+                "Cloud read-only evidence ready entry=%s source=%s "
+                "metadata_fields=%d semantic_candidates=%d semantic_unknown=%d "
+                "unavailable_actions=%d history_status=%s history_series=%d "
+                "history_points=%d history_failures=%d",
+                getattr(self._config_entry, "entry_id", ""),
+                source_id,
+                int(result.get("metadata_field_count") or 0),
+                int(result.get("semantic_candidate_count") or 0),
+                int(result.get("semantic_unknown_count") or 0),
+                len(unavailable_actions)
+                if isinstance(unavailable_actions, list)
+                else 0,
+                str(result.get("history_status") or ""),
+                int(result.get("history_series_count") or 0),
+                int(result.get("history_point_count") or 0),
+                int(result.get("history_failed_series_count") or 0),
             )
-        except Exception:
-            local_register_context = None
-        metadata_evidence = _metadata_with_local_coverage(
-            metadata_evidence,
-            getattr(getattr(coordinator, "data", None), "telemetry", None),
-            local_register_snapshot=local_register_snapshot,
-            local_register_series=local_register_series,
-            local_register_context=local_register_context,
-            expected_collector_pn=run_collector_pn,
-        )
-        self._shadow_learning_state["cloud_metadata"] = metadata_evidence
-        return metadata_evidence
+        if isinstance(metadata_evidence, dict):
+            try:
+                local_register_series = getattr(
+                    coordinator,
+                    "latest_local_register_series",
+                    None,
+                )
+            except Exception:  # supplemental review evidence
+                local_register_series = None
+            try:
+                local_register_context = getattr(
+                    coordinator,
+                    "local_register_overlay_context",
+                    None,
+                )
+            except Exception:  # supplemental current-context review
+                local_register_context = None
+            metadata_evidence = _metadata_with_local_coverage(
+                metadata_evidence,
+                getattr(getattr(coordinator, "data", None), "telemetry", None),
+                local_register_snapshot=local_register_snapshot,
+                local_register_series=local_register_series,
+                local_register_context=local_register_context,
+                expected_collector_pn=run_collector_pn,
+            )
+            self._shadow_learning_state["cloud_metadata"] = metadata_evidence
+            # The published runtime/support artifact is the orchestration
+            # record, so replace its provider-owned evidence with the detached,
+            # locally enriched record.  This keeps the review and exported
+            # evidence on one exact snapshot without mutating the outcome.
+            result["metadata_evidence"] = metadata_evidence
 
-    def _update_shadow_learning_plan(self, source_id: str, result: dict[str, Any]) -> None:
-        """Update the shadow learning plan in state."""
+        self._shadow_learning_state["orchestration"] = result
         plan = result.get("plan") if isinstance(result, dict) else None
         if isinstance(plan, list):
             self._shadow_learning_state["plan"] = {
@@ -938,11 +877,6 @@ class ShadowLearningRunMixin:
                 "items": plan,
                 "count": len(plan),
             }
-
-    def _update_shadow_learning_session_status(
-        self, learning_engine, result: dict[str, Any]
-    ) -> None:
-        """Update the shadow learning session status in state."""
         if learning_engine.method.requires_shadow_route:
             self._shadow_learning_state["session"] = {
                 **dict(self._shadow_learning_state.get("session") or {}),
@@ -953,24 +887,40 @@ class ShadowLearningRunMixin:
                 )
                 else "ready",
             }
+        self._publish_shadow_learning_artifacts(coordinator)
 
-    def _validate_orchestration_result(self, orchestration: dict[str, Any]) -> None:
-        """Validate the orchestration result and raise on failure."""
+        orchestration = dict(self._shadow_learning_state.get("orchestration") or {})
         planned_count = int(orchestration.get("planned_write_count") or 0)
         executed_count = int(orchestration.get("executed_result_count") or 0)
         leaked_count = int(orchestration.get("leaked_count") or 0)
         degraded_count = int(orchestration.get("degraded_count") or 0)
         if leaked_count > 0:
+            # SAFETY: at least one control write was accepted by the cloud (ERR_NONE) and did
+            # not have a matching local proxy write observation -- proof the write bypassed our
+            # proxy and may have reached the REAL inverter. The run was hard-stopped at the
+            # first such write, but a live change may already have been applied to the hardware.
+            # Do not build or offer a partial overlay from a safety-aborted run; let the caller
+            # perform the fail-closed stop/restore path and surface this as an error.
             raise RuntimeError(CONTROL_DISCOVERY_FAILURE_SAFETY_STOP)
         if degraded_count > 0:
             raise RuntimeError(CONTROL_DISCOVERY_FAILURE_ROUTE_DROPPED)
         if planned_count > 0 and executed_count < planned_count:
             raise RuntimeError(CONTROL_DISCOVERY_FAILURE_RUN_INCOMPLETE)
 
-    async def _finalize_discovery(
-        self, coordinator, learning_engine, requires_shadow_route: bool
-    ) -> None:
-        """Finalize the discovery: stop session, restore endpoint, publish artifacts."""
+        self._set_control_discovery_progress(0.88, "building")
+        correlation = result.get("correlation")
+        read_map = result.get("read_map")
+        if isinstance(correlation, dict):
+            await self._async_generate_control_discovery_overlay(
+                coordinator,
+                identity=identity,
+                correlation=correlation,
+                read_map=read_map if isinstance(read_map, dict) else None,
+                read_bindings=read_bindings,
+            )
+
+        # Success path: stop the session and restore the endpoint, then publish
+        # the final artifact bundle. (Failure cleanup is owned by the caller.)
         self._set_control_discovery_progress(0.95, "finalizing")
         if learning_engine.method.requires_shadow_route:
             await self._async_control_discovery_stop(coordinator)
@@ -986,11 +936,6 @@ class ShadowLearningRunMixin:
                 "common.dynamic.cloud_learning_metadata_done",
                 "The read-only device analysis finished.",
             )
-
-    def _update_discovery_result(
-        self, orchestration: dict[str, Any], metadata_evidence: dict[str, Any]
-    ) -> None:
-        """Update the discovery result in state."""
         found_controls = int(
             dict(self._shadow_learning_state.get("overlay") or {}).get(
                 "generated_capability_count"
@@ -1009,6 +954,11 @@ class ShadowLearningRunMixin:
             if isinstance(metadata_evidence, dict)
             else 0
         )
+        # A run that found nothing AND transmitted no probes at all did not actually
+        # observe the device -- it stalled on the connection (e.g. the collector never
+        # reconnected through the temporary proxy). That is a retryable error, not a
+        # genuine "this device has no controls" result, so surface it as a failure with a
+        # clear retry hint instead of the misleading "nothing found this time" message.
         if (
             found_controls == 0
             and sent_count == 0
@@ -1030,6 +980,7 @@ class ShadowLearningRunMixin:
                 "found_controls": found_controls,
                 "found_metadata": metadata_field_count,
             }
+        return None
 
     def _on_control_discovery_identity(
         self, coordinator, identity: dict[str, Any]
