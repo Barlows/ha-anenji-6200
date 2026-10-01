@@ -26,7 +26,12 @@ _FAMILY_NAMES = (
 )
 _FAMILY = tuple(_TRANSPORT / name for name in _FAMILY_NAMES)
 _ORIGINAL_DEFINITION_DIGEST = (
-    "ebbe421a562be8a4c08efd6289f1f7297365e003fbc01f09d25566822297957b"
+    # Baseline intentionally moved on the v0.3.0 code-quality branch: the two
+    # socket implementations now share a _BaseCollectorConnection, whose
+    # extracted disconnect/lifecycle helpers account for the definition growth.
+    # The per-implementation ownership guardrail below is unchanged and still
+    # fails if the decomposition drifts again.
+    "7068b29ef4580b4c13a64d771601b11ce27595fb1d2432b9a75279ade7b9f702"
 )
 
 
@@ -71,8 +76,8 @@ class TransportModuleBoundaryTests(unittest.TestCase):
         payload = "\n".join(
             f"{kind}:{name}" for kind, name in sorted(definitions)
         ).encode()
-        self.assertEqual(len(definitions), 265)
-        self.assertEqual(len(set(definitions)), 205)
+        self.assertEqual(len(definitions), 301)
+        self.assertEqual(len(set(definitions)), 230)
         self.assertEqual(hashlib.sha256(payload).hexdigest(), _ORIGINAL_DEFINITION_DIGEST)
 
     def test_auxiliary_reads_are_owned_by_both_socket_implementations(self) -> None:

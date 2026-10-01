@@ -35,25 +35,14 @@ MIXINS = {
 }
 
 EXPECTED_MRO = [
-    "CoordinatorLifecycleMixin",
-    "CoordinatorDiagnosticsMixin",
-    "CoordinatorStartupIdentityMixin",
-    "CoordinatorCloudToolsMixin",
-    "CoordinatorSnapshotProjectionMixin",
-    "CoordinatorSupportMixin",
-    "CoordinatorStrategyTransitionMixin",
-    "CoordinatorManagementMixin",
-    "CoordinatorManagementProjectionMixin",
-    "CoordinatorNetworkReconcileMixin",
-    "CoordinatorEntityReloadMixin",
-    "CoordinatorOperatingProfileMixin",
-    "CoordinatorPersistenceMixin",
-    "CoordinatorRuntimeProfileMixin",
+    # The v0.3.0 code-quality branch groups the nineteen single-purpose mixins
+    # into four cohesive composites. The invariant that matters is unchanged
+    # and still enforced below: every lifecycle method has exactly one owner
+    # (EXPECTED_METHOD_SET_SHA256), and the MRO stays explicit and short.
+    "CoordinatorCoreMixin",
     "CoordinatorPollingMixin",
-    "CoordinatorCollectorProfileMixin",
-    "CoordinatorControlProjectionMixin",
-    "CoordinatorInverterProfileMixin",
-    "CoordinatorDeviceRegistryMixin",
+    "CoordinatorManagementMixin",
+    "CoordinatorIntegrationMixin",
     "DataUpdateCoordinator[RuntimeSnapshot]",
 ]
 

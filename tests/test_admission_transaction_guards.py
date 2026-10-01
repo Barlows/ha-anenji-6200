@@ -231,9 +231,34 @@ class AdmissionTransactionGuards(unittest.TestCase):
             self.assertIsNotNone(node, msg=method)
             self.assertIn(
                 "_apply_collector_first_entry_semantics",
-                _called_names(node),
+                self._called_including_helpers(node),
                 msg=f"{method} must not persist pre-entry inverter identity",
             )
+
+    def _called_including_helpers(self, node: ast.AST) -> set[str]:
+        """Names called by a method, transitively through its own delegations.
+
+        The terminals build entry data through shared helpers, so requiring the
+        boundary call to be inline would pin the shape rather than the
+        invariant. Resolving the delegation closure keeps the guard meaningful:
+        it still fails if the boundary call is ever dropped from the path.
+        """
+
+        called: set[str] = set()
+        pending = [node]
+        seen: set[int] = set()
+        while pending:
+            current = pending.pop()
+            if id(current) in seen:
+                continue
+            seen.add(id(current))
+            names = _called_names(current)
+            called |= names
+            for name in sorted(names):
+                helper = _class_method(self.cf, "EybondLocalConfigFlow", name)
+                if helper is not None:
+                    pending.append(helper)
+        return called
 
     def test_confirm_time_inverter_refresh_does_not_return(self):
         for gone in (

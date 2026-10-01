@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from types import SimpleNamespace
 
 from ...collector.capabilities import collector_capability_profile_from_runtime
@@ -32,6 +34,17 @@ from .poll_projection import (
     RUNTIME_DRIVER_STATE_DRIVER_BOUND as _RUNTIME_DRIVER_STATE_DRIVER_BOUND,
     RUNTIME_DRIVER_STATE_DRIVER_UNBOUND as _RUNTIME_DRIVER_STATE_DRIVER_UNBOUND,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _log_task_exception(task: asyncio.Task) -> None:
+    """Log any exception from a fire-and-forget task."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.exception("Fire-and-forget task failed: %s", exc)
 
 
 class CoordinatorStartupIdentityMixin:
@@ -201,9 +214,10 @@ class CoordinatorStartupIdentityMixin:
         can recreate the entry as collector-only.
         """
 
-        self.hass.async_create_task(
+        task = self.hass.async_create_task(
             self._async_remember_detected_inverter_identity(inverter)
         )
+        task.add_done_callback(_log_task_exception)
 
     async def _async_remember_detected_inverter_identity(
         self,

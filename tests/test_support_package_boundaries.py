@@ -76,6 +76,7 @@ class SupportPackageBoundaryTests(unittest.TestCase):
                 "review_model.py",
                 "runtime.py",
                 "session.py",
+                "utilities.py",
                 "valuecloud_orchestrator.py",
             },
         )
