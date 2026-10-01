@@ -9,7 +9,6 @@ from typing import Protocol, runtime_checkable
 from homeassistant.components import persistent_notification
 
 from ...const import CONF_COLLECTOR_PN, DOMAIN
-from ...passive_discovery import get_callback_session_registry
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +59,8 @@ class CoordinatorLifecycleMixin:
 
         entry_id = str(getattr(self.config_entry, "entry_id", "") or "").strip()
         try:
+            from ...passive_discovery import get_callback_session_registry
+
             registry = get_callback_session_registry(self.hass)
         except Exception:
             # A minimal standalone/test runtime may not install the domain
@@ -119,6 +120,8 @@ class CoordinatorLifecycleMixin:
         if type(certification) is not PermanentOwnedSessionCertification:
             return False
         entry_id = str(self.config_entry.entry_id or "").strip()
+        from ...passive_discovery import get_callback_session_registry
+
         registry = get_callback_session_registry(self.hass)
         if registry is None or certification.owner_id != entry_id:
             return False
@@ -153,6 +156,8 @@ class CoordinatorLifecycleMixin:
         collector_pn = str(
             self.config_entry.data.get(CONF_COLLECTOR_PN, "") or ""
         ).strip()
+        from ...passive_discovery import get_callback_session_registry
+
         registry = get_callback_session_registry(self.hass)
         if (
             registry is None

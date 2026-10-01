@@ -31,7 +31,7 @@ _ORIGINAL_DEFINITION_DIGEST = (
     # extracted disconnect/lifecycle helpers account for the definition growth.
     # The per-implementation ownership guardrail below is unchanged and still
     # fails if the decomposition drifts again.
-    "c6c2de71ee3511e83af990551be76873c5d3e4e64a7d8c4bc38a5644974bea56"
+    "7068b29ef4580b4c13a64d771601b11ce27595fb1d2432b9a75279ade7b9f702"
 )
 
 
@@ -76,8 +76,8 @@ class TransportModuleBoundaryTests(unittest.TestCase):
         payload = "\n".join(
             f"{kind}:{name}" for kind, name in sorted(definitions)
         ).encode()
-        self.assertEqual(len(definitions), 287)
-        self.assertEqual(len(set(definitions)), 220)
+        self.assertEqual(len(definitions), 301)
+        self.assertEqual(len(set(definitions)), 230)
         self.assertEqual(hashlib.sha256(payload).hexdigest(), _ORIGINAL_DEFINITION_DIGEST)
 
     def test_auxiliary_reads_are_owned_by_both_socket_implementations(self) -> None:

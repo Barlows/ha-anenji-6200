@@ -199,12 +199,15 @@ class _BaseCollectorConnection(ABC):
             # it consistently, and by re-checking immediately before the callback,
             # we minimize the window. The _disconnect call is also guarded by
             # the same epoch to ensure we only disconnect our own session.
-            current_epoch = self._run_epoch
-            if current_epoch == epoch:
+            # Both checks compare against the epoch captured at the top of this
+            # run(), never against a fresh read: re-reading would compare the
+            # current epoch with itself and pass even when a replacement bumped
+            # it during the disconnect below.
+            if self._run_epoch == epoch:
                 await self._disconnect(skip_task=current_task)
             # Re-check: a replacement may have started while the disconnect
             # above was awaiting; the callback must not fire for it then.
-            if self._run_epoch == current_epoch and disconnect_callback is not None:
+            if self._run_epoch == epoch and disconnect_callback is not None:
                 disconnect_callback(self)
 
     async def disconnect(self) -> None:
@@ -253,6 +256,7 @@ class _BaseCollectorConnection(ABC):
         reason: str = "",
     ) -> None:
         had_session = self._compute_had_session()
+        self._record_pending_request_drops()
         if had_session:
             self._collector.disconnect_count += 1
             self._collector.last_disconnect_reason = (
@@ -337,6 +341,18 @@ class _BaseCollectorConnection(ABC):
     def _compute_had_session(self) -> bool:
         """Return whether this connection had an active session."""
         ...
+
+    def _record_pending_request_drops(self) -> None:
+        """Count in-flight requests abandoned by this disconnect.
+
+        The base socket does not queue requests behind a pending-future table,
+        so there is nothing to count. The framed socket overrides this: it is
+        the one that queues, and a request dropped on a session that never
+        fully came up is still a caller left waiting on a future that will
+        never be answered.
+        """
+
+        return None
 
     def _start_heartbeat_task(self) -> None:
         """Start the heartbeat task. Override in subclasses that need it."""
@@ -428,6 +444,11 @@ class _CollectorConnection(_BaseCollectorConnection):
     def _reset_session_state(self) -> None:
         self._last_heartbeat_monotonic = None
         self._last_liveness_monotonic = None
+
+    def _record_pending_request_drops(self) -> None:
+        pending_drop_count = sum(1 for future in self._pending.values() if not future.done())
+        if pending_drop_count:
+            self._collector.pending_request_drop_count += pending_drop_count
 
     def _compute_had_session(self) -> bool:
         pending_drop_count = sum(1 for future in self._pending.values() if not future.done())
