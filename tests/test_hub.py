@@ -1713,7 +1713,8 @@ class HubSnapshotTests(unittest.TestCase):
             self.assertEqual(snapshot.values["collector_cloud_heartbeat_value"], "60")
             self.assertEqual(snapshot.values["collector_ssid"], "MyWiFi")
             self.assertEqual(snapshot.values["collector_link_status"], "STA,CONNECTED")
-            self.assertEqual(snapshot.values["collector_wifi_scan_list"], "ssid1,-55;ssid2,-71")
+            self.assertNotIn("collector_wifi_scan_list", snapshot.values)
+            self.assertNotIn("INTPARA49", link_manager.collector_at_transport.queries)
 
         asyncio.run(_run())
 
@@ -1765,7 +1766,8 @@ class HubSnapshotTests(unittest.TestCase):
             self.assertEqual(snapshot.values["collector_cloud_heartbeat_value"], "60")
             self.assertEqual(snapshot.values["collector_ssid"], "MyWiFi")
             self.assertEqual(snapshot.values["collector_link_status"], "STA,CONNECTED")
-            self.assertEqual(snapshot.values["collector_wifi_scan_list"], "ssid1,-55;ssid2,-71")
+            self.assertNotIn("collector_wifi_scan_list", snapshot.values)
+            self.assertNotIn("INTPARA49", at_transport.queries)
 
         asyncio.run(_run())
 
@@ -2911,7 +2913,7 @@ class HubWriteBlockerTests(unittest.TestCase):
                     if not self._pending:
                         self.sweeps += 1
                         self._pending = True
-                    if command == "INTPARA49":  # last non-overlapping command
+                    if command == "LINK":  # last non-overlapping command
                         self._pending = False
                     return CollectorAtResponse(command=command, value="", raw=f"AT+{command}:")
 

@@ -14,6 +14,17 @@ onto upstream `main`, so the version history below this section is upstream's
 own changelog, carried through unchanged. This section covers only what's
 different in this fork, most recent first:
 
+- **2026-10-06** — Collector metadata polling no longer sends the nearby
+  Wi-Fi scan query (`INTPARA49`). A scan makes the dongle's radio leave its
+  channel on every metadata cycle, which is a plausible contributor to the
+  `collector_disconnected` / malformed-frame resets seen on this setup. This is
+  the same change upstream made in `e5b4a2d`, taken on its own: upstream
+  explicitly does not claim it fixes connection interruptions, and neither do
+  we until the reconnect rate has been compared before and after. Connected
+  SSID and signal strength are still read; Wi-Fi setup still scans on demand
+  over BLE. The disabled-by-default **Collector Wi-Fi Scan List** diagnostic
+  sensor remains defined but no longer receives a value.
+
 - **2026-09-26** — Documented that the unit suite requires the two libraries
   in `requirements-test.txt` (`aiohttp`, `voluptuous`). Both are imported at
   module scope by production modules the stub-based suite cannot fake:

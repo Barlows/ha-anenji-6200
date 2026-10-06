@@ -199,12 +199,8 @@ RUNTIME_COLLECTOR_AT_DEFINITIONS: tuple[CollectorAtQueryDefinition, ...] = (
         _decode_text_value("collector_link_status"),
         frozenset({"collector_link_status"}),
     ),
-    CollectorAtQueryDefinition(
-        "INTPARA49",
-        "Nearby Wi-Fi scan list reported by the collector.",
-        _decode_text_value("collector_wifi_scan_list"),
-        frozenset({"collector_wifi_scan_list"}),
-    ),
+    # INTPARA49 (nearby Wi-Fi scan) is deliberately not polled: a scan forces
+    # the dongle's radio off-channel on every cycle. Setup still scans on demand.
     # Keep optional numbered queries after the established metadata set. An
     # older collector that stays silent for this read still leaves every prior
     # value available as a fresh partial result.
@@ -240,7 +236,7 @@ async def read_runtime_collector_at_values(
       the link is unusable, not the commands unsupported);
     * a timeout/disconnect AFTER some metadata -> ``partial`` (fresh, no strike);
       one timeout ends the sweep so a dead link costs one request timeout, not
-      thirteen;
+      twelve;
     * every command delivered but none carried metadata -> ``empty`` (a strike:
       the collector answered but does not support this channel);
     * an individual unsupported/rejected command is skipped, not fatal.
