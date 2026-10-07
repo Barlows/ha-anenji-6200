@@ -39,9 +39,13 @@ EXPECTED_MRO = [
     # into four cohesive composites. The invariant that matters is unchanged
     # and still enforced below: every lifecycle method has exactly one owner
     # (EXPECTED_METHOD_SET_SHA256), and the MRO stays explicit and short.
+    #
+    # The composites are named ...GroupMixin after their module. A composite that
+    # reused its own leaf's name (polling_group.CoordinatorPollingMixin) shadowed
+    # that leaf, leaving two distinct classes under one importable name.
     "CoordinatorCoreMixin",
-    "CoordinatorPollingMixin",
-    "CoordinatorManagementMixin",
+    "CoordinatorPollingGroupMixin",
+    "CoordinatorManagementGroupMixin",
     "CoordinatorIntegrationMixin",
     "DataUpdateCoordinator[RuntimeSnapshot]",
 ]
@@ -79,6 +83,14 @@ def _imported_modules(path: Path) -> set[str]:
         elif isinstance(node, ast.ImportFrom) and node.module:
             modules.add(node.module)
     return modules
+
+
+def _module_level_classes(path: Path) -> set[str]:
+    return {
+        node.name
+        for node in _tree(path).body
+        if isinstance(node, ast.ClassDef)
+    }
 
 
 class CoordinatorCompositionBoundaryTests(unittest.TestCase):
@@ -125,6 +137,78 @@ class CoordinatorCompositionBoundaryTests(unittest.TestCase):
         self.assertIn("cloud_evidence_export_available", methods)
         self.assertIn("support_acquisition_readiness", methods)
         self.assertNotIn("device_info", methods)
+
+    def test_no_class_name_is_defined_in_two_modules(self) -> None:
+        # A composite that reuses one of its own leaf class names shadows that
+        # leaf: `from .polling_group import CoordinatorPollingMixin` and
+        # `from .polling import CoordinatorPollingMixin` would then name two
+        # DIFFERENT classes, and whichever a caller imported would decide which
+        # set of methods the coordinator has. Nothing else in this file catches
+        # that -- the lifecycle-ownership check reads each leaf by an explicit
+        # (module, class) pair, so a shadowing composite stays invisible to it.
+        owners: dict[str, list[str]] = {}
+        for path in sorted(COORDINATOR_PACKAGE.glob("*.py")):
+            for name in _module_level_classes(path):
+                owners.setdefault(name, []).append(path.name)
+        duplicates = {
+            name: paths for name, paths in owners.items() if len(paths) > 1
+        }
+        self.assertEqual(
+            duplicates,
+            {},
+            "one class name must be defined in exactly one module "
+            f"(rename the composite to ...GroupMixin): {duplicates}",
+        )
+
+    def test_no_class_lists_itself_as_a_base(self) -> None:
+        # The exact signature of the shadowing bug: polling_group.py declared
+        # `class CoordinatorPollingMixin(CoordinatorPollingMixin, ...)`, so the
+        # composite's own name was also one of its base names. That resolves to
+        # the leaf it imports, which is why it ran -- and it left two distinct
+        # classes under one importable name. A class may never inherit itself.
+        offenders: dict[str, list[str]] = {}
+        for path in sorted(COORDINATOR_PACKAGE.glob("*.py")):
+            for node in _tree(path).body:
+                if not isinstance(node, ast.ClassDef):
+                    continue
+                base_names = [
+                    base.id for base in node.bases if isinstance(base, ast.Name)
+                ]
+                if node.name in base_names:
+                    offenders[f"{path.name}:{node.name}"] = base_names
+        self.assertEqual(
+            offenders,
+            {},
+            "a class must not appear in its own base list (rename the "
+            f"composite to ...GroupMixin): {offenders}",
+        )
+
+    def test_composite_bases_resolve_to_their_leaf_modules(self) -> None:
+        # Pins which module each composite's bases come from, so a future
+        # composite cannot quietly inherit a sibling composite's methods.
+        expected = {
+            "polling_group.py": "CoordinatorPollingGroupMixin",
+            "management_group.py": "CoordinatorManagementGroupMixin",
+            "core.py": "CoordinatorCoreMixin",
+            "integration.py": "CoordinatorIntegrationMixin",
+        }
+        for filename, class_name in expected.items():
+            node = _class(COORDINATOR_PACKAGE / filename, class_name)
+            base_names = [
+                base.id for base in node.bases if isinstance(base, ast.Name)
+            ]
+            # Every base must be defined by some OTHER coordinator module.
+            for base in base_names:
+                owners = [
+                    other.name
+                    for other in sorted(COORDINATOR_PACKAGE.glob("*.py"))
+                    if other.name != filename and base in _module_level_classes(other)
+                ]
+                self.assertTrue(
+                    owners,
+                    f"{filename}:{class_name} bases on {base}, which no other "
+                    "coordinator module defines",
+                )
 
     def test_mixins_have_no_constructor_or_coordinator_back_import(self) -> None:
         for filename, class_name in MIXINS.items():

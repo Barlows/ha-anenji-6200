@@ -34,12 +34,12 @@ from ...timeout_policy import DEFAULT_ONBOARDING_TIMEOUT_POLICY
 from .core import CoordinatorCoreMixin
 from .lifecycle import _RuntimeObserverProtocol
 from .integration import CoordinatorIntegrationMixin
-from .management_group import CoordinatorManagementMixin
+from .management_group import CoordinatorManagementGroupMixin
 from .poll_projection import (
     is_clean_runtime_poll_cycle as _is_clean_runtime_poll_cycle,
     poll_recommended_interval_seconds as _poll_recommended_interval_seconds,
 )
-from .polling_group import CoordinatorPollingMixin
+from .polling_group import CoordinatorPollingGroupMixin
 from .tooling_projection import (
     integration_build_runtime_values as _integration_build_runtime_values,
     localized_runtime_text as _localized_runtime_text,
@@ -62,8 +62,8 @@ _LEGACY_METADATA_CHANNEL_PREFIX = "collector:"
 
 class EybondLocalCoordinator(
     CoordinatorCoreMixin,
-    CoordinatorPollingMixin,
-    CoordinatorManagementMixin,
+    CoordinatorPollingGroupMixin,
+    CoordinatorManagementGroupMixin,
     CoordinatorIntegrationMixin,
     DataUpdateCoordinator[RuntimeSnapshot],
 ):

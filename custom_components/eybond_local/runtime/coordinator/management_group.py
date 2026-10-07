@@ -11,14 +11,18 @@ from .management_projection import CoordinatorManagementProjectionMixin
 from .operating_profile import CoordinatorOperatingProfileMixin
 from .strategy import CoordinatorStrategyTransitionMixin
 
-__all__ = ["CoordinatorManagementMixin"]
+__all__ = ["CoordinatorManagementGroupMixin"]
 
 
-class CoordinatorManagementMixin(
+class CoordinatorManagementGroupMixin(
     CoordinatorManagementMixin,
     CoordinatorManagementProjectionMixin,
     CoordinatorControlProjectionMixin,
     CoordinatorOperatingProfileMixin,
     CoordinatorStrategyTransitionMixin,
 ):
-    """Management & control: writes, projections, operating profile, strategy transitions."""
+    """Management & control: writes, projections, operating profile, strategy transitions.
+
+    Named ``...GroupMixin`` for the same reason as ``polling_group``: reusing the
+    leaf's own name would shadow ``.management.CoordinatorManagementMixin``.
+    """
