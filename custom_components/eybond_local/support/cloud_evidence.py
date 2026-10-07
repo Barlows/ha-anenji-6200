@@ -11,6 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from ..const import LOCAL_CLOUD_EVIDENCE_DIR, LOCAL_METADATA_DIR
+
+# Upper bound on the ``_NNN`` suffix walk in _reserve_destination(). Reached only
+# by >1000 exports of one identity inside a single ~1.4 ms clock tick, so in
+# practice this is a guard against an unbounded loop rather than a real limit.
+_MAX_RESERVE_ATTEMPTS = 1000
 from ..smartess_cloud import fetch_device_bundle_for_collector as fetch_smartess_device_bundle_for_collector
 from ..valuecloud_cloud import fetch_device_bundle_for_collector as fetch_valuecloud_device_bundle_for_collector
 
@@ -322,17 +327,9 @@ def export_cloud_evidence(
 
     stem = _filename_stem(evidence)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    destination = root / f"{stem}_{timestamp}.json"
-    # RACE FIX: The exists() check followed by write_text() is a TOCTOU race.
-    # Another process could create the file between the check and the write.
-    # Using os.open with O_CREAT | O_EXCL ensures atomic creation - if the file
-    # exists, we get FileExistsError immediately without a race window.
-    if not overwrite:
-        try:
-            fd = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.close(fd)
-        except FileExistsError:
-            raise FileExistsError(destination)
+    destination = _reserve_destination(
+        root, stem=stem, timestamp=timestamp, overwrite=overwrite
+    )
     tmp_path = destination.with_suffix(destination.suffix + ".tmp")
     tmp_path.write_text(
         json.dumps(evidence, ensure_ascii=False, indent=2, sort_keys=False) + "\n",
@@ -343,6 +340,51 @@ def export_cloud_evidence(
         root, stem=stem, keep=destination, provider=infer_evidence_provider(evidence)
     )
     return destination
+
+
+def _reserve_destination(
+    root: Path, *, stem: str, timestamp: str, overwrite: bool = False
+) -> Path:
+    """Claim a unique destination path for one export and return it.
+
+    The name carries a microsecond timestamp, but the platform clock is far
+    coarser than that -- measured granularity here is ~1.4 ms -- so two exports
+    of the same identity inside one tick produce the *same* name by
+    construction. Claiming that name exclusively turned the collision into
+    ``FileExistsError``, so a caller exporting twice in quick succession (a retry
+    after a partial failure, or two devices sharing one identity) lost the second
+    record entirely even though nothing was wrong with it.
+
+    ``os.open(O_CREAT | O_EXCL)`` is the right primitive -- an exists() check
+    followed by a write is a TOCTOU race, and two exporters inside one tick can
+    genuinely be concurrent. So the atomic claim is kept and the collision is
+    resolved by walking to the next free suffix rather than by giving up.
+
+    Two ordering properties matter and both are why the suffix is ``_NNN`` placed
+    after the ``.json`` boundary rather than inside the timestamp:
+
+    * ``load_latest_cloud_evidence`` picks the greatest filename, and ``_`` (0x5F)
+      sorts above ``.`` (0x2E), so ``...Z_001.json`` sorts *after* ``...Z.json``
+      and a retried export is still the one that reads back as latest.
+    * ``_prune_older_files_for_stem`` globs ``{stem}_*.json``, so suffixed names
+      stay inside the identity's own prune set instead of accumulating forever.
+
+    The suffix is zero-padded so lexicographic order matches numeric order.
+    """
+
+    base = f"{stem}_{timestamp}"
+    if overwrite:
+        return root / f"{base}.json"
+    for attempt in range(_MAX_RESERVE_ATTEMPTS):
+        name = f"{base}.json" if attempt == 0 else f"{base}_{attempt:03d}.json"
+        destination = root / name
+        try:
+            fd = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            continue
+        os.close(fd)
+        return destination
+    raise FileExistsError(root / f"{base}.json")
 
 
 def _prune_older_files_for_stem(
