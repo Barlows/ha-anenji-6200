@@ -11,6 +11,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+# `helpers` lives beside this file, so the tests directory itself must be
+# importable for `from helpers...` to resolve when a module is run
+# directly (unittest discover happens to add it; direct runs do not).
+TESTS_ROOT = Path(__file__).resolve().parent
+if str(TESTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TESTS_ROOT))
+
 
 from custom_components.eybond_local.metadata.register_schema_loader import (
     _optional_bitmask,
@@ -19,6 +26,7 @@ from custom_components.eybond_local.metadata.register_schema_loader import (
 )
 from custom_components.eybond_local.drivers.pi30 import Pi30Driver
 from custom_components.eybond_local.drivers.smg import SmgModbusDriver
+from helpers.path_asserts import path_ends_with
 
 
 class RegisterSchemaLoaderTests(unittest.TestCase):
@@ -44,7 +52,7 @@ class RegisterSchemaLoaderTests(unittest.TestCase):
         self.assertEqual(schema.protocol_family, "modbus_smg")
         self.assertEqual(schema.source_name, "modbus_smg/base.json")
         self.assertEqual(schema.source_scope, "builtin")
-        self.assertTrue(schema.source_path.endswith("register_schemas/modbus_smg/base.json"))
+        self.assertTrue(path_ends_with(schema.source_path, "register_schemas/modbus_smg/base.json"))
         self.assertEqual(schema.block("status").start, 100)
         self.assertEqual(schema.block("live").count, 34)
         self.assertEqual(schema.scalar_register("rated_power_register"), 643)
@@ -207,7 +215,7 @@ class RegisterSchemaLoaderTests(unittest.TestCase):
         self.assertEqual(schema.protocol_family, "pi30")
         self.assertEqual(schema.source_name, "pi30_ascii/base.json")
         self.assertEqual(schema.source_scope, "builtin")
-        self.assertTrue(schema.source_path.endswith("register_schemas/pi30_ascii/base.json"))
+        self.assertTrue(path_ends_with(schema.source_path, "register_schemas/pi30_ascii/base.json"))
         self.assertEqual(schema.measurement_description("protocol_id").name, "Protocol ID")
         self.assertEqual(
             {
@@ -249,7 +257,7 @@ class RegisterSchemaLoaderTests(unittest.TestCase):
         self.assertEqual(schema.protocol_family, "pi18")
         self.assertEqual(schema.source_name, "pi18_ascii/base.json")
         self.assertEqual(schema.source_scope, "builtin")
-        self.assertTrue(schema.source_path.endswith("register_schemas/pi18_ascii/base.json"))
+        self.assertTrue(path_ends_with(schema.source_path, "register_schemas/pi18_ascii/base.json"))
         self.assertEqual(schema.measurement_description("protocol_id").name, "Protocol ID")
         self.assertEqual(schema.measurement_description("operating_mode").name, "Operating Mode")
         self.assertEqual(schema.binary_sensor_description("warning_active").name, "Warning Active")
@@ -270,7 +278,7 @@ class RegisterSchemaLoaderTests(unittest.TestCase):
         self.assertEqual(schema.protocol_family, "pi30")
         self.assertEqual(schema.source_name, "pi30_ascii/models/default.json")
         self.assertEqual(schema.source_scope, "builtin")
-        self.assertTrue(schema.source_path.endswith("register_schemas/pi30_ascii/models/default.json"))
+        self.assertTrue(path_ends_with(schema.source_path, "register_schemas/pi30_ascii/models/default.json"))
         self.assertEqual(schema.measurement_description("protocol_id").name, "Protocol ID")
         self.assertEqual(schema.binary_sensor_description("lcd_backlight_enabled").name, "LCD Backlight Enabled")
         self.assertEqual(schema.enum_map_for("operating_mode_names")["L"], "Line")
@@ -286,9 +294,7 @@ class RegisterSchemaLoaderTests(unittest.TestCase):
         self.assertEqual(schema.source_name, "pi30_ascii/models/smartess_0925_compat.json")
         self.assertEqual(schema.source_scope, "builtin")
         self.assertTrue(
-            schema.source_path.endswith(
-                "register_schemas/pi30_ascii/models/smartess_0925_compat.json"
-            )
+            path_ends_with(schema.source_path, "register_schemas/pi30_ascii/models/smartess_0925_compat.json")
         )
         self.assertEqual(schema.measurement_description("protocol_id").name, "Protocol ID")
         self.assertEqual(schema.binary_sensor_description("lcd_backlight_enabled").name, "LCD Backlight Enabled")
@@ -304,7 +310,7 @@ class RegisterSchemaLoaderTests(unittest.TestCase):
         self.assertEqual(schema.protocol_family, "pi30")
         self.assertEqual(schema.source_name, "pi30_ascii/models/vmii_nxpw5kw.json")
         self.assertEqual(schema.source_scope, "builtin")
-        self.assertTrue(schema.source_path.endswith("register_schemas/pi30_ascii/models/vmii_nxpw5kw.json"))
+        self.assertTrue(path_ends_with(schema.source_path, "register_schemas/pi30_ascii/models/vmii_nxpw5kw.json"))
         self.assertEqual(schema.measurement_description("protocol_id").name, "Protocol ID")
         self.assertEqual(schema.enum_map_for("operating_mode_names")["L"], "Line")
 
@@ -314,7 +320,7 @@ class RegisterSchemaLoaderTests(unittest.TestCase):
         self.assertEqual(schema.key, "pi30_ascii_pi41")
         self.assertEqual(schema.title, "PI41 / ASCII Register Schema")
         self.assertEqual(schema.source_name, "pi30_ascii/models/pi41.json")
-        self.assertTrue(schema.source_path.endswith("register_schemas/pi30_ascii/models/pi41.json"))
+        self.assertTrue(path_ends_with(schema.source_path, "register_schemas/pi30_ascii/models/pi41.json"))
         self.assertEqual(schema.enum_map_for("operating_mode_names")["L"], "Line")
 
     def test_loads_pi30_max_model_overlay_schema(self) -> None:
@@ -323,7 +329,7 @@ class RegisterSchemaLoaderTests(unittest.TestCase):
         self.assertEqual(schema.key, "pi30_ascii_pi30_max")
         self.assertEqual(schema.title, "PI30 MAX / ASCII Register Schema")
         self.assertEqual(schema.source_name, "pi30_ascii/models/pi30_max.json")
-        self.assertTrue(schema.source_path.endswith("register_schemas/pi30_ascii/models/pi30_max.json"))
+        self.assertTrue(path_ends_with(schema.source_path, "register_schemas/pi30_ascii/models/pi30_max.json"))
         self.assertEqual(schema.enum_map_for("operating_mode_names")["L"], "Line")
 
     def test_loads_pi30_pip_gk_model_overlay_schema(self) -> None:
@@ -332,7 +338,7 @@ class RegisterSchemaLoaderTests(unittest.TestCase):
         self.assertEqual(schema.key, "pi30_ascii_pi30_pip_gk")
         self.assertEqual(schema.title, "PI30 PIP-GK / ASCII Register Schema")
         self.assertEqual(schema.source_name, "pi30_ascii/models/pi30_pip_gk.json")
-        self.assertTrue(schema.source_path.endswith("register_schemas/pi30_ascii/models/pi30_pip_gk.json"))
+        self.assertTrue(path_ends_with(schema.source_path, "register_schemas/pi30_ascii/models/pi30_pip_gk.json"))
         self.assertEqual(schema.enum_map_for("operating_mode_names")["L"], "Line")
 
     def test_loads_smartess_0925_model_overlay_schema(self) -> None:
@@ -344,7 +350,7 @@ class RegisterSchemaLoaderTests(unittest.TestCase):
         self.assertEqual(schema.protocol_family, "smartess_local")
         self.assertEqual(schema.source_name, "smartess_local/models/0925.json")
         self.assertEqual(schema.source_scope, "builtin")
-        self.assertTrue(schema.source_path.endswith("register_schemas/smartess_local/models/0925.json"))
+        self.assertTrue(path_ends_with(schema.source_path, "register_schemas/smartess_local/models/0925.json"))
         self.assertEqual(schema.block("live").start, 4501)
         self.assertEqual(schema.block("live").count, 14)
         self.assertEqual(schema.block("config").start, 5001)
@@ -365,7 +371,7 @@ class RegisterSchemaLoaderTests(unittest.TestCase):
         self.assertEqual(schema.protocol_family, "smartess_local")
         self.assertEqual(schema.source_name, "smartess_local/models/0921.json")
         self.assertEqual(schema.source_scope, "builtin")
-        self.assertTrue(schema.source_path.endswith("register_schemas/smartess_local/models/0921.json"))
+        self.assertTrue(path_ends_with(schema.source_path, "register_schemas/smartess_local/models/0921.json"))
         self.assertEqual(schema.block("live").start, 32)
         self.assertEqual(schema.block("live").count, 54)
         self.assertEqual(schema.block("config").start, 256)
@@ -385,7 +391,7 @@ class RegisterSchemaLoaderTests(unittest.TestCase):
         self.assertEqual(schema.protocol_family, "smartess_local")
         self.assertEqual(schema.source_name, "smartess_local/models/0912.json")
         self.assertEqual(schema.source_scope, "builtin")
-        self.assertTrue(schema.source_path.endswith("register_schemas/smartess_local/models/0912.json"))
+        self.assertTrue(path_ends_with(schema.source_path, "register_schemas/smartess_local/models/0912.json"))
         self.assertEqual(schema.block("live").start, 0)
         self.assertEqual(schema.block("live").count, 92)
         self.assertEqual(schema.block("status").start, 95)

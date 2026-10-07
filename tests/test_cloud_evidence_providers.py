@@ -280,7 +280,10 @@ class OnboardingAssistTests(unittest.TestCase):
                 _context(collector_pn="E1"), username="u", password="p"
             )
         self.assertEqual(assist.collector_pn, "E1")
-        self.assertEqual(assist.evidence_path, "/tmp/onboarding.json")
+        # evidence_path is a real path stringified, so it carries os.sep.
+        self.assertEqual(
+            Path(assist.evidence_path).as_posix(), "/tmp/onboarding.json"
+        )
         self.assertEqual(assist.device_pn, "E1")
         self.assertEqual(assist.total_field_count, 39)
         # Onboarding uses its own source; still only the SmartESS fetch runs.

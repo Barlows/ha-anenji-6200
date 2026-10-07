@@ -22,6 +22,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+# `helpers` lives beside this file, so the tests directory itself must be
+# importable for `from helpers...` to resolve when a module is run
+# directly (unittest discover happens to add it; direct runs do not).
+TESTS_ROOT = Path(__file__).resolve().parent
+if str(TESTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TESTS_ROOT))
+
+from helpers.path_asserts import normalize_separators  # noqa: E402
+
 
 def _install_homeassistant_stubs() -> None:
     voluptuous = types.ModuleType("voluptuous")
@@ -8026,13 +8035,15 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
             placeholders["register_schema_name"],
             "pi30_ascii/models/smartess_0925_compat.json",
         )
+        # These sources are real paths rendered with os.sep; the expected suffix
+        # is written with forward slashes, so normalize the rendered side.
         self.assertIn(
             "profiles/pi30_ascii/models/smartess_0925_compat.json",
-            placeholders["effective_profile_source"],
+            normalize_separators(placeholders["effective_profile_source"]),
         )
         self.assertIn(
             "register_schemas/pi30_ascii/models/smartess_0925_compat.json",
-            placeholders["effective_schema_source"],
+            normalize_separators(placeholders["effective_schema_source"]),
         )
 
     def test_validate_connection_inputs_uses_field_validation_metadata(self) -> None:
