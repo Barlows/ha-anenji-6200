@@ -87,7 +87,12 @@ def build_quality_gate_steps(
         QualityGateStep(
             key="unit_tests",
             title="Run unit tests",
-            command=(python_executable, "-m", "unittest", "discover", "-s", "tests", "-v"),
+            # The runner, not a bare `unittest discover`: on Windows the default
+            # ProactorEventLoop has no loop.add_reader(), which CollectorTcpAcceptor
+            # requires, so 92 tests would error out for a reason unrelated to the
+            # code. run_unit_tests.py selects the selector loop there and is an
+            # ordinary discovery run everywhere else.
+            command=(python_executable, str(TOOLS_DIR / "run_unit_tests.py")),
         ),
         QualityGateStep(
             key="compileall",
