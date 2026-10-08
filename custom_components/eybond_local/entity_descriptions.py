@@ -286,6 +286,14 @@ BASE_SENSOR_DESCRIPTIONS: tuple[MeasurementDescription, ...] = (
         live=False,
     ),
     MeasurementDescription(
+        key="collector_stray_rtu_reply_count",
+        name="Collector Stray Modbus Replies Skipped",
+        icon="mdi:skip-next-circle-outline",
+        diagnostic=True,
+        enabled_default=True,
+        live=False,
+    ),
+    MeasurementDescription(
         key="collector_poll_utilization_percent",
         name="Poll Utilization",
         unit="%",

@@ -25,6 +25,8 @@ from custom_components.eybond_local.collector.transport.binary_framing import (
     BinaryGrammar,
     async_read_binary_frame,
     looks_like_stray_modbus_rtu_reply,
+    modbus_rtu_crc_is_valid,
+    stray_modbus_rtu_reply_length,
     runtime_eybond_header_error,
     validate_aabb_frame,
 )
@@ -421,6 +423,40 @@ class BinaryFrameReaderTests(unittest.IsolatedAsyncioTestCase):
                         asyncio.StreamReader(), prefix=prefix, grammar=BinaryGrammar.MIXED,
                         started_at=asyncio.get_running_loop().time(), timeout=1.0,
                     )
+
+class StrayModbusRtuReplyHelperTests(unittest.TestCase):
+    def test_length_covers_address_function_count_data_and_crc(self) -> None:
+        self.assertEqual(stray_modbus_rtu_reply_length(bytes.fromhex("010302")), 7)
+        self.assertEqual(stray_modbus_rtu_reply_length(bytes.fromhex("010314")), 25)
+        self.assertEqual(stray_modbus_rtu_reply_length(bytes.fromhex("01036c")), 113)
+
+    def test_only_even_byte_counts_of_read_replies_are_candidates(self) -> None:
+        for name, prefix in (
+            ("odd byte count: registers are 16-bit", "010303"),
+            ("empty reply", "010300"),
+            ("too short to decide", "0103"),
+            ("write-single-register echo, not a read reply", "010602"),
+            ("byte count above the plausible maximum", "0103fe"),
+        ):
+            with self.subTest(name):
+                self.assertEqual(
+                    stray_modbus_rtu_reply_length(bytes.fromhex(prefix)), 0
+                )
+
+    def test_crc_check_agrees_with_the_shared_modbus_crc(self) -> None:
+        import random
+
+        from custom_components.eybond_local.payload.modbus import crc16_modbus
+
+        rng = random.Random(7)
+        for size in range(2, 80):
+            body = bytes(rng.getrandbits(8) for _ in range(size))
+            frame = body + crc16_modbus(body).to_bytes(2, "little")
+            self.assertTrue(modbus_rtu_crc_is_valid(frame), size)
+            tampered = bytearray(frame)
+            tampered[-1] ^= 0x01
+            self.assertFalse(modbus_rtu_crc_is_valid(bytes(tampered)), size)
+        self.assertFalse(modbus_rtu_crc_is_valid(b"\x01\x03\x00"))
 
 
 if __name__ == "__main__":

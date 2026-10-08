@@ -36,6 +36,11 @@ fork if you specifically want the additions below.
 
 Fork-specific changes on top of upstream, most recent first:
 
+- **2026-10-08** — CRC-verified stray Modbus RTU replies pushed by the collector
+  outside the EyeBond envelope are now skipped instead of closing the session
+  (the cause of the ~3.5-minute collector resets seen on the SMG 6200). New
+  diagnostic sensor "Collector Stray Modbus Replies Skipped". Unverifiable or
+  truncated look-alikes still close the session.
 - **2026-09-25** — Collector disconnect reason now survives a reconnect instead of
   being cleared the instant the collector reattaches (`collector_retained_disconnect_reason`),
   and healthy-system diagnostic sensors report `none` instead of going `unavailable`.

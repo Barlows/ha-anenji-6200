@@ -492,6 +492,9 @@ class CollectorInfo:
     # flap-and-reconnect erases the very reason a fault investigator needs.
     # This field keeps the most recent non-empty reason for the runtime.
     retained_disconnect_reason: str = ""
+    # Unwrapped Modbus RTU read replies (CRC-verified) that arrived outside any
+    # EyeBond frame and were skipped without closing the session. Per session.
+    stray_rtu_reply_count: int = 0
     discovery_restart_count: int = 0
     last_discovery_reason: str = ""
     collector_pn: str = ""

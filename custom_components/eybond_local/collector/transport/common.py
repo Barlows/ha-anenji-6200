@@ -384,6 +384,7 @@ def _copy_collector_info(collector: CollectorInfo) -> CollectorInfo:
             retained_disconnect_reason=getattr(
                 collector, "retained_disconnect_reason", ""
             ),
+            stray_rtu_reply_count=getattr(collector, "stray_rtu_reply_count", 0),
             discovery_restart_count=collector.discovery_restart_count,
             last_discovery_reason=collector.last_discovery_reason,
             collector_pn=collector.collector_pn,
@@ -448,6 +449,11 @@ class _PrefixedAsyncReader:
     def __init__(self, reader: asyncio.StreamReader, initial_bytes: bytes = b"") -> None:
         self._reader = reader
         self._buffer = bytearray(initial_bytes)
+
+    def unread(self, data: bytes) -> None:
+        """Return bytes to the front of the stream so the next read sees them."""
+
+        self._buffer[:0] = data
 
     async def readexactly(self, size: int) -> bytes:
         if size <= 0:

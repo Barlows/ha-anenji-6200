@@ -4608,7 +4608,9 @@ class TransportLifecycleHardeningTests(unittest.IsolatedAsyncioTestCase):
             # The first seven bytes are the exact CRC-valid raw Modbus response
             # from the issue capture. The old reader borrowed 0x6A from the next
             # valid frame, decoded a 364-byte pseudo-payload, and stalled while
-            # consuming every response that followed.
+            # consuming every response that followed. Upstream closed the
+            # session here; this fork skips the CRC-verified stray reply and
+            # keeps the session, delivering the valid frame that follows.
             raw_rtu = bytes.fromhex("01030235016ed4")
             valid_later = build_collector_request(
                 0x6AEE,
@@ -4619,27 +4621,54 @@ class TransportLifecycleHardeningTests(unittest.IsolatedAsyncioTestCase):
             )
             reader1.feed_data(raw_rtu + valid_later)
 
-            await asyncio.wait_for(run1, timeout=1.0)
-            with self.assertRaisesRegex(ConnectionError, "collector_disconnected"):
-                await request1
-
-            first_snapshot = connection.collector_info
             self.assertEqual(
-                first_snapshot.last_disconnect_reason,
-                "collector_frame_function_invalid",
+                await asyncio.wait_for(request1, timeout=1.0),
+                b"\x01\x03\x02\x35\x01\x6E\xD4",
             )
-            self.assertEqual(first_snapshot.pending_request_drop_count, 1)
-            self.assertTrue(writer1.closed)
+            self.assertFalse(run1.done())
+            self.assertFalse(writer1.closed)
+            self.assertEqual(connection.collector_info.stray_rtu_reply_count, 1)
+            self.assertEqual(connection.collector_info.last_disconnect_reason, "")
+            reader1.feed_eof()
+            await asyncio.wait_for(run1, timeout=1.0)
 
-            # A fresh callback session on the same connection facade accepts a
-            # normally fragmented frame and resumes request dispatch.
+            # A corrupted (bad-CRC) stray reply is still wire damage: the
+            # session closes with the framing reason, as upstream intended.
             reader2 = asyncio.StreamReader()
             writer2 = _FakeWriter()
             run2 = asyncio.create_task(
                 connection.run(reader2, writer2)  # type: ignore[arg-type]
             )
             self.assertTrue(await connection.wait_until_connected(1.0))
-            request2 = asyncio.create_task(
+            request_bad = asyncio.create_task(
+                connection.async_send_forward(
+                    b"\x01\x03\x00\xAB\x00\x01\xF5\xEA",
+                    devcode=0x0200,
+                    collector_addr=1,
+                    request_timeout=1.0,
+                )
+            )
+            await asyncio.sleep(0.02)
+            reader2.feed_data(bytes.fromhex("01030235016ed5") + valid_later)
+            await asyncio.wait_for(run2, timeout=1.0)
+            with self.assertRaisesRegex(ConnectionError, "collector_disconnected"):
+                await request_bad
+            self.assertTrue(
+                connection.collector_info.last_disconnect_reason.startswith(
+                    "collector_frame_"
+                )
+            )
+            self.assertTrue(writer2.closed)
+
+            # A fresh callback session on the same connection facade accepts a
+            # normally fragmented frame and resumes request dispatch.
+            reader3 = asyncio.StreamReader()
+            writer3 = _FakeWriter()
+            run3 = asyncio.create_task(
+                connection.run(reader3, writer3)  # type: ignore[arg-type]
+            )
+            self.assertTrue(await connection.wait_until_connected(1.0))
+            request3 = asyncio.create_task(
                 connection.async_send_forward(
                     b"\x01\x03\x00\xAC\x00\x01\x44\x2A",
                     devcode=0x0200,
@@ -4648,29 +4677,29 @@ class TransportLifecycleHardeningTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
             expected_request = build_collector_request(
-                0x6AEF,
+                0x6AF0,
                 b"\x01\x03\x00\xAC\x00\x01\x44\x2A",
                 devcode=0x0200,
                 collector_addr=1,
                 fcode=4,
             )
-            await _wait_for_writer_buffer(writer2, expected_request)
+            await _wait_for_writer_buffer(writer3, expected_request)
             response_payload = b"\x01\x03\x02\x12\x34\xB5\x33"
             response = build_collector_request(
-                0x6AEF,
+                0x6AF0,
                 response_payload,
                 devcode=0x0200,
                 collector_addr=1,
                 fcode=4,
             )
-            reader2.feed_data(response[:1])
+            reader3.feed_data(response[:1])
             await asyncio.sleep(0.01)
-            reader2.feed_data(response[1:HEADER_SIZE])
+            reader3.feed_data(response[1:HEADER_SIZE])
             await asyncio.sleep(0.01)
-            reader2.feed_data(response[HEADER_SIZE:])
-            self.assertEqual(await request2, response_payload)
-            reader2.feed_eof()
-            await asyncio.wait_for(run2, timeout=1.0)
+            reader3.feed_data(response[HEADER_SIZE:])
+            self.assertEqual(await request3, response_payload)
+            reader3.feed_eof()
+            await asyncio.wait_for(run3, timeout=1.0)
 
     async def test_framed_reader_bounds_partial_header_and_payload(self) -> None:
         async def _quiet_heartbeat(self) -> None:
@@ -4727,14 +4756,13 @@ class TransportLifecycleHardeningTests(unittest.IsolatedAsyncioTestCase):
             expected_reason="collector_frame_header_timeout",
             header_timeout=0.05,
         )
-        await _run_failure(
-            bytes.fromhex("0103180000000000"),
-            expected_reason="collector_frame_length_invalid",
-        )
-        await _run_failure(
-            bytes.fromhex("01036c0000000200"),
-            expected_reason="collector_frame_length_invalid",
-        )
+        # Full-length stray replies whose CRC does not verify are damage, not
+        # skippable noise: each closes the session with the framing reason.
+        for byte_count in (0x18, 0x6C):
+            await _run_failure(
+                self._bare_rtu_reply(byte_count, corrupt_crc=True),
+                expected_reason="collector_frame_function_invalid",
+            )
         await _run_failure(
             build_collector_request(
                 1,
@@ -4838,15 +4866,16 @@ class TransportLifecycleHardeningTests(unittest.IsolatedAsyncioTestCase):
                 connection.run(reader, writer)  # type: ignore[arg-type]
             )
             self.assertTrue(await connection.wait_until_connected(1.0))
-            reader.feed_data(bytes.fromhex("0103140000000000"))
+            reader.feed_data(self._bare_rtu_reply(0x14, corrupt_crc=True))
             await asyncio.wait_for(run, timeout=1.0)
 
         self.assertEqual(
             connection.collector_info.last_disconnect_reason,
-            "collector_frame_length_invalid",
+            "collector_frame_function_invalid",
         )
         joined = "\n".join(captured.output)
         self.assertIn("unwrapped Modbus RTU reply", joined)
+        self.assertIn("CRC did not verify", joined)
         self.assertNotIn("malformed frame header", joined)
 
     async def test_disconnect_reason_survives_listener_dropping_the_connection(
@@ -4886,7 +4915,9 @@ class TransportLifecycleHardeningTests(unittest.IsolatedAsyncioTestCase):
                     )
                 )
                 self.assertTrue(await first.wait_until_connected(1.0))
-                reader.feed_data(bytes.fromhex("0103140000000000"))
+                reader.feed_data(
+                    self._bare_rtu_reply(0x14, corrupt_crc=True)
+                )
                 await asyncio.wait_for(run, timeout=1.0)
 
                 # The old object is gone from the listener indexes...
@@ -4894,10 +4925,10 @@ class TransportLifecycleHardeningTests(unittest.IsolatedAsyncioTestCase):
                 # ...yet the reason is still reported while disconnected.
                 info = transport.collector_info
                 self.assertEqual(
-                    info.retained_disconnect_reason, "collector_frame_length_invalid"
+                    info.retained_disconnect_reason, "collector_frame_function_invalid"
                 )
                 self.assertEqual(
-                    info.last_disconnect_reason, "collector_frame_length_invalid"
+                    info.last_disconnect_reason, "collector_frame_function_invalid"
                 )
 
                 # Redial onto a brand-new connection object: the live-session
@@ -4916,12 +4947,125 @@ class TransportLifecycleHardeningTests(unittest.IsolatedAsyncioTestCase):
                 info = transport.collector_info
                 self.assertEqual(info.last_disconnect_reason, "")
                 self.assertEqual(
-                    info.retained_disconnect_reason, "collector_frame_length_invalid"
+                    info.retained_disconnect_reason, "collector_frame_function_invalid"
                 )
                 reader2.feed_eof()
                 await asyncio.wait_for(run2, timeout=1.0)
         finally:
             await transport.stop()
+
+    # -- CRC-verified stray Modbus RTU replies are skipped, not session-fatal --
+
+    @staticmethod
+    def _bare_rtu_reply(byte_count: int, *, address: int = 1, corrupt_crc: bool = False) -> bytes:
+        body = bytes([address, 3, byte_count]) + bytes(
+            (index * 7 + 3) & 0xFF for index in range(byte_count)
+        )
+        crc = crc16_modbus(body) ^ (0x0101 if corrupt_crc else 0)
+        return body + crc.to_bytes(2, "little")
+
+    def _framed_connection(self) -> _CollectorConnection:
+        connection = _CollectorConnection(
+            remote_ip_hint="203.0.113.10",
+            heartbeat_interval=60.0,
+            write_timeout=0.5,
+        )
+        connection._writer = _FakeWriter()  # type: ignore[assignment]
+        return connection
+
+    async def _feed_and_run(self, connection: _CollectorConnection, *chunks: bytes) -> None:
+        reader = asyncio.StreamReader()
+        for chunk in chunks:
+            reader.feed_data(chunk)
+        reader.feed_eof()
+        await asyncio.wait_for(connection._read_loop(reader), timeout=2.0)
+
+    def _expect_reply(self, connection: _CollectorConnection, tid: int) -> asyncio.Future:
+        future = asyncio.get_running_loop().create_future()
+        connection._pending[tid] = future
+        connection._pending_fcode[tid] = 4
+        return future
+
+    @staticmethod
+    def _wrapped_reply(tid: int, payload: bytes) -> bytes:
+        return build_collector_request(
+            tid, payload, devcode=2376, collector_addr=1, fcode=4
+        )
+
+    async def test_stray_rtu_replies_of_every_observed_size_are_skipped(self) -> None:
+        # Field sizes: 0x14, 0x18 and 0x6c data bytes (long, rejected by the
+        # header check) and the 7-byte one-register reply (shorter than a
+        # header). Each used to close the session; none may now, and the real
+        # replies interleaved with them must still be delivered.
+        connection = self._framed_connection()
+        first = self._expect_reply(connection, 23)
+        second = self._expect_reply(connection, 24)
+
+        await self._feed_and_run(
+            connection,
+            self._bare_rtu_reply(0x14),
+            self._wrapped_reply(23, b"first-real-reply"),
+            self._bare_rtu_reply(0x6C),
+            self._bare_rtu_reply(0x02),
+            self._bare_rtu_reply(0x18),
+            self._wrapped_reply(24, b"second-real-reply"),
+        )
+
+        self.assertEqual((await asyncio.wait_for(first, 1.0))[1], b"first-real-reply")
+        self.assertEqual((await asyncio.wait_for(second, 1.0))[1], b"second-real-reply")
+        info = connection.collector_info
+        self.assertEqual(info.stray_rtu_reply_count, 4)
+        # The only thing that ended the session was the test's EOF.
+        self.assertEqual(info.last_disconnect_reason, "collector_eof")
+
+    async def test_stray_reply_with_bad_crc_still_closes_the_session(self) -> None:
+        connection = self._framed_connection()
+        later = self._expect_reply(connection, 23)
+
+        await self._feed_and_run(
+            connection,
+            self._bare_rtu_reply(0x14, corrupt_crc=True),
+            self._wrapped_reply(23, b"never-delivered"),
+        )
+
+        info = connection.collector_info
+        self.assertEqual(info.stray_rtu_reply_count, 0)
+        # Which header check rejects the bytes depends on the data; what matters
+        # is that an unverifiable reply is still treated as a framing fault.
+        self.assertTrue(info.last_disconnect_reason.startswith("collector_frame_"))
+        self.assertFalse(later.done())
+
+    async def test_short_candidate_with_bad_crc_is_handed_back_unchanged(self) -> None:
+        # A genuine frame whose first bytes happen to look like a one-register
+        # RTU reply (tid 0x0103, devcode high byte 0x02). The CRC cannot match,
+        # so every byte must go back to the normal parser and the frame is
+        # delivered intact -- the new path must never eat real traffic.
+        connection = self._framed_connection()
+        look_alike = self._expect_reply(connection, 0x0103)
+        frame = build_collector_request(
+            0x0103, b"look-alike-payload", devcode=0x0200, collector_addr=1, fcode=4
+        )
+        self.assertEqual(frame[:3], bytes([0x01, 0x03, 0x02]))
+
+        await self._feed_and_run(connection, frame)
+
+        self.assertEqual((await asyncio.wait_for(look_alike, 1.0))[1], b"look-alike-payload")
+        self.assertEqual(connection.collector_info.stray_rtu_reply_count, 0)
+
+    async def test_truncated_long_stray_reply_closes_with_a_payload_timeout(self) -> None:
+        connection = self._framed_connection()
+        reader = asyncio.StreamReader()
+        reader.feed_data(self._bare_rtu_reply(0x6C)[:40])  # never completes
+
+        with patch(
+            "custom_components.eybond_local.collector.transport.connections._FRAMED_HEADER_COMPLETION_TIMEOUT",
+            0.05,
+        ):
+            await asyncio.wait_for(connection._read_loop(reader), timeout=2.0)
+
+        info = connection.collector_info
+        self.assertEqual(info.last_disconnect_reason, "collector_frame_payload_timeout")
+        self.assertEqual(info.stray_rtu_reply_count, 0)
 
     async def test_genuine_garbage_header_keeps_the_original_wording(self) -> None:
         connection = _CollectorConnection(

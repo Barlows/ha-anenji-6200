@@ -370,6 +370,9 @@ class HubSnapshotMixin:
             )
         else:
             values["collector_retained_disconnect_reason"] = "none"
+        values["collector_stray_rtu_reply_count"] = int(
+            getattr(collector, "stray_rtu_reply_count", 0) or 0
+        )
         if collector.last_discovery_reason:
             values["collector_last_discovery_reason"] = collector.last_discovery_reason
         else:
