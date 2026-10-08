@@ -639,6 +639,47 @@ class _CollectorConnection:
                                 header.payload_len,
                             )
                         return
+                    # A bare Modbus RTU read reply can decode as a header that
+                    # passes every check: its data bytes land in the length and
+                    # function fields (field-observed: ``0103580003090d13`` is an
+                    # 88-byte reply read as a 775-byte payload). The old reader
+                    # then waited for payload that never came and closed the
+                    # session. If the bytes are also a CRC-verified reply that is
+                    # shorter than the claimed frame, skip it. A real frame that
+                    # merely starts alike fails the CRC and is handed back intact;
+                    # a claimed frame no longer than the reply is left alone so a
+                    # short genuine frame is never delayed.
+                    rtu_length = stray_modbus_rtu_reply_length(header_bytes)
+                    if rtu_length > HEADER_SIZE and (
+                        HEADER_SIZE + header.payload_len > rtu_length
+                    ):
+                        try:
+                            rtu_tail = await read(asyncio.wait_for(
+                                reader.readexactly(rtu_length - HEADER_SIZE),
+                                timeout=_FRAMED_HEADER_COMPLETION_TIMEOUT,
+                            ))
+                        except asyncio.TimeoutError:
+                            # Fewer bytes than the reply needs also means the
+                            # longer claimed frame cannot be complete.
+                            self._collector.last_disconnect_reason = (
+                                "collector_frame_payload_timeout"
+                            )
+                            logger.warning(
+                                "Closing collector session after incomplete frame payload "
+                                "remote=%s tid=%d fc=%d expected=%d header=%s "
+                                "rtu_candidate_len=%d",
+                                self._collector.remote_ip,
+                                header.tid,
+                                header.fcode,
+                                header.payload_len,
+                                header_bytes.hex(),
+                                rtu_length,
+                            )
+                            return
+                        if modbus_rtu_crc_is_valid(header_bytes + rtu_tail):
+                            self._note_skipped_stray_rtu_reply(rtu_length)
+                            continue
+                        reader.unread(rtu_tail)
                     payload = b""
                     if header.payload_len > 0:
                         try:

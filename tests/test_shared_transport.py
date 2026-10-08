@@ -33,6 +33,9 @@ from custom_components.eybond_local.collector.transport.common import (
     _classify_initial_protocol_shape,
 )
 from custom_components.eybond_local.collector.at import CollectorAtResponse
+from custom_components.eybond_local.collector.transport.binary_framing import (
+    runtime_eybond_header_error,
+)
 from custom_components.eybond_local.collector.protocol import (
     HEADER_SIZE,
     build_collector_request,
@@ -5017,6 +5020,102 @@ class TransportLifecycleHardeningTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(info.stray_rtu_reply_count, 4)
         # The only thing that ended the session was the test's EOF.
         self.assertEqual(info.last_disconnect_reason, "collector_eof")
+
+    @staticmethod
+    def _header_shaped_rtu_reply() -> bytes:
+        # Field capture: ``0103580003090d13`` opens an 88-byte Modbus reply whose
+        # data bytes decode as a *valid* EyeBond header (tid 259, payload 775,
+        # function 19), so header validation alone cannot reject it.
+        body = bytes.fromhex("0103580003090d13") + bytes(
+            (index * 5 + 1) & 0xFF for index in range(93 - 8 - 2)
+        )
+        return body + crc16_modbus(body).to_bytes(2, "little")
+
+    async def test_header_shaped_stray_reply_is_skipped(self) -> None:
+        reply = self._header_shaped_rtu_reply()
+        header = decode_header(reply[:HEADER_SIZE])
+        self.assertEqual(runtime_eybond_header_error(header), "")
+        self.assertEqual(header.payload_len, 775)
+
+        connection = self._framed_connection()
+        real = self._expect_reply(connection, 31)
+        await self._feed_and_run(
+            connection, reply, self._wrapped_reply(31, b"real-after-stray")
+        )
+
+        self.assertEqual((await asyncio.wait_for(real, 1.0))[1], b"real-after-stray")
+        info = connection.collector_info
+        self.assertEqual(info.stray_rtu_reply_count, 1)
+        self.assertEqual(info.last_disconnect_reason, "collector_eof")
+
+    async def test_header_shaped_reply_with_bad_crc_is_parsed_as_a_frame(self) -> None:
+        # Same opening bytes but a corrupted CRC: not a verified stray reply, so
+        # the bytes go back to the normal parser, which waits for the claimed
+        # 775-byte payload and times out exactly as before.
+        reply = bytearray(self._header_shaped_rtu_reply())
+        reply[-1] ^= 0xFF
+        connection = self._framed_connection()
+        reader = asyncio.StreamReader()
+        reader.feed_data(bytes(reply))
+
+        with patch(
+            "custom_components.eybond_local.collector.transport.connections._FRAMED_PAYLOAD_COMPLETION_TIMEOUT",
+            0.05,
+        ):
+            await asyncio.wait_for(connection._read_loop(reader), timeout=2.0)
+
+        info = connection.collector_info
+        self.assertEqual(info.stray_rtu_reply_count, 0)
+        self.assertEqual(info.last_disconnect_reason, "collector_frame_payload_timeout")
+
+    async def test_truncated_header_shaped_reply_closes_with_a_payload_timeout(self) -> None:
+        connection = self._framed_connection()
+        reader = asyncio.StreamReader()
+        reader.feed_data(self._header_shaped_rtu_reply()[:40])
+
+        with patch(
+            "custom_components.eybond_local.collector.transport.connections._FRAMED_HEADER_COMPLETION_TIMEOUT",
+            0.05,
+        ):
+            await asyncio.wait_for(connection._read_loop(reader), timeout=2.0)
+
+        info = connection.collector_info
+        self.assertEqual(info.stray_rtu_reply_count, 0)
+        self.assertEqual(info.last_disconnect_reason, "collector_frame_payload_timeout")
+
+    async def test_genuine_frame_starting_like_a_reply_is_delivered_intact(self) -> None:
+        # tid 0x0103 and a devcode whose high byte is 0x58 open exactly like an
+        # 88-byte reply. The frame is longer than that reply, so the candidate is
+        # probed, fails its CRC, and every byte goes back to the frame parser.
+        connection = self._framed_connection()
+        real = self._expect_reply(connection, 0x0103)
+        payload = bytes(range(200))
+        frame = build_collector_request(
+            0x0103, payload, devcode=0x5800, collector_addr=1, fcode=4
+        )
+        self.assertEqual(frame[:3], bytes([0x01, 0x03, 0x58]))
+        self.assertEqual(runtime_eybond_header_error(decode_header(frame[:HEADER_SIZE])), "")
+
+        await self._feed_and_run(connection, frame)
+
+        self.assertEqual((await asyncio.wait_for(real, 1.0))[1], payload)
+        self.assertEqual(connection.collector_info.stray_rtu_reply_count, 0)
+
+    async def test_short_genuine_frame_starting_like_a_reply_is_not_delayed(self) -> None:
+        # A frame no longer than the candidate reply cannot be a prefix of it, so
+        # it must be parsed straight away rather than waiting on the probe timeout.
+        connection = self._framed_connection()
+        real = self._expect_reply(connection, 0x0103)
+        frame = build_collector_request(
+            0x0103, b"short", devcode=0x5800, collector_addr=1, fcode=4
+        )
+        reader = asyncio.StreamReader()
+        reader.feed_data(frame)
+
+        task = asyncio.create_task(connection._read_loop(reader))
+        self.assertEqual((await asyncio.wait_for(real, 0.5))[1], b"short")
+        reader.feed_eof()
+        await asyncio.wait_for(task, timeout=2.0)
 
     async def test_stray_reply_with_bad_crc_still_closes_the_session(self) -> None:
         connection = self._framed_connection()
