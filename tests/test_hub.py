@@ -1253,8 +1253,9 @@ class HubSnapshotTests(unittest.TestCase):
 
         self.assertEqual(snapshot.values["last_error"], "none")
         self.assertEqual(snapshot.values["collector_retained_disconnect_reason"], "none")
-        # The live-session field stays absent while no session has torn down.
-        self.assertNotIn("collector_last_disconnect_reason", snapshot.values)
+        # A healthy live session reports "none" too, not an absent key that
+        # surfaces as "unavailable".
+        self.assertEqual(snapshot.values["collector_last_disconnect_reason"], "none")
 
     def test_build_snapshot_retains_disconnect_reason_across_reconnects(self) -> None:
         hub = EybondHub(
@@ -1282,7 +1283,7 @@ class HubSnapshotTests(unittest.TestCase):
             snapshot.values["collector_retained_disconnect_reason"],
             "collector_frame_header_timeout",
         )
-        self.assertNotIn("collector_last_disconnect_reason", snapshot.values)
+        self.assertEqual(snapshot.values["collector_last_disconnect_reason"], "none")
 
     def test_build_snapshot_prefers_more_complete_runtime_collector_pn(self) -> None:
         hub = EybondHub(

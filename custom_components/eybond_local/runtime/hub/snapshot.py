@@ -358,10 +358,11 @@ class HubSnapshotMixin:
             values["collector_profile"] = collector.profile_name
         if collector.profile_key:
             values["collector_profile_key"] = collector.profile_key
-        if collector.last_disconnect_reason:
-            values["collector_last_disconnect_reason"] = collector.last_disconnect_reason
-        else:
-            values.pop("collector_last_disconnect_reason", None)
+        # "none" rather than dropping the key: an enabled-by-default diagnostic
+        # that reads "unavailable" while nothing is wrong looks like a fault.
+        values["collector_last_disconnect_reason"] = (
+            collector.last_disconnect_reason or "none"
+        )
         # Retained reason survives a reconnect, so this keeps reporting the last
         # real fault instead of silently reverting to unavailable.
         if collector.retained_disconnect_reason:

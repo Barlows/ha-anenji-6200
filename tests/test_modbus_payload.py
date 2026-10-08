@@ -44,6 +44,22 @@ class _RawSerialSelectingTransport:
         return bytes(frame)
 
 
+def _read_reply(slave: int, function: int, value: int = 0x7300) -> bytes:
+    frame = bytearray((slave, function, 2, value >> 8, value & 0xFF))
+    frame.extend(crc16_modbus(frame).to_bytes(2, "little"))
+    return bytes(frame)
+
+
+class _ScriptedTransport:
+    def __init__(self, *replies: bytes) -> None:
+        self._replies = list(replies)
+        self.calls = 0
+
+    async def async_send_payload(self, payload: bytes, *, route) -> bytes:
+        self.calls += 1
+        return self._replies.pop(0)
+
+
 class ModbusPayloadTests(unittest.IsolatedAsyncioTestCase):
     async def test_read_holding_timeout_reports_request_timeout(self) -> None:
         transport = _TimeoutTransport()
@@ -59,6 +75,33 @@ class ModbusPayloadTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(str(ctx.exception), "request_timeout")
         self.assertEqual(transport.calls, 2)
+
+    async def test_read_retries_once_after_a_stray_reply_in_the_poll_slot(self) -> None:
+        # Field-observed ``unexpected_slave_id:0`` / ``unexpected_function:0``.
+        for bad in (_read_reply(0, 3), _read_reply(1, 0)):
+            transport = _ScriptedTransport(bad, _read_reply(1, 3))
+            session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
+
+            self.assertEqual(await session.read_holding(171, 1), [0x7300])
+            self.assertEqual(transport.calls, 2)
+
+    async def test_read_gives_up_after_one_retry_on_a_persistent_wrong_slave(self) -> None:
+        transport = _ScriptedTransport(_read_reply(9, 3), _read_reply(9, 3))
+        session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
+
+        with self.assertRaisesRegex(ModbusError, "unexpected_slave_id:9"):
+            await session.read_holding(171, 1)
+        self.assertEqual(transport.calls, 2)
+
+    async def test_exception_replies_are_not_retried(self) -> None:
+        exception_reply = bytearray((1, 0x83, 2))
+        exception_reply.extend(crc16_modbus(exception_reply).to_bytes(2, "little"))
+        transport = _ScriptedTransport(bytes(exception_reply))
+        session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
+
+        with self.assertRaisesRegex(ModbusError, "exception_code"):
+            await session.read_holding(171, 1)
+        self.assertEqual(transport.calls, 1)
 
     async def test_modbus_session_selects_typed_raw_serial_route(self) -> None:
         transport = _RawSerialSelectingTransport()
