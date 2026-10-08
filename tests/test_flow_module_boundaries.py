@@ -115,7 +115,11 @@ class FlowTranslationBoundaryTests(unittest.TestCase):
             names = _defined_names(_tree(path))
             for name in definitions:
                 if name in names:
-                    definitions[name].append(str(path.relative_to(COMPONENT)))
+                    # as_posix(): the expectation below is written with forward
+                    # slashes, which str(relative_to) cannot produce on Windows.
+                    definitions[name].append(
+                        path.relative_to(COMPONENT).as_posix()
+                    )
         self.assertEqual(
             definitions,
             {

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 import tempfile
@@ -15,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
 from custom_components.eybond_local.support import cloud_evidence_providers as providers
 from custom_components.eybond_local.support.cloud_evidence import (
     build_cloud_evidence_payload,
+    cloud_evidence_root as _cloud_evidence_root,
     export_cloud_evidence,
     fetch_and_export_smartess_device_bundle_cloud_evidence,
     fetch_and_export_valuecloud_device_bundle_cloud_evidence,
@@ -25,6 +28,26 @@ from custom_components.eybond_local.support.cloud_evidence_providers import (
     CloudEvidenceContext,
     resolve_cloud_evidence_provider,
 )
+
+
+@contextlib.contextmanager
+def _frozen_export_clock():
+    """Pin cloud_evidence's clock so every export derives the same timestamp.
+
+    That is the real-world condition these tests are about: the platform clock
+    is coarser (~1.4 ms) than the microsecond timestamp the filename claims, so
+    two exports inside one tick collide by construction. Pinned, the collision is
+    deterministic instead of dependent on how the file I/O happens to interleave
+    with the clock tick -- which is the difference between a test that catches
+    the bug and one that passes by luck.
+    """
+
+    frozen = datetime(2026, 1, 2, 3, 4, 5, 678901, tzinfo=timezone.utc)
+    with patch(
+        "custom_components.eybond_local.support.cloud_evidence.datetime"
+    ) as mocked:
+        mocked.now.return_value = frozen
+        yield
 
 
 class CloudEvidenceTests(unittest.TestCase):
@@ -393,6 +416,120 @@ class EvidenceProvenanceTests(unittest.TestCase):
                     provider="smartess",
                 )
             )
+
+    def test_back_to_back_exports_of_one_identity_do_not_collide(self) -> None:
+        # The name carries a microsecond timestamp but the platform clock ticks
+        # at ~1.4 ms, so two exports inside one tick derive the SAME name by
+        # construction. The exclusive claim must resolve that by suffixing, not
+        # by raising -- otherwise a retry loses its own record.
+        #
+        # The clock is pinned deliberately. Left to run freely, each export does
+        # real file I/O and takes longer (~2 ms) than the tick it is naming, so
+        # consecutive exports land in different ticks and never collide at all --
+        # the test would pass against the unfixed code for the wrong reason.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_dir = Path(temp_dir)
+            evidence = build_cloud_evidence_payload(
+                source="smartess_cloud_probe",
+                payload={"request": {"command": "device-bundle"}},
+                entry_id="entry123",
+                collector_pn="E5000020000000",
+                pn="E50000200000000001",
+                sn="E50000200000000001000001",
+                devcode=2376,
+                devaddr=1,
+            )
+
+            with _frozen_export_clock():
+                paths = [
+                    export_cloud_evidence(config_dir=config_dir, evidence=evidence)
+                    for _ in range(25)
+                ]
+
+            self.assertEqual(
+                len(set(paths)), len(paths), "every export must get its own name"
+            )
+            for path in paths:
+                self.assertTrue(path.exists(), path)
+
+    def test_collision_suffix_still_reads_back_as_the_latest_record(self) -> None:
+        # load_latest_cloud_evidence() picks the greatest FILENAME. '_' (0x5F)
+        # sorts above '.' (0x2E), so a suffixed name has to sort after the plain
+        # one or a retried export would be shadowed by the record it replaced.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_dir = Path(temp_dir)
+            evidence = build_cloud_evidence_payload(
+                source="smartess_cloud_probe",
+                payload={"request": {"command": "device-bundle", "attempt": 2}},
+                entry_id="entry123",
+                collector_pn="E5000020000000",
+                pn="E50000200000000001",
+                sn="E50000200000000001000001",
+                devcode=2376,
+                devaddr=1,
+            )
+            with _frozen_export_clock():
+                first = export_cloud_evidence(config_dir=config_dir, evidence=evidence)
+                second = export_cloud_evidence(config_dir=config_dir, evidence=evidence)
+
+            self.assertGreater(second.name, first.name)
+
+            record = load_latest_cloud_evidence(
+                config_dir, entry_id="entry123", collector_pn="E5000020000000"
+            )
+            self.assertIsNotNone(record)
+            assert record is not None
+            self.assertEqual(record.path, second)
+
+    def test_collision_suffix_stays_inside_its_own_prune_set(self) -> None:
+        # _prune_older_files_for_stem() globs "{stem}_*.json". A suffixed name
+        # must still match, or colliding exports would accumulate forever
+        # instead of collapsing to one file per identity.
+        #
+        # The payload names a provider on purpose: pruning returns early for an
+        # UNKNOWN provider (it must not delete another provider's evidence), so
+        # a provider-less payload would keep every file and prove nothing.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_dir = Path(temp_dir)
+            evidence = build_cloud_evidence_payload(
+                source="smartess_cloud_diagnostics",
+                payload={"request": {"command": "device-bundle"}},
+                provider="smartess",
+                entry_id="entry123",
+                collector_pn="E5000020000000",
+                pn="E50000200000000001",
+                sn="E50000200000000001000001",
+                devcode=2376,
+                devaddr=1,
+            )
+            with _frozen_export_clock():
+                for _ in range(10):
+                    export_cloud_evidence(config_dir=config_dir, evidence=evidence)
+
+            stored = list(_cloud_evidence_root(config_dir).glob("*.json"))
+            self.assertEqual(len(stored), 1, [p.name for p in stored])
+
+    def test_overwrite_still_reclaims_the_exact_same_path(self) -> None:
+        # overwrite=True is a deliberate replace: it must not walk the suffix.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_dir = Path(temp_dir)
+            evidence = build_cloud_evidence_payload(
+                source="smartess_cloud_probe",
+                payload={"request": {"command": "device-bundle"}},
+                entry_id="entry123",
+                collector_pn="E5000020000000",
+                pn="E50000200000000001",
+                sn="E50000200000000001000001",
+                devcode=2376,
+                devaddr=1,
+            )
+            with _frozen_export_clock():
+                first = export_cloud_evidence(config_dir=config_dir, evidence=evidence)
+                again = export_cloud_evidence(
+                    config_dir=config_dir, evidence=evidence, overwrite=True
+                )
+            self.assertEqual(first.name, again.name)
+            self.assertTrue(again.exists())
 
     def test_provider_load_latest_is_scoped(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

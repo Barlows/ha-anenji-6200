@@ -31,29 +31,15 @@ from ...models import ProbeTarget, RuntimeSnapshot
 from ...support.diagnostic_runner import DiagnosticSingleFlight
 from ...support.local_register_collection import LocalRegisterCollectionManager
 from ...timeout_policy import DEFAULT_ONBOARDING_TIMEOUT_POLICY
-from .cloud_tools import CoordinatorCloudToolsMixin
-from .collector_profile import CoordinatorCollectorProfileMixin
-from .control_projection import CoordinatorControlProjectionMixin
-from .device_registry import CoordinatorDeviceRegistryMixin
-from .diagnostics import CoordinatorDiagnosticsMixin
-from .entity_reload import CoordinatorEntityReloadMixin
-from .inverter_profile import CoordinatorInverterProfileMixin
-from .lifecycle import CoordinatorLifecycleMixin
-from .management import CoordinatorManagementMixin
-from .management_projection import CoordinatorManagementProjectionMixin
-from .network import CoordinatorNetworkReconcileMixin
-from .operating_profile import CoordinatorOperatingProfileMixin
-from .persistence import CoordinatorPersistenceMixin
+from .core import CoordinatorCoreMixin
+from .lifecycle import _RuntimeObserverProtocol
+from .integration import CoordinatorIntegrationMixin
+from .management_group import CoordinatorManagementGroupMixin
 from .poll_projection import (
     is_clean_runtime_poll_cycle as _is_clean_runtime_poll_cycle,
     poll_recommended_interval_seconds as _poll_recommended_interval_seconds,
 )
-from .polling import CoordinatorPollingMixin
-from .runtime_profile import CoordinatorRuntimeProfileMixin
-from .snapshot_projection import CoordinatorSnapshotProjectionMixin
-from .startup import CoordinatorStartupIdentityMixin
-from .strategy import CoordinatorStrategyTransitionMixin
-from .support import CoordinatorSupportMixin
+from .polling_group import CoordinatorPollingGroupMixin
 from .tooling_projection import (
     integration_build_runtime_values as _integration_build_runtime_values,
     localized_runtime_text as _localized_runtime_text,
@@ -75,25 +61,10 @@ _LEGACY_METADATA_CHANNEL_PREFIX = "collector:"
 
 
 class EybondLocalCoordinator(
-    CoordinatorLifecycleMixin,
-    CoordinatorDiagnosticsMixin,
-    CoordinatorStartupIdentityMixin,
-    CoordinatorCloudToolsMixin,
-    CoordinatorSnapshotProjectionMixin,
-    CoordinatorSupportMixin,
-    CoordinatorStrategyTransitionMixin,
-    CoordinatorManagementMixin,
-    CoordinatorManagementProjectionMixin,
-    CoordinatorNetworkReconcileMixin,
-    CoordinatorEntityReloadMixin,
-    CoordinatorOperatingProfileMixin,
-    CoordinatorPersistenceMixin,
-    CoordinatorRuntimeProfileMixin,
-    CoordinatorPollingMixin,
-    CoordinatorCollectorProfileMixin,
-    CoordinatorControlProjectionMixin,
-    CoordinatorInverterProfileMixin,
-    CoordinatorDeviceRegistryMixin,
+    CoordinatorCoreMixin,
+    CoordinatorPollingGroupMixin,
+    CoordinatorManagementGroupMixin,
+    CoordinatorIntegrationMixin,
     DataUpdateCoordinator[RuntimeSnapshot],
 ):
     """Owns the hub and exposes its snapshots to Home Assistant entities."""
@@ -142,30 +113,19 @@ class EybondLocalCoordinator(
         # and never become entities (or writable) because every entity/write path reads
         # the runtime inverter's capabilities.
         self._device_overlay_merge_status = ""
-        set_overlay_applier = getattr(self._runtime, "set_inverter_overlay_applier", None)
-        if callable(set_overlay_applier):
-            set_overlay_applier(self._apply_device_overlay_to_inverter)
-        set_detection_observer = getattr(
-            self._runtime,
-            "set_inverter_detection_observer",
-            None,
-        )
-        if callable(set_detection_observer):
-            set_detection_observer(self._on_runtime_inverter_detected)
-        set_snapshot_observer = getattr(
-            self._runtime,
-            "set_runtime_snapshot_observer",
-            None,
-        )
-        if callable(set_snapshot_observer):
-            set_snapshot_observer(self._publish_runtime_intermediate_snapshot)
-        set_connection_watcher = getattr(
-            self._runtime,
-            "set_collector_connection_watcher",
-            None,
-        )
-        if callable(set_connection_watcher):
-            set_connection_watcher(self._on_collector_connection_established)
+        if isinstance(self._runtime, _RuntimeObserverProtocol):
+            self._runtime.set_inverter_overlay_applier(
+                self._apply_device_overlay_to_inverter
+            )
+            self._runtime.set_inverter_detection_observer(
+                self._on_runtime_inverter_detected
+            )
+            self._runtime.set_runtime_snapshot_observer(
+                self._publish_runtime_intermediate_snapshot
+            )
+            self._runtime.set_collector_connection_watcher(
+                self._on_collector_connection_established
+            )
         persisted_unsupported = entry.options.get(_UNSUPPORTED_COMMANDS_OPTION_KEY)
         persisted_unsupported_version = entry.options.get(
             _UNSUPPORTED_COMMANDS_OPTION_VERSION_KEY

@@ -52,18 +52,29 @@ class ProxySessionTests(unittest.TestCase):
         )
 
         self.assertEqual(command[0], "/usr/bin/python3")
+        # as_posix(): the script argument is a real path, so it carries os.sep,
+        # while the expected suffix is written with forward slashes.
         self.assertTrue(
-            command[2].endswith("custom_components/eybond_local/support/collector_cloud_proxy.py")
+            Path(command[2]).as_posix().endswith(
+                "custom_components/eybond_local/support/collector_cloud_proxy.py"
+            )
         )
         self.assertIn("--output", command)
-        self.assertEqual(command[command.index("--output") + 1], "/tmp/session.jsonl")
+        # These two are real paths stringified into argv, so they carry os.sep.
+        self.assertEqual(
+            Path(command[command.index("--output") + 1]).as_posix(),
+            "/tmp/session.jsonl",
+        )
         self.assertIn("--restore-endpoint", command)
         self.assertEqual(
             command[command.index("--restore-endpoint") + 1],
             "collector-cloud.smartess.example,18899,TCP",
         )
         self.assertIn("--restore-trigger-file", command)
-        self.assertEqual(command[command.index("--restore-trigger-file") + 1], "/tmp/session.restore")
+        self.assertEqual(
+            Path(command[command.index("--restore-trigger-file") + 1]).as_posix(),
+            "/tmp/session.restore",
+        )
 
     def test_build_proxy_capture_restore_trigger_path_uses_sidecar_suffix(self) -> None:
         self.assertEqual(

@@ -284,9 +284,18 @@ class ShadowLearningRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_upstream_failure_sets_status_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
+            # Force the upstream connect to fail by NAME rather than by pointing at
+            # a closed loopback port. A closed port is only a fast, reliable
+            # failure on POSIX: on this Windows host a connect() to an unbound
+            # 127.0.0.1 port stays PENDING instead of returning ECONNREFUSED
+            # (measured: 2.0 s to a 2 s socket timeout, no refusal), so the proxy
+            # correctly never reports an error and the read below times out.
+            # RFC 2606 reserves .invalid as guaranteed non-resolvable, so the
+            # connect fails immediately on every platform and exercises the same
+            # `except Exception` fail-closed path in the handler.
             handler = InProcessFailClosedShadowProxyHandler(
-                upstream_host="127.0.0.1",
-                upstream_port=9,
+                upstream_host="shadow-upstream.invalid",
+                upstream_port=443,
                 seed=_seed(),
                 output_path=Path(tmp) / "shadow_runtime.jsonl",
             )
@@ -295,11 +304,14 @@ class ShadowLearningRuntimeTests(unittest.IsolatedAsyncioTestCase):
             proxy_port = proxy_server.sockets[0].getsockname()[1]
 
             reader, writer = await asyncio.open_connection("127.0.0.1", proxy_port)
-            self.assertEqual(await asyncio.wait_for(reader.read(1), timeout=0.5), b"")
+            self.assertEqual(await asyncio.wait_for(reader.read(1), timeout=5.0), b"")
             status = handler.status()
             self.assertFalse(status["ready"])
             self.assertFalse(status["upstream_connected"])
-            self.assertIn("Error", str(status["upstream_error"]))
+            # The recorded error names the exception type, which differs by
+            # platform (gaierror vs ConnectionRefusedError), so match loosely --
+            # what matters is that the failure was recorded at all.
+            self.assertIn("error", str(status["upstream_error"]).lower())
 
             writer.close()
             await writer.wait_closed()

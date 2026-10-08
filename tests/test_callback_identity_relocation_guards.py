@@ -122,7 +122,9 @@ class CallbackIdentityRelocationGuards(unittest.TestCase):
         for path in sorted(PKG.rglob("*.py")):
             for name in _module_level_def_names(path):
                 if name in definitions:
-                    definitions[name].append(str(path.relative_to(PKG)))
+                    # as_posix(): the expectation below is written with forward
+                    # slashes, which str(relative_to) cannot produce on Windows.
+                    definitions[name].append(path.relative_to(PKG).as_posix())
         for symbol, where in definitions.items():
             self.assertEqual(
                 len(where),

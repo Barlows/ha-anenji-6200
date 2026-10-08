@@ -167,7 +167,9 @@ class NoRealIdentifiersTest(unittest.TestCase):
         # 4-root allowlist missed, and the known synthetic PN family must occur.
         files = _iter_repository_text_files()
         self.assertGreater(len(files), 200)
-        relative = {str(path.relative_to(REPO_ROOT)) for path in files}
+        # as_posix(): the required_root prefixes below are forward-slash, which
+        # str(relative_to) cannot produce on Windows.
+        relative = {path.relative_to(REPO_ROOT).as_posix() for path in files}
         joined = "\n".join(sorted(relative))
         self.assertIn("inverter_catalog.json", joined)
         for required_root in ("tools/", "docs/", ".github/"):

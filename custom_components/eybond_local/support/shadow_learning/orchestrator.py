@@ -25,6 +25,16 @@ from ...smartess_cloud import (
 )
 from . import ShadowWriteObservation, utc_now_iso
 from .cloud_dispatch import async_dispatch_cloud_action
+from .utilities import (
+    _async_session_ready_for_attempt,
+    _attach_attempt_observation,
+    _collect_run_observations,
+    _elapsed_ms,
+    _parse_iso_datetime,
+    _resolve_live_observation_cursor,
+    _safe_read_map,
+    _timestamp_delta_seconds,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -418,18 +428,6 @@ async def async_orchestrate_shadow_learning_settings(
     }
 
 
-def _safe_read_map(read_map_snapshot: Callable[[], dict[str, Any]] | None) -> dict[str, Any]:
-    """Snapshot the session read map without letting it fail the run."""
-
-    if read_map_snapshot is None:
-        return {}
-    try:
-        read_map = read_map_snapshot()
-    except Exception:
-        return {}
-    return read_map if isinstance(read_map, dict) else {}
-
-
 def summarize_shadow_learning_attempts(
     *,
     attempts: list[dict[str, Any]] | tuple[dict[str, Any], ...],
@@ -618,24 +616,6 @@ def _find_candidate_write_index(
     return None
 
 
-def _parse_iso_datetime(value: str) -> datetime | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        return datetime.fromisoformat(text)
-    except ValueError:
-        return None
-
-
-def _timestamp_delta_seconds(*, requested_at: datetime | None, observed_at: datetime | None) -> float | None:
-    if requested_at is None or observed_at is None:
-        return None
-    return (observed_at - requested_at).total_seconds()
-
-
 async def _wait_for_attempt_observations(
     *,
     cursor_start: int,
@@ -713,42 +693,21 @@ async def _async_reacquire_session_after_sent_control(
     return bool(await wait_until_session_ready())
 
 
-async def _async_session_ready_for_attempt(
-    *,
-    is_session_ready: Callable[[], bool] | None,
-    wait_until_session_ready: Callable[[], Awaitable[bool]] | None,
-) -> bool:
-    """Wait for a safe proxy window without weakening the live-route gate."""
-
-    if is_session_ready is None or bool(is_session_ready()):
-        return True
-    if wait_until_session_ready is None:
+def _attempt_has_success_response(attempt: dict[str, Any]) -> bool:
+    response = attempt.get("response")
+    if not isinstance(response, dict):
         return False
-    return bool(await wait_until_session_ready())
+    try:
+        return int(response.get("err", -1)) == 0
+    except (TypeError, ValueError):
+        return False
 
 
-def _attach_attempt_observation(
-    *,
-    attempt: dict[str, Any],
-    observations: tuple[ShadowWriteObservation, ...],
-) -> None:
-    if observations:
-        observation = observations[0]
-        attempt["observation_count"] = len(observations)
-        attempt["observation"] = observation.to_json_dict()
-        attempt["match_mode"] = "post_attempt_cursor"
-        attempt["timestamp_delta_seconds"] = _timestamp_delta_seconds(
-            requested_at=_parse_iso_datetime(str(attempt.get("requested_at") or "")),
-            observed_at=_parse_iso_datetime(observation.timestamp),
-        )
-        return
-    attempt["reason"] = "timeout_no_observed_write"
-
-
-def _elapsed_ms(started_at: float) -> int:
-    """Return one non-negative monotonic duration for safe diagnostics."""
-
-    return max(0, int(round((time.monotonic() - started_at) * 1000.0)))
+def _attempt_is_unproxied_success_candidate(attempt: dict[str, Any]) -> bool:
+    return (
+        _attempt_has_success_response(attempt)
+        and attempt.get("status") != _CONTROL_STATUS_CAPTURED_NOT_APPLIED
+    )
 
 
 def _normalize_captured_not_applied_status(attempt: dict[str, Any]) -> None:
@@ -782,23 +741,6 @@ def _normalize_captured_not_applied_status(attempt: dict[str, Any]) -> None:
     }
 
 
-def _attempt_has_success_response(attempt: dict[str, Any]) -> bool:
-    response = attempt.get("response")
-    if not isinstance(response, dict):
-        return False
-    try:
-        return int(response.get("err", -1)) == 0
-    except (TypeError, ValueError):
-        return False
-
-
-def _attempt_is_unproxied_success_candidate(attempt: dict[str, Any]) -> bool:
-    return (
-        _attempt_has_success_response(attempt)
-        and attempt.get("status") != _CONTROL_STATUS_CAPTURED_NOT_APPLIED
-    )
-
-
 def _normalize_correlated_captured_not_applied_attempts(
     attempts: list[dict[str, Any]],
     correlation: dict[str, Any],
@@ -825,24 +767,4 @@ def _normalize_correlated_captured_not_applied_attempts(
         _normalize_captured_not_applied_status(attempt)
 
 
-def _resolve_live_observation_cursor(
-    *,
-    observation_cursor: Callable[[], int] | None,
-    current_observations_since: Callable[[int], tuple[ShadowWriteObservation, ...]] | None,
-) -> int:
-    if observation_cursor is not None:
-        return int(observation_cursor())
-    if current_observations_since is not None:
-        return len(tuple(current_observations_since(0) or ()))
-    return 0
 
-
-def _collect_run_observations(
-    *,
-    run_cursor_start: int | None,
-    current_observations_since: Callable[[int], tuple[ShadowWriteObservation, ...]] | None,
-    attempt_observations: tuple[ShadowWriteObservation, ...],
-) -> tuple[ShadowWriteObservation, ...]:
-    if run_cursor_start is not None and current_observations_since is not None:
-        return tuple(current_observations_since(run_cursor_start) or ())
-    return tuple(attempt_observations)

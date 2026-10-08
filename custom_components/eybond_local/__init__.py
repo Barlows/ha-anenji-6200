@@ -71,12 +71,17 @@ from .integration_registration import (
     _register_entry_stop_shutdown,
 )
 from .platform_context import entity_setup_context
+from .support.listener_bootstrap import BootstrapFailureLog
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
 logger = logging.getLogger(__name__)
+
+# Repeated passive-discovery bootstrap failures escalate from exception-level
+# to warning-level; see support/listener_bootstrap.py for the policy.
+_listener_bootstrap_log = BootstrapFailureLog()
 
 _COMPONENT_SETUP_COMPLETE_KEY = "component_setup_complete"
 _COMPONENT_SETUP_RELOAD_WAITERS_KEY = "component_setup_reload_waiters"
@@ -152,6 +157,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # reinterpret it as a normal PN-less collector or perform network I/O.
         raise ConfigEntryError("obsolete_pending_entry_not_removed")
 
+    # Deferred: runtime.coordinator needs homeassistant helpers the stub lane lacks.
     from .runtime.coordinator import EybondLocalCoordinator
     from .services import async_setup_services
     from .support.download import async_register_download_views
@@ -371,7 +377,9 @@ async def _async_ensure_listener_entry(
     except Exception:
         # The collector entry remains valid even if an older HA core or a
         # concurrent setup flow rejects the service-entry bootstrap.
-        logger.exception("Failed to ensure EyeBond passive-discovery listener entry")
+        _listener_bootstrap_log.record_failure(
+            "Failed to ensure EyeBond passive-discovery listener entry"
+        )
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -383,7 +391,10 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
         "consume_entry_reload_suppression",
         None,
     )
-    if callable(consume_reload_suppression) and consume_reload_suppression():
-        return
+    # Resolve the hook once, then consult it: a re-lookup between the
+    # callable() check and the call could see a different object.
+    if callable(consume_reload_suppression):
+        if consume_reload_suppression():
+            return
 
     await hass.config_entries.async_reload(entry.entry_id)

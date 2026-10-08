@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from datetime import timedelta
 import logging
 import math
@@ -18,10 +19,13 @@ from ...const import (
     DEFAULT_POLL_INTERVAL,
     DEFAULT_POLL_MODE,
     DOMAIN,
+    POLL_DURATION_EWMA_CURRENT_WEIGHT,
+    POLL_DURATION_EWMA_PREVIOUS_WEIGHT,
     POLL_MODE_AUTO,
     POLL_MODE_MANUAL,
 )
 from ...drivers.registry import poll_policy_for_driver_key
+from ...integration_sensor_precision import _async_self_heal_sensor_display_precision
 from ...models import RuntimeSnapshot
 from .poll_projection import (
     COLLECTOR_POLL_CONTEXT_RUNTIME as _COLLECTOR_POLL_CONTEXT_RUNTIME,
@@ -68,16 +72,19 @@ class CoordinatorPollingMixin:
             snapshot.values.pop(key, None)
 
     async def _async_update_data(self) -> RuntimeSnapshot:
-        if getattr(self, "_shutdown_complete", False) and self.data is not None:
-            # A refresh queued before shutdown (debounced request, connection
-            # watcher, write follow-up) must not drive the stopped link.
-            return self.data
-        if self._diagnostic_active and self.data is not None:
-            # A diagnostic command run holds the shared transport. Skip the live
-            # poll so it does not contend on the bus; return the last snapshot.
-            return self.data
+        # RACE FIX: The shutdown and diagnostic checks below were previously
+        # performed outside the lock, creating a TOCTOU race: shutdown could
+        # complete or a diagnostic could start between the check and lock
+        # acquisition. By moving all state checks inside the lock, we ensure
+        # the decision to proceed is atomic with respect to state changes.
         async with self._runtime_operation_lock:
+            if getattr(self, "_shutdown_complete", False) and self.data is not None:
+                # A refresh queued before shutdown (debounced request, connection
+                # watcher, write follow-up) must not drive the stopped link.
+                return self.data
             if self._diagnostic_active and self.data is not None:
+                # A diagnostic command run holds the shared transport. Skip the live
+                # poll so it does not contend on the bus; return the last snapshot.
                 return self.data
             self._ensure_poll_scheduler()
             self._configure_poll_scheduler_from_options()
@@ -319,13 +326,14 @@ class CoordinatorPollingMixin:
                 self._poll_duration_ewma_seconds = duration
             else:
                 self._poll_duration_ewma_seconds = (
-                    current_ewma * 0.7 + duration * 0.3
+                    current_ewma * POLL_DURATION_EWMA_PREVIOUS_WEIGHT
+                    + duration * POLL_DURATION_EWMA_CURRENT_WEIGHT
                 )
-            recent = list(getattr(self, "_poll_recent_durations_seconds", []) or [])
+            recent = getattr(self, "_poll_recent_durations_seconds", None)
+            if recent is None:
+                recent = deque(maxlen=20)
+                self._poll_recent_durations_seconds = recent
             recent.append(duration)
-            self._poll_recent_durations_seconds = recent
-            if len(self._poll_recent_durations_seconds) > 20:
-                self._poll_recent_durations_seconds = self._poll_recent_durations_seconds[-20:]
 
         next_interval = (
             clamp_interval(next_interval_seconds)
@@ -351,7 +359,7 @@ class CoordinatorPollingMixin:
         else:
             self._collector_poll_high_utilization_streak = 0
 
-        recent_peak = max(self._poll_recent_durations_seconds[-5:] or [duration])
+        recent_peak = max(list(self._poll_recent_durations_seconds)[-5:] or [duration])
         recommended = (
             int(math.ceil(decision.recommended_interval))
             if decision is not None
@@ -686,10 +694,6 @@ class CoordinatorPollingMixin:
         snapshot.values.update(self._tooling_values)
         snapshot.values.update(await self._proxy_capture_values(snapshot))
         self._prune_collector_values_for_connection(snapshot)
-        from ...integration_sensor_precision import (
-            _async_self_heal_sensor_display_precision,
-        )
-
         await _async_self_heal_sensor_display_precision(self.hass, self.config_entry)
         self._sync_inverter_protocol_ambiguity_notification()
         self.async_sync_device_registry(snapshot)

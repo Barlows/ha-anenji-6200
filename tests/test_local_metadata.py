@@ -12,6 +12,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+# `helpers` lives beside this file, so the tests directory itself must be
+# importable for `from helpers...` to resolve when a module is run
+# directly (unittest discover happens to add it; direct runs do not).
+TESTS_ROOT = Path(__file__).resolve().parent
+if str(TESTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TESTS_ROOT))
+
+from helpers.path_asserts import normalize_separators
+
 
 from custom_components.eybond_local.metadata.local_metadata import (
     _is_within_root as local_metadata_is_within_root,
@@ -229,7 +238,14 @@ class LocalMetadataTests(unittest.TestCase):
                 with self.subTest(kind=directory):
                     result = details(alias, source)
                     self.assertFalse(result["exists"])
-                    self.assertIn(f"Create {directory}/{source}", result["status"])
+                    # The status message embeds a real path, so it carries os.sep.
+                    # Rendering the platform-native path is correct there -- it is
+                    # what the user has to create -- so normalize the message rather
+                    # than the expectation.
+                    self.assertIn(
+                        f"Create {directory}/{source}",
+                        normalize_separators(result["status"]),
+                    )
                     self.assertTrue(Path(result["path"]).is_relative_to(config.resolve()))
 
     def test_create_and_load_drafts_through_config_symlink(self) -> None:

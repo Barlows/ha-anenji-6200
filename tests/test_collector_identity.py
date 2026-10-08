@@ -110,7 +110,11 @@ class CollectorIdentityArchitectureTests(unittest.TestCase):
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     if node.name in definitions:
-                        definitions[node.name].append(str(path.relative_to(REPO_ROOT)))
+                        # as_posix(): `expected` below is written with forward
+                        # slashes, which str(relative_to) cannot produce on Windows.
+                        definitions[node.name].append(
+                            path.relative_to(REPO_ROOT).as_posix()
+                        )
 
         expected = "custom_components/eybond_local/collector_identity.py"
         self.assertEqual(

@@ -136,6 +136,35 @@ class DeviceInfoProjectionTests(unittest.TestCase):
         )
 
 
+def _composed_mro(coordinator_dir: Path) -> set[str]:
+    """Every class name reachable from EybondLocalCoordinator's base list.
+
+    The coordinator composes single-purpose mixins, and some of those are now
+    grouped behind composite mixins, so membership has to be resolved across the
+    package rather than read off the composition root's source text.
+    """
+
+    bases: dict[str, list[str]] = {}
+    for path in sorted(coordinator_dir.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                bases[node.name] = [
+                    base.id if isinstance(base, ast.Name) else ast.unparse(base)
+                    for base in node.bases
+                ]
+
+    resolved: set[str] = set()
+    pending = list(bases.get("EybondLocalCoordinator", ()))
+    while pending:
+        name = pending.pop()
+        if name in resolved:
+            continue
+        resolved.add(name)
+        pending.extend(bases.get(name, ()))
+    return resolved
+
+
 class DeviceProjectionArchitectureTests(unittest.TestCase):
     def test_projector_has_no_home_assistant_or_coordinator_dependency(self) -> None:
         source = (
@@ -176,7 +205,12 @@ class DeviceProjectionArchitectureTests(unittest.TestCase):
         composition_source = (runtime_dir / "coordinator" / "root.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn("CoordinatorDeviceRegistryMixin", composition_source)
+        # The mixin is composed transitively: the v0.3.0 branch groups the
+        # single-purpose mixins into composites, so it is reached through
+        # CoordinatorIntegrationMixin rather than named in the root. Resolve the
+        # full MRO so this still fails if the mixin drops out of the chain.
+        self.assertIn("CoordinatorDeviceRegistryMixin", _composed_mro(runtime_dir / "coordinator"))
+        self.assertIn("EybondLocalCoordinator", composition_source)
 
 
 if __name__ == "__main__":

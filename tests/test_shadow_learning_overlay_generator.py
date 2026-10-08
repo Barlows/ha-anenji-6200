@@ -656,8 +656,9 @@ class ShadowLearningOverlayGeneratorTests(unittest.TestCase):
                 correlation=_sample_correlation_payload(),
             )
 
-            self.assertIn("/learned/shadow_learning/", str(result.profile_path))
-            self.assertIn("/learned/shadow_learning/", str(result.schema_path))
+            # as_posix(): these are real paths, so they carry os.sep.
+            self.assertIn("/learned/shadow_learning/", result.profile_path.as_posix())
+            self.assertIn("/learned/shadow_learning/", result.schema_path.as_posix())
             self.assertEqual(result.generated_capability_count, 2)
             self.assertEqual(result.skipped_duplicate_count, 1)
 

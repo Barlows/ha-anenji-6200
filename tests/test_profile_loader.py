@@ -12,8 +12,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+# `helpers` lives beside this file, so the tests directory itself must be
+# importable for `from helpers...` to resolve when a module is run
+# directly (unittest discover happens to add it; direct runs do not).
+TESTS_ROOT = Path(__file__).resolve().parent
+if str(TESTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TESTS_ROOT))
+
 
 from custom_components.eybond_local.metadata import profile_loader
+from helpers.path_asserts import path_ends_with
 
 
 class ProfileLoaderTests(unittest.TestCase):
@@ -38,9 +46,7 @@ class ProfileLoaderTests(unittest.TestCase):
         )
         self.assertEqual(profile.source_scope, "builtin")
         self.assertTrue(
-            profile.source_path.endswith(
-                "profiles/modbus_smg/protocols/classic_smg_rs232_v1.json"
-            )
+            path_ends_with(profile.source_path, "profiles/modbus_smg/protocols/classic_smg_rs232_v1.json")
         )
         self.assertEqual(len(profile.groups), 4)
         self.assertEqual(len(profile.capabilities), 30)
@@ -70,7 +76,7 @@ class ProfileLoaderTests(unittest.TestCase):
         self.assertEqual(profile.protocol_family, "modbus_smg")
         self.assertEqual(profile.source_name, "smg_modbus.json")
         self.assertEqual(profile.source_scope, "builtin")
-        self.assertTrue(profile.source_path.endswith("profiles/modbus_smg/default.json"))
+        self.assertTrue(path_ends_with(profile.source_path, "profiles/modbus_smg/default.json"))
         self.assertGreaterEqual(len(profile.groups), 4)
         self.assertEqual(len(profile.capabilities), 33)
         self.assertEqual(len(profile.presets), 2)
@@ -129,9 +135,7 @@ class ProfileLoaderTests(unittest.TestCase):
         self.assertEqual(profile.source_name, "modbus_smg/models/anenji_4200_protocol_1.json")
         self.assertEqual(profile.source_scope, "builtin")
         self.assertTrue(
-            profile.source_path.endswith(
-                "profiles/modbus_smg/models/anenji_4200_protocol_1.json"
-            )
+            path_ends_with(profile.source_path, "profiles/modbus_smg/models/anenji_4200_protocol_1.json")
         )
         self.assertEqual(len(profile.groups), 4)
         self.assertEqual(len(profile.capabilities), 30)
@@ -274,7 +278,7 @@ class ProfileLoaderTests(unittest.TestCase):
         self.assertEqual(profile.protocol_family, "pi30")
         self.assertEqual(profile.source_name, "pi30_ascii.json")
         self.assertEqual(profile.source_scope, "builtin")
-        self.assertTrue(profile.source_path.endswith("profiles/pi30_ascii.json"))
+        self.assertTrue(path_ends_with(profile.source_path, "profiles/pi30_ascii.json"))
         self.assertEqual(len(profile.groups), 3)
         self.assertEqual(len(profile.capabilities), 18)
         self.assertEqual(len(profile.presets), 0)
@@ -474,7 +478,7 @@ class ProfileLoaderTests(unittest.TestCase):
         self.assertEqual(profile.protocol_family, "pi30")
         self.assertEqual(profile.source_name, "pi30_ascii/models/default.json")
         self.assertEqual(profile.source_scope, "builtin")
-        self.assertTrue(profile.source_path.endswith("profiles/pi30_ascii/models/default.json"))
+        self.assertTrue(path_ends_with(profile.source_path, "profiles/pi30_ascii/models/default.json"))
         self.assertEqual(len(profile.groups), 3)
         self.assertEqual(len(profile.capabilities), 18)
 
@@ -490,7 +494,7 @@ class ProfileLoaderTests(unittest.TestCase):
         self.assertEqual(profile.source_name, "pi30_ascii/models/smartess_0925_compat.json")
         self.assertEqual(profile.source_scope, "builtin")
         self.assertTrue(
-            profile.source_path.endswith("profiles/pi30_ascii/models/smartess_0925_compat.json")
+            path_ends_with(profile.source_path, "profiles/pi30_ascii/models/smartess_0925_compat.json")
         )
         self.assertEqual(len(profile.groups), 3)
         self.assertEqual(len(profile.capabilities), 18)
@@ -506,7 +510,7 @@ class ProfileLoaderTests(unittest.TestCase):
         self.assertEqual(profile.protocol_family, "pi30")
         self.assertEqual(profile.source_name, "pi30_ascii/models/vmii_nxpw5kw.json")
         self.assertEqual(profile.source_scope, "builtin")
-        self.assertTrue(profile.source_path.endswith("profiles/pi30_ascii/models/vmii_nxpw5kw.json"))
+        self.assertTrue(path_ends_with(profile.source_path, "profiles/pi30_ascii/models/vmii_nxpw5kw.json"))
         self.assertEqual(len(profile.groups), 3)
         self.assertEqual(len(profile.capabilities), 20)
         self.assertEqual(
@@ -528,7 +532,7 @@ class ProfileLoaderTests(unittest.TestCase):
         self.assertEqual(profile.driver_key, "pi30")
         self.assertEqual(profile.protocol_family, "pi30")
         self.assertEqual(profile.source_name, "pi30_ascii/models/pi41.json")
-        self.assertTrue(profile.source_path.endswith("profiles/pi30_ascii/models/pi41.json"))
+        self.assertTrue(path_ends_with(profile.source_path, "profiles/pi30_ascii/models/pi41.json"))
         self.assertEqual(len(profile.capabilities), 18)
 
     def test_loads_pi30_max_profile_overlay(self) -> None:
@@ -539,7 +543,7 @@ class ProfileLoaderTests(unittest.TestCase):
         self.assertEqual(profile.key, "pi30_ascii_pi30_max")
         self.assertEqual(profile.title, "PI30 MAX / ASCII Profile")
         self.assertEqual(profile.source_name, "pi30_ascii/models/pi30_max.json")
-        self.assertTrue(profile.source_path.endswith("profiles/pi30_ascii/models/pi30_max.json"))
+        self.assertTrue(path_ends_with(profile.source_path, "profiles/pi30_ascii/models/pi30_max.json"))
         self.assertEqual(len(profile.capabilities), 20)
         total = profile.get_capability("max_charging_current")
         utility = profile.get_capability("max_ac_charging_current")
@@ -554,7 +558,7 @@ class ProfileLoaderTests(unittest.TestCase):
         self.assertEqual(profile.key, "pi30_ascii_pi30_pip_gk")
         self.assertEqual(profile.title, "PI30 PIP-GK / ASCII Profile")
         self.assertEqual(profile.source_name, "pi30_ascii/models/pi30_pip_gk.json")
-        self.assertTrue(profile.source_path.endswith("profiles/pi30_ascii/models/pi30_pip_gk.json"))
+        self.assertTrue(path_ends_with(profile.source_path, "profiles/pi30_ascii/models/pi30_pip_gk.json"))
         self.assertEqual(len(profile.capabilities), 18)
 
     def test_loads_smartess_0925_profile_overlay(self) -> None:
@@ -568,7 +572,7 @@ class ProfileLoaderTests(unittest.TestCase):
         self.assertEqual(profile.protocol_family, "smartess_local")
         self.assertEqual(profile.source_name, "smartess_local/models/0925.json")
         self.assertEqual(profile.source_scope, "builtin")
-        self.assertTrue(profile.source_path.endswith("profiles/smartess_local/models/0925.json"))
+        self.assertTrue(path_ends_with(profile.source_path, "profiles/smartess_local/models/0925.json"))
         self.assertEqual(len(profile.groups), 5)
         self.assertEqual(len(profile.capabilities), 30)
         self.assertEqual(len(profile.presets), 0)
@@ -592,7 +596,7 @@ class ProfileLoaderTests(unittest.TestCase):
         self.assertEqual(profile.protocol_family, "smartess_local")
         self.assertEqual(profile.source_name, "smartess_local/models/0921.json")
         self.assertEqual(profile.source_scope, "builtin")
-        self.assertTrue(profile.source_path.endswith("profiles/smartess_local/models/0921.json"))
+        self.assertTrue(path_ends_with(profile.source_path, "profiles/smartess_local/models/0921.json"))
         self.assertEqual(len(profile.groups), 0)
         self.assertEqual(len(profile.capabilities), 0)
         self.assertEqual(len(profile.presets), 0)
@@ -608,7 +612,7 @@ class ProfileLoaderTests(unittest.TestCase):
         self.assertEqual(profile.protocol_family, "smartess_local")
         self.assertEqual(profile.source_name, "smartess_local/models/0912.json")
         self.assertEqual(profile.source_scope, "builtin")
-        self.assertTrue(profile.source_path.endswith("profiles/smartess_local/models/0912.json"))
+        self.assertTrue(path_ends_with(profile.source_path, "profiles/smartess_local/models/0912.json"))
         self.assertEqual(len(profile.groups), 0)
         self.assertEqual(len(profile.capabilities), 0)
         self.assertEqual(len(profile.presets), 0)
@@ -625,9 +629,7 @@ class ProfileLoaderTests(unittest.TestCase):
         self.assertEqual(profile.source_name, "modbus_smg/models/anenji_anj_11kw_48v_wifi_p.json")
         self.assertEqual(profile.source_scope, "builtin")
         self.assertTrue(
-            profile.source_path.endswith(
-                "profiles/modbus_smg/models/anenji_anj_11kw_48v_wifi_p.json"
-            )
+            path_ends_with(profile.source_path, "profiles/modbus_smg/models/anenji_anj_11kw_48v_wifi_p.json")
         )
         self.assertEqual(len(profile.groups), 4)
         self.assertEqual(len(profile.capabilities), 63)

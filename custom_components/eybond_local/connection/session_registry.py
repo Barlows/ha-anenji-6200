@@ -31,114 +31,39 @@ from types import MappingProxyType
 from typing import Callable
 
 from ..collector_identity import (
-    identity_source_is_strong as _identity_source_is_strong,
     normalize_pn as _normalize_pn,
     pn_is_same_identity as _pn_is_same_identity,
     prefer_full_pn as _prefer_full_pn,
 )
+from .ownership_manager import OwnershipManager
 from .session_handle import SessionHandle, negotiate_session_adapters
-
-# Normalized session lifecycle states.
-SESSION_STATE_ACCEPTED = "accepted"
-SESSION_STATE_IDENTIFIED_WEAK = "identified_weak"
-SESSION_STATE_IDENTIFIED_STRONG = "identified_strong"
-SESSION_STATE_CLAIMED = "claimed"
-SESSION_STATE_ACTIVE = "active"
-SESSION_STATE_CLOSED = "closed"
-
-
-# Listener inventory states that mean the socket is routed/live.
-_ACTIVE_INVENTORY_STATES = frozenset({"routed_at_text", "routed_framed"})
-_CLAIMED_INVENTORY_STATES = frozenset({"claimed"})
-_CLOSED_INVENTORY_STATES = frozenset(
-    {"closed_disconnected", "closed_no_payload", "parked_peer_closed"}
-)
-_UNDISCOVERABLE_INVENTORY_STATES = frozenset(
-    {
-        "route_identity_mismatch",
-        "waiting_for_route_identity",
-        "parked_waiting_for_identity",
-    }
+from .session_observer import SessionObserver
+from .session_types import (
+    SESSION_STATE_ACCEPTED,
+    SESSION_STATE_ACTIVE,
+    SESSION_STATE_CLAIMED,
+    SESSION_STATE_CLOSED,
+    SESSION_STATE_IDENTIFIED_STRONG,
+    SESSION_STATE_IDENTIFIED_WEAK,
+    CallbackSession,
+    PermanentOwnedSessionCertification,
+    _ACTIVE_INVENTORY_STATES,
+    _CLAIMED_INVENTORY_STATES,
+    _CLOSED_INVENTORY_STATES,
+    _UNDISCOVERABLE_INVENTORY_STATES,
+    _state_from_inventory,
 )
 
-
-def _identity_is_strong(source: object) -> bool:
-    return _identity_source_is_strong(source)
-
-
-def _state_from_inventory(inventory_state: str, identity_source: str) -> str:
-    """Map a listener inventory state + identity source to a registry state."""
-
-    if inventory_state in _ACTIVE_INVENTORY_STATES:
-        return SESSION_STATE_ACTIVE
-    if inventory_state in _CLAIMED_INVENTORY_STATES:
-        return SESSION_STATE_CLAIMED
-    if inventory_state in _CLOSED_INVENTORY_STATES:
-        return SESSION_STATE_CLOSED
-    if _identity_is_strong(identity_source):
-        return SESSION_STATE_IDENTIFIED_STRONG
-    return SESSION_STATE_IDENTIFIED_WEAK
-
-
-@dataclass(frozen=True, slots=True)
-class PermanentOwnedSessionCertification:
-    """A registry-issued permanent-owner recovery capability (Batch 8).
-
-    The typed, exact-type capability a recovery run UNDER an existing permanent
-    owner produces — deliberately DISTINCT from the onboarding prepared-handoff
-    slot. It certifies exactly one ``(owner_id, session_id, collector_pn)``
-    triple and asserts nothing about an ownership transfer. Only the registry
-    constructs it (``certify_permanent_owned_session``) and only the registry
-    re-verifies it (``reverify_permanent_owned_session``); a forged look-alike
-    fails the strict ``type() is`` re-check at commit time.
-    """
-
-    owner_id: str
-    session_id: str
-    collector_pn: str
-
-
-@dataclass(frozen=True, slots=True)
-class CallbackSession:
-    """One normalized inbound collector session with ownership state."""
-
-    session_id: str
-    peer_ip: str = ""
-    peer_port: int = 0
-    listener_port: int = 0
-    protocol_shape: str = ""
-    session_protocol: str = ""
-    collector_pn: str = ""
-    identity_source: str = ""
-    state: str = SESSION_STATE_ACCEPTED
-    owner_entry_id: str = ""
-    # The original observed session mapping (listener inventory shape), kept so
-    # consumers can work with the raw dict without re-deriving fields. Coalescing
-    # keeps the winning session's raw mapping.
-    raw: Mapping[str, object] = field(default_factory=dict)
-
-    @property
-    def has_strong_identity(self) -> bool:
-        return _identity_is_strong(self.identity_source)
-
-    @property
-    def claimed(self) -> bool:
-        return bool(self.owner_entry_id)
-
-    @property
-    def discoverable(self) -> bool:
-        """Return whether this session is safe to publish as a device candidate."""
-
-        inventory_state = str(self.raw.get("state") or "").strip().lower()
-        if inventory_state == "route_identity_mismatch":
-            # A weak mismatch is only an ambiguous heartbeat prefix. A strong
-            # mismatch, however, is positive evidence that this is a different
-            # fully identified collector and therefore a valid new candidate.
-            return self.state != SESSION_STATE_CLOSED and self.has_strong_identity
-        return (
-            self.state != SESSION_STATE_CLOSED
-            and inventory_state not in _UNDISCOVERABLE_INVENTORY_STATES
-        )
+__all__ = [
+    "SESSION_STATE_ACCEPTED",
+    "SESSION_STATE_IDENTIFIED_WEAK",
+    "SESSION_STATE_IDENTIFIED_STRONG",
+    "SESSION_STATE_CLAIMED",
+    "SESSION_STATE_ACTIVE",
+    "SESSION_STATE_CLOSED",
+    "CallbackSession",
+    "PermanentOwnedSessionCertification",
+]
 
 
 @dataclass(slots=True)
@@ -183,114 +108,65 @@ class CallbackSessionRegistry:
     the listener(s) (the shape of ``_SharedEybondListener.discovered_collector_sessions``
     plus an optional ``listener_port`` / ``session_protocol`` key). It is injected
     so the registry can be unit-tested without a live listener.
+
+    This class uses composition to delegate session observation to SessionObserver
+    and ownership management to OwnershipManager, keeping the handoff and
+    certification logic in this facade.
     """
 
     sessions_source: Callable[[], Iterable[Mapping[str, object]]] | None = None
-    _claims: dict[str, _Claim] = field(default_factory=dict)
+    _observer: SessionObserver = field(default_factory=SessionObserver)
+    _ownership: OwnershipManager = field(default_factory=OwnershipManager)
+
+    @property
+    def _claims(self) -> dict[str, _Claim]:
+        """The one claim store, owned by OwnershipManager.
+
+        Claims must be readable through both the registry's certification and
+        handoff logic and OwnershipManager.attach_owner(). Keeping a second
+        dict here meant claim() recorded ownership where attach_owner() never
+        looked, so a claimed session was still published as a discovery
+        candidate.
+        """
+        return self._ownership._claims
 
     # --- observation ----------------------------------------------------------
 
     def _raw_sessions(self) -> tuple[Mapping[str, object], ...]:
-        if self.sessions_source is None:
-            return ()
-        try:
-            return tuple(self.sessions_source() or ())
-        except Exception:
-            return ()
+        """Return raw session dicts from the listener inventory."""
+        return self._observer.raw_sessions(self.sessions_source)
 
     @staticmethod
     def _normalize(raw: Mapping[str, object]) -> CallbackSession:
-        identity_source = str(raw.get("collector_identity_source") or "").strip()
-        inventory_state = str(raw.get("state") or "").strip()
-        return CallbackSession(
-            session_id=str(raw.get("session_id") or "").strip(),
-            peer_ip=str(raw.get("peer_ip") or "").strip(),
-            peer_port=int(raw.get("peer_port") or 0),
-            listener_port=int(raw.get("listener_port") or 0),
-            protocol_shape=str(raw.get("protocol_shape") or "").strip(),
-            session_protocol=str(raw.get("session_protocol") or "").strip(),
-            collector_pn=_normalize_pn(raw.get("collector_pn")),
-            identity_source=identity_source,
-            state=_state_from_inventory(inventory_state, identity_source),
-            raw=MappingProxyType(dict(raw)),
-        )
+        """Normalize a raw session dict into a CallbackSession."""
+        return SessionObserver.normalize(raw)
 
     def _coalesce(
         self,
         sessions: Iterable[CallbackSession],
     ) -> list[CallbackSession]:
-        """Collapse short/full PN duplicates of one collector into one session.
-
-        Distinct full PNs are always kept distinct -- this is what keeps two
-        collectors behind one NAT peer IP separate. Peer IP is never used to
-        merge or split.
-        """
-
-        coalesced: list[CallbackSession] = []
-        for session in sessions:
-            if not session.collector_pn:
-                coalesced.append(session)
-                continue
-            for index, existing in enumerate(coalesced):
-                if not existing.collector_pn:
-                    continue
-                if not _pn_is_same_identity(existing.collector_pn, session.collector_pn):
-                    continue
-                # Same collector observed twice (short + full / weak + strong):
-                # keep the strongest, most complete identity.
-                keep_new = False
-                if session.has_strong_identity and not existing.has_strong_identity:
-                    keep_new = True
-                elif (
-                    session.has_strong_identity == existing.has_strong_identity
-                    and len(session.collector_pn) > len(existing.collector_pn)
-                ):
-                    keep_new = True
-                if keep_new:
-                    merged_pn = _prefer_full_pn(existing.collector_pn, session.collector_pn)
-                    coalesced[index] = replace(session, collector_pn=merged_pn)
-                break
-            else:
-                coalesced.append(session)
-        return coalesced
+        """Collapse short/full PN duplicates of one collector into one session."""
+        return self._observer.coalesce(sessions)
 
     def _normalized_sessions(self) -> list[CallbackSession]:
         """Return per-socket normalized sessions (pre-coalesce) with owner attached."""
-
         normalized = [self._normalize(raw) for raw in self._raw_sessions()]
         return [self._attach_owner(session) for session in normalized if session.session_id]
 
     def observed_sessions(self) -> tuple[CallbackSession, ...]:
         """Return coalesced observed sessions with ownership state attached."""
-
         return tuple(self._coalesce(self._normalized_sessions()))
 
     def observed_sessions_per_socket(self) -> tuple[CallbackSession, ...]:
-        """Return per-socket sessions (no short/full coalescing), owner attached.
-
-        The coalesced view collapses several live sockets of one collector into
-        one candidate -- right for discovery, wrong for behavioral verification,
-        which must distinguish "the same old socket" from "a NEW socket of the
-        same collector" (baseline vs post-restart/post-trigger session).
-        """
-
+        """Return per-socket sessions (no short/full coalescing), owner attached."""
         return tuple(self._normalized_sessions())
 
     def _attach_owner(self, session: CallbackSession) -> CallbackSession:
-        owner = self._owner_for_session(session)
-        if not owner:
-            return session
-        state = session.state
-        # Ownership must not resurrect a closed socket as merely "claimed".
-        # Closed remains terminal; only non-active live observations are
-        # promoted to the claimed lifecycle state.
-        if state not in (SESSION_STATE_ACTIVE, SESSION_STATE_CLOSED):
-            state = SESSION_STATE_CLAIMED
-        return replace(session, owner_entry_id=owner, state=state)
+        """Attach ownership state to a session."""
+        return self._ownership.attach_owner(session)
 
     def list_unclaimed_sessions(self) -> tuple[CallbackSession, ...]:
         """Return observed sessions that no config entry owns yet."""
-
         return tuple(
             session
             for session in self.observed_sessions()
@@ -303,46 +179,10 @@ class CallbackSessionRegistry:
         *,
         require_exact: bool = False,
     ) -> CallbackSession | None:
-        """Return the best currently observed socket for one collector PN.
-
-        Config flows can stay open while a collector reconnects (or is updated
-        over OTA).  The session id captured when discovery created the flow is
-        therefore only an observation, never a durable handle.  Resolve the
-        current socket here, by PN, immediately before taking a transient
-        session claim.
-
-        ``require_exact`` is used when the flow only has weak identity evidence:
-        such a flow may follow the same exact short PN onto a replacement socket,
-        but it must not choose one of several longer prefix matches.  Peer IP is
-        deliberately absent from both matching and ranking.
-        """
-
-        pn = _normalize_pn(collector_pn)
-        if not pn:
-            return None
-        best: CallbackSession | None = None
-        best_rank: tuple[int, int, int] | None = None
-        for session in self._normalized_sessions():
-            if session.state == SESSION_STATE_CLOSED:
-                continue
-            if require_exact:
-                if session.collector_pn != pn:
-                    continue
-            elif not _pn_is_same_identity(session.collector_pn, pn):
-                continue
-            raw_state = str(session.raw.get("state") or "").strip().lower()
-            rank = (
-                1 if raw_state in _ACTIVE_INVENTORY_STATES else 0,
-                1 if session.has_strong_identity else 0,
-                len(session.collector_pn),
-            )
-            # The listener inventory is acceptance-ordered.  On an exact tie,
-            # prefer its later item so a replacement socket wins over a stale
-            # overlap that has not reached its EOF callback yet.
-            if best_rank is None or rank >= best_rank:
-                best = session
-                best_rank = rank
-        return best
+        """Return the best currently observed socket for one collector PN."""
+        return self._observer.current_session_for_pn(
+            collector_pn, require_exact=require_exact, source=self.sessions_source
+        )
 
     # --- ownership ------------------------------------------------------------
 
@@ -420,9 +260,14 @@ class CallbackSessionRegistry:
             if sid and existing.session_id and sid != existing.session_id:
                 raise ValueError(f"claim_session_mismatch:{existing.session_id}:{sid}")
 
+        # RACE FIX: observed_sessions() was called multiple times in this method,
+        # creating a TOCTOU race where the session set could change between calls.
+        # By reading once and reusing, we ensure a consistent view of the sessions
+        # throughout the claim operation.
+        observed = self.observed_sessions()
         # Enrich the durable PN from the strongest matching observed session.
         matched: CallbackSession | None = None
-        for session in self.observed_sessions():
+        for session in observed:
             if sid and session.session_id == sid:
                 matched = session
                 break
