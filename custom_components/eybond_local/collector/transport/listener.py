@@ -163,6 +163,12 @@ class _SharedEybondListener:
         self._at_connections_by_pn: dict[str, _CollectorAtConnection] = {}
         self._session_payload_connections: dict[str, _CollectorConnection] = {}
         self._session_at_connections: dict[str, _CollectorAtConnection] = {}
+        # Last real disconnect reason per collector (keyed by remote IP and by
+        # PN). A closed session's connection object is dropped from every
+        # index above, taking its retained reason with it; this small history
+        # outlives that so diagnostics still report the last fault after the
+        # collector redials onto a fresh connection object.
+        self._disconnect_reason_history: dict[str, str] = {}
         self._pending_sockets: dict[str, _PendingCollectorSocket] = {}
         self._last_connection_ip = ""
         self._last_at_connection_ip = ""
@@ -1613,6 +1619,22 @@ class _SharedEybondListener:
         payload_removed = False
         at_removed = False
         closed_session_ids: set[str] = set()
+        try:
+            dropped_info = connection.collector_info  # type: ignore[attr-defined]
+        except Exception:
+            dropped_info = None
+        dropped_reason = str(
+            getattr(dropped_info, "retained_disconnect_reason", "")
+            or getattr(dropped_info, "last_disconnect_reason", "")
+            or ""
+        ).strip()
+        if dropped_reason:
+            for history_key in (
+                str(getattr(dropped_info, "remote_ip", "") or "").strip(),
+                str(getattr(dropped_info, "collector_pn", "") or "").strip(),
+            ):
+                if history_key:
+                    self._disconnect_reason_history[history_key] = dropped_reason
         for mapping, is_payload in (
             (self._connections, True),
             (self._connections_by_pn, True),
@@ -1645,6 +1667,34 @@ class _SharedEybondListener:
             id(candidate) == selected_id for candidate in self._at_connections.values()
         ):
             self._last_at_connection_ip = ""
+
+    def apply_disconnect_history(
+        self,
+        info: object,
+        *,
+        collector_ip: str,
+        collector_pn: str,
+        connected: bool,
+    ) -> object:
+        """Fill reasons a dropped connection took with it into ``info``.
+
+        ``retained_disconnect_reason`` is always restored when empty.
+        ``last_disconnect_reason`` describes the live session, so it is only
+        restored while no session is connected.
+        """
+
+        reason = ""
+        for history_key in (str(collector_pn or "").strip(), str(collector_ip or "").strip()):
+            if history_key and history_key in self._disconnect_reason_history:
+                reason = self._disconnect_reason_history[history_key]
+                break
+        if not reason:
+            return info
+        if not getattr(info, "retained_disconnect_reason", ""):
+            info.retained_disconnect_reason = reason  # type: ignore[attr-defined]
+        if not connected and not getattr(info, "last_disconnect_reason", ""):
+            info.last_disconnect_reason = reason  # type: ignore[attr-defined]
+        return info
 
     def _connection_keys_for_collector(
         self,

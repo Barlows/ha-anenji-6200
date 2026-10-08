@@ -4849,6 +4849,80 @@ class TransportLifecycleHardeningTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("unwrapped Modbus RTU reply", joined)
         self.assertNotIn("malformed frame header", joined)
 
+    async def test_disconnect_reason_survives_listener_dropping_the_connection(
+        self,
+    ) -> None:
+        # Field regression: a closed session's connection object is dropped
+        # from every listener index, and the redial gets a fresh object, so
+        # the retained reason (and the sensor built on it) read "none" through
+        # every reconnect. The transport must report the last real fault.
+        port = _free_tcp_port()
+        transport = SharedEybondTransport(
+            host="127.0.0.1",
+            port=port,
+            request_timeout=1.0,
+            heartbeat_interval=60.0,
+            collector_ip="203.0.113.10",
+        )
+
+        async def _quiet_heartbeat(self) -> None:
+            return None
+
+        await transport.start()
+        try:
+            listener = transport._listener
+            assert listener is not None
+            self.assertEqual(transport.collector_info.retained_disconnect_reason, "")
+
+            with patch.object(_CollectorConnection, "_heartbeat_loop", new=_quiet_heartbeat):
+                first = listener.ensure_connection("203.0.113.10", 60.0, 0.5)
+                assert first is not None
+                reader = asyncio.StreamReader()
+                run = asyncio.create_task(
+                    first.run(
+                        reader,
+                        _FakeWriter(),  # type: ignore[arg-type]
+                        disconnect_callback=listener._drop_connection_indexes_for_connection,
+                    )
+                )
+                self.assertTrue(await first.wait_until_connected(1.0))
+                reader.feed_data(bytes.fromhex("0103140000000000"))
+                await asyncio.wait_for(run, timeout=1.0)
+
+                # The old object is gone from the listener indexes...
+                self.assertNotIn("203.0.113.10", listener._connections)
+                # ...yet the reason is still reported while disconnected.
+                info = transport.collector_info
+                self.assertEqual(
+                    info.retained_disconnect_reason, "collector_frame_length_invalid"
+                )
+                self.assertEqual(
+                    info.last_disconnect_reason, "collector_frame_length_invalid"
+                )
+
+                # Redial onto a brand-new connection object: the live-session
+                # field is clear, the retained one still names the last fault.
+                second = listener.ensure_connection("203.0.113.10", 60.0, 0.5)
+                assert second is not None and second is not first
+                reader2 = asyncio.StreamReader()
+                run2 = asyncio.create_task(
+                    second.run(
+                        reader2,
+                        _FakeWriter(),  # type: ignore[arg-type]
+                        disconnect_callback=listener._drop_connection_indexes_for_connection,
+                    )
+                )
+                self.assertTrue(await second.wait_until_connected(1.0))
+                info = transport.collector_info
+                self.assertEqual(info.last_disconnect_reason, "")
+                self.assertEqual(
+                    info.retained_disconnect_reason, "collector_frame_length_invalid"
+                )
+                reader2.feed_eof()
+                await asyncio.wait_for(run2, timeout=1.0)
+        finally:
+            await transport.stop()
+
     async def test_genuine_garbage_header_keeps_the_original_wording(self) -> None:
         connection = _CollectorConnection(
             remote_ip_hint="203.0.113.10",
