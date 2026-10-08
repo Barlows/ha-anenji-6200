@@ -92,9 +92,18 @@ class SharedEybondTransport:
     def collector_info(self) -> CollectorInfo:
         connection = self._connection(create_placeholder=False)
         if connection is not None:
-            return connection.collector_info
-        return _copy_collector_info(
-            CollectorInfo(remote_ip=self._collector_ip, collector_pn=self._collector_pn)
+            info = connection.collector_info
+        else:
+            info = _copy_collector_info(
+                CollectorInfo(remote_ip=self._collector_ip, collector_pn=self._collector_pn)
+            )
+        if self._listener is None:
+            return info
+        return self._listener.apply_disconnect_history(  # type: ignore[return-value]
+            info,
+            collector_ip=info.remote_ip or self._collector_ip,
+            collector_pn=info.collector_pn or self._collector_pn,
+            connected=connection.connected if connection is not None else False,
         )
 
     async def start(self) -> None:

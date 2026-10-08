@@ -14,6 +14,17 @@ onto upstream `main`, so the version history below this section is upstream's
 own changelog, carried through unchanged. This section covers only what's
 different in this fork, most recent first:
 
+- **2026-10-08** — **Collector Retained Disconnect Reason** now actually
+  retains the reason. When a collector session closed, the listener dropped the
+  connection object (and the reason it held) from its indexes, and the redial
+  got a fresh object, so the sensor read `none` through every reconnect —
+  confirmed live: 11 resets in 40 minutes and the sensor never left `none`. The
+  listener now keeps the last real disconnect reason per collector (by IP and
+  PN) and the framed transport restores it, and **Last Disconnect Reason** now
+  shows the reason while the collector is between connections instead of
+  `unavailable`. Diagnostics only: no change to when sessions are closed or how
+  often the collector resets. Covered by a regression test that drives the real
+  drop-and-redial path. The AT-text transport is not covered by this change.
 - **2026-10-06** — Collector metadata polling no longer sends the nearby
   Wi-Fi scan query (`INTPARA49`). A scan makes the dongle's radio leave its
   channel on every metadata cycle, which is a plausible contributor to the

@@ -26,7 +26,7 @@ _FAMILY_NAMES = (
 )
 _FAMILY = tuple(_TRANSPORT / name for name in _FAMILY_NAMES)
 _ORIGINAL_DEFINITION_DIGEST = (
-    "ebbe421a562be8a4c08efd6289f1f7297365e003fbc01f09d25566822297957b"
+    "54fe39698899c0fd7aeea1dbb191647068bdee8e3cff9334e7c6900ebab712ff"
 )
 
 
@@ -71,8 +71,8 @@ class TransportModuleBoundaryTests(unittest.TestCase):
         payload = "\n".join(
             f"{kind}:{name}" for kind, name in sorted(definitions)
         ).encode()
-        self.assertEqual(len(definitions), 265)
-        self.assertEqual(len(set(definitions)), 205)
+        self.assertEqual(len(definitions), 266)
+        self.assertEqual(len(set(definitions)), 206)
         self.assertEqual(hashlib.sha256(payload).hexdigest(), _ORIGINAL_DEFINITION_DIGEST)
 
     def test_auxiliary_reads_are_owned_by_both_socket_implementations(self) -> None:
