@@ -14,6 +14,18 @@ onto upstream `main`, so the version history below this section is upstream's
 own changelog, carried through unchanged. This section covers only what's
 different in this fork, most recent first:
 
+- **2026-10-08** — The remaining collector reset (`incomplete frame payload …
+  tid=259 fc=19 expected=775`) is fixed. The captured bytes `0103580003090d13`
+  are an 88-byte bare Modbus RTU reply whose data bytes happen to decode as a
+  header that passes every check (length 777, function 19), so the earlier
+  stray-reply handling, which only looked at bytes that failed header
+  validation, never examined it; the reader then waited for a 775-byte payload
+  that never came. A header-valid frame that is longer than a CRC-checkable
+  reply candidate is now probed: if the candidate's Modbus CRC verifies it is
+  skipped (and counted), otherwise every byte is handed back to the normal frame
+  parser unchanged, and a frame no longer than the candidate is never delayed.
+  Covered by tests for the captured shape, a bad-CRC variant, a truncated
+  reply, and genuine long and short frames that open with the same bytes.
 - **2026-10-08** — The "Closing collector session after incomplete frame payload"
   warning now includes the decoded header bytes and whether its first seven bytes
   form a CRC-valid Modbus RTU reply (`header=…`, `rtu7_crc_valid=…`). After the
