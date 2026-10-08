@@ -14,6 +14,16 @@ onto upstream `main`, so the version history below this section is upstream's
 own changelog, carried through unchanged. This section covers only what's
 different in this fork, most recent first:
 
+- **2026-10-08** — Two small follow-ups after the stray-reply fixes. (1) Register
+  reads now retry once when the answer carries the wrong slave id or function
+  byte (`unexpected_slave_id:0`, `unexpected_function:0`), the way they already
+  did for short, bad-CRC and wrong-length answers. These showed up about three
+  times in two hours, each one costing a whole refresh; they are what a stray
+  collector reply looks like when it lands in a poll's slot. A genuinely wrong
+  slave id still fails after the single retry, and exception replies are never
+  retried. (2) **Collector Last Disconnect Reason** reads `none` when the
+  current session has no fault instead of `unavailable`, matching **Retained
+  Disconnect Reason**.
 - **2026-10-08** — The remaining collector reset (`incomplete frame payload …
   tid=259 fc=19 expected=775`) is fixed. The captured bytes `0103580003090d13`
   are an 88-byte bare Modbus RTU reply whose data bytes happen to decode as a

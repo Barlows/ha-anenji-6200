@@ -481,7 +481,14 @@ def _is_retryable_read_error(error: ModbusError) -> bool:
     """Return whether one Modbus read error looks transient enough to retry once."""
 
     text = str(error)
+    # A wrong slave id or function byte on an otherwise well-formed answer is
+    # what a stray collector reply looks like when it lands in the slot of a
+    # real poll (field-observed ``unexpected_slave_id:0`` / ``unexpected_function:0``,
+    # a few per hour, each of which cost a whole refresh). A repeat of the read
+    # recovers them; a genuinely wrong slave id fails the same way twice.
     return text in {
         "response_too_short",
         "crc_mismatch",
-    } or text.startswith("unexpected_length:")
+    } or text.startswith(
+        ("unexpected_length:", "unexpected_slave_id:", "unexpected_function:")
+    )
