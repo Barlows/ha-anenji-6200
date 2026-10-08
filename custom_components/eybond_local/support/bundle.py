@@ -261,6 +261,7 @@ def _build_diagnostics_split(
             "collector_disconnect_count",
             "collector_last_disconnect_reason",
             "collector_retained_disconnect_reason",
+            "collector_stray_rtu_reply_count",
             "collector_heartbeat_age_seconds",
             "runtime_session_state",
         ),

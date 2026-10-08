@@ -30,6 +30,7 @@ from .auxiliary_session import AuxiliaryReadSession
 from .send_ownership import SocketSendOwner, finish_request_future
 from .binary_framing import (
     BinaryFramingError, BinaryGrammar, async_read_binary_frame,
+    modbus_rtu_crc_is_valid, stray_modbus_rtu_reply_length,
 )
 from .common import (
     _AT_TEXT_MIXED_FRAME_READ_TIMEOUT,
@@ -432,6 +433,17 @@ class _CollectorConnection:
             return
         callback(session_id, collector_pn, source)
 
+    def _note_skipped_stray_rtu_reply(self, length: int) -> None:
+        self._collector.stray_rtu_reply_count += 1
+        count = self._collector.stray_rtu_reply_count
+        (logger.info if count == 1 or count % 100 == 0 else logger.debug)(
+            "Skipped an unwrapped Modbus RTU reply outside any EyeBond frame "
+            "envelope (CRC ok) remote=%s bytes=%d skipped_this_session=%d",
+            self._collector.remote_ip,
+            length,
+            count,
+        )
+
     def _handle_at_response(self, payload: bytes) -> None:
         try:
             response = parse_at_response(payload)
@@ -506,6 +518,41 @@ class _CollectorConnection:
                     header = frame.header
                     payload = frame.wire[HEADER_SIZE:]
                 else:
+                    # This collector sometimes pushes its own register reads down
+                    # the socket as bare Modbus RTU replies, outside any EyeBond
+                    # envelope. They are not corruption and do not mean the link
+                    # is broken, but they are not shaped like a frame either, so
+                    # the checks below used to close the session on every one.
+                    #
+                    # A reply SHORTER than an EyeBond header (a one-register read
+                    # is 7 bytes) can be recognised here: a real frame is never
+                    # that short, so reading to the end of the candidate cannot
+                    # block on genuine traffic. Only a CRC16-verified reply is
+                    # skipped; otherwise the bytes are handed back unchanged.
+                    # Longer replies are handled after the header check rejects
+                    # them, where waiting for the rest cannot affect a valid frame.
+                    rtu_length = stray_modbus_rtu_reply_length(prefix)
+                    if 0 < rtu_length <= HEADER_SIZE:
+                        try:
+                            rtu_tail = await read(asyncio.wait_for(
+                                reader.readexactly(rtu_length - len(prefix)),
+                                timeout=_FRAMED_HEADER_COMPLETION_TIMEOUT,
+                            ))
+                        except asyncio.TimeoutError:
+                            self._collector.last_disconnect_reason = (
+                                "collector_frame_header_timeout"
+                            )
+                            logger.warning(
+                                "Closing collector session after incomplete frame header "
+                                "remote=%s prefix=%s",
+                                self._collector.remote_ip,
+                                prefix.hex(),
+                            )
+                            return
+                        if modbus_rtu_crc_is_valid(prefix + rtu_tail):
+                            self._note_skipped_stray_rtu_reply(rtu_length)
+                            continue
+                        reader.unread(rtu_tail)
                     try:
                         header_bytes = prefix + await read(asyncio.wait_for(
                             reader.readexactly(HEADER_SIZE - len(prefix)),
@@ -525,12 +572,47 @@ class _CollectorConnection:
                     header = decode_header(header_bytes)
                     header_error = _runtime_eybond_header_error(header)
                     if header_error:
+                        rtu_length = stray_modbus_rtu_reply_length(header_bytes)
+                        rtu_crc_failed = False
+                        if rtu_length > HEADER_SIZE:
+                            try:
+                                # A complete reply arrives in one burst, so the
+                                # short header timeout bounds a truncated one.
+                                rtu_tail = await read(asyncio.wait_for(
+                                    reader.readexactly(rtu_length - HEADER_SIZE),
+                                    timeout=_FRAMED_HEADER_COMPLETION_TIMEOUT,
+                                ))
+                            except asyncio.TimeoutError:
+                                self._collector.last_disconnect_reason = (
+                                    "collector_frame_payload_timeout"
+                                )
+                                logger.warning(
+                                    "Closing collector session after an incomplete "
+                                    "unwrapped Modbus RTU reply remote=%s expected=%d",
+                                    self._collector.remote_ip,
+                                    rtu_length,
+                                )
+                                return
+                            if modbus_rtu_crc_is_valid(header_bytes + rtu_tail):
+                                self._note_skipped_stray_rtu_reply(rtu_length)
+                                continue
+                            rtu_crc_failed = True
                         self._collector.last_disconnect_reason = header_error
-                        if _looks_like_stray_modbus_rtu_reply(header_bytes):
+                        if rtu_crc_failed:
+                            logger.warning(
+                                "Closing collector session after a reply shaped like "
+                                "an unwrapped Modbus RTU reply whose CRC did not "
+                                "verify (likely wire corruption) remote=%s "
+                                "reason=%s header=%s",
+                                self._collector.remote_ip,
+                                header_error,
+                                header_bytes.hex(),
+                            )
+                        elif _looks_like_stray_modbus_rtu_reply(header_bytes):
                             logger.warning(
                                 "Closing collector session after an unwrapped "
                                 "Modbus RTU reply outside any EyeBond frame "
-                                "envelope (not wire corruption) remote=%s "
+                                "envelope (shape only, CRC not verified) remote=%s "
                                 "reason=%s header=%s tid=%d devcode=0x%04X "
                                 "devaddr=0x%02X fc=%d payload=%d",
                                 self._collector.remote_ip,

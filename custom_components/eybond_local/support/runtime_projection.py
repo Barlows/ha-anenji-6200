@@ -36,6 +36,7 @@ def build_collector_support_payload(
         "retained_disconnect_reason": getattr(
             collector, "retained_disconnect_reason", ""
         ),
+        "stray_rtu_reply_count": getattr(collector, "stray_rtu_reply_count", 0),
         "discovery_restart_count": collector.discovery_restart_count,
         "last_discovery_reason": collector.last_discovery_reason,
         "collector_pn": collector.collector_pn,

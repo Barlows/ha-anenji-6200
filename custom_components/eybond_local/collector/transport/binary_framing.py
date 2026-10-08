@@ -77,6 +77,42 @@ def looks_like_stray_modbus_rtu_reply(header_bytes: bytes) -> bool:
     return 0 < byte_count <= _MODBUS_RTU_MAX_PLAUSIBLE_BYTE_COUNT
 
 
+def stray_modbus_rtu_reply_length(prefix: bytes) -> int:
+    """Total wire length of the unwrapped Modbus RTU read reply ``prefix`` starts.
+
+    Returns 0 unless the first three bytes look like one: any address byte, a
+    read-holding/input-registers function code, and a plausible EVEN byte count
+    (register reads always return whole 16-bit registers). The length is
+    address + function + byte-count + data + two CRC bytes. This is only a
+    candidate: the caller must read the rest and confirm it with
+    :func:`modbus_rtu_crc_is_valid` before treating it as a stray reply.
+    """
+
+    if len(prefix) < 3:
+        return 0
+    byte_count = prefix[2]
+    if byte_count % 2 or not looks_like_stray_modbus_rtu_reply(prefix[:3]):
+        return 0
+    return 3 + byte_count + 2
+
+
+def _modbus_crc16(data: bytes) -> int:
+    crc = 0xFFFF
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = (crc >> 1) ^ 0xA001 if crc & 1 else crc >> 1
+    return crc
+
+
+def modbus_rtu_crc_is_valid(frame: bytes) -> bool:
+    """True when the trailing little-endian CRC16 matches the bytes before it."""
+
+    if len(frame) < 4:
+        return False
+    return _modbus_crc16(frame[:-2]) == int.from_bytes(frame[-2:], "little")
+
+
 class BinaryGrammar(Enum):
     """A session's allowed binary grammars, NOT a request-waiter preference."""
 

@@ -14,6 +14,24 @@ onto upstream `main`, so the version history below this section is upstream's
 own changelog, carried through unchanged. This section covers only what's
 different in this fork, most recent first:
 
+- **2026-10-08** — The integration no longer drops the collector session every
+  few minutes because of a stray Modbus reply. The dongle periodically pushes a
+  bare Modbus RTU read reply (`01 03 <byte count> data CRC`) outside any EyeBond
+  frame, in rotating sizes (0x14, 0x18, 0x6c data bytes, plus a 7-byte
+  one-register form). Upstream deliberately closes the session on one (issue
+  #39); on this inverter that was the roughly 3.5-minute `collector_disconnected`
+  reset cycle. This fork now recognises such a reply only when its length is
+  consistent and its **Modbus CRC verifies**, skips exactly those bytes, and
+  keeps the session. A reply that looks the same but fails the CRC, a truncated
+  one, or any genuinely malformed header still closes the session as before, and
+  real EyeBond frames that merely start with look-alike bytes are handed back to
+  the normal parser untouched. New diagnostic sensor **Collector Stray Modbus
+  Replies Skipped** counts skips per session (also in the collector summary and
+  support bundle). Not yet proven on the real device: if the collector stream is
+  genuinely misaligned rather than carrying whole stray replies, resets will
+  continue, and the reset count and the new sensor will show it. Changes
+  upstream's issue-#39 behaviour, so the original close-on-bare-reply test was
+  rewritten and a bad-CRC variant added to keep the close path covered.
 - **2026-10-08** — **Collector Retained Disconnect Reason** now actually
   retains the reason. When a collector session closed, the listener dropped the
   connection object (and the reason it held) from its indexes, and the redial
