@@ -5067,6 +5067,37 @@ class TransportLifecycleHardeningTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(info.last_disconnect_reason, "collector_frame_payload_timeout")
         self.assertEqual(info.stray_rtu_reply_count, 0)
 
+    async def test_incomplete_payload_warning_names_the_header_bytes(self) -> None:
+        # Field diagnostics: a payload timeout must say which header bytes it
+        # decoded so a misread bare Modbus reply can be told from a real frame.
+        connection = self._framed_connection()
+        reader = asyncio.StreamReader()
+        frame = build_collector_request(
+            7, b"\x00" * 8, devcode=0x0200, collector_addr=1, fcode=4
+        )
+        reader.feed_data(frame[: HEADER_SIZE + 2])
+
+        with (
+            patch(
+                "custom_components.eybond_local.collector.transport.connections._FRAMED_PAYLOAD_COMPLETION_TIMEOUT",
+                0.05,
+            ),
+            self.assertLogs(
+                "custom_components.eybond_local.collector.transport.connections",
+                level="WARNING",
+            ) as captured,
+        ):
+            await asyncio.wait_for(connection._read_loop(reader), timeout=2.0)
+
+        joined = "\n".join(captured.output)
+        self.assertIn("incomplete frame payload", joined)
+        self.assertIn(f"header={frame[:HEADER_SIZE].hex()}", joined)
+        self.assertIn("rtu7_crc_valid=False", joined)
+        self.assertEqual(
+            connection.collector_info.last_disconnect_reason,
+            "collector_frame_payload_timeout",
+        )
+
     async def test_genuine_garbage_header_keeps_the_original_wording(self) -> None:
         connection = _CollectorConnection(
             remote_ip_hint="203.0.113.10",
