@@ -14,6 +14,13 @@ onto upstream `main`, so the version history below this section is upstream's
 own changelog, carried through unchanged. This section covers only what's
 different in this fork, most recent first:
 
+- **2026-10-08** — The "Closing collector session after incomplete frame payload"
+  warning now includes the decoded header bytes and whether its first seven bytes
+  form a CRC-valid Modbus RTU reply (`header=…`, `rtu7_crc_valid=…`). After the
+  stray-reply fix, a remaining reset every ~20 minutes logs `tid=259 fc=19
+  expected=775`; those bytes were not visible, so this separates a genuine
+  EyeBond frame that never finished from a bare reply misread as a header.
+  Logging only: no change to when sessions close.
 - **2026-10-08** — The integration no longer drops the collector session every
   few minutes because of a stray Modbus reply. The dongle periodically pushes a
   bare Modbus RTU read reply (`01 03 <byte count> data CRC`) outside any EyeBond

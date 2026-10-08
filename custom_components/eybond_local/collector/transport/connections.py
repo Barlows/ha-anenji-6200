@@ -650,13 +650,19 @@ class _CollectorConnection:
                             self._collector.last_disconnect_reason = (
                                 "collector_frame_payload_timeout"
                             )
+                            # The header hex and the 7-byte RTU CRC check let a
+                            # reader tell a real EyeBond frame that never completed
+                            # from a bare Modbus reply misread as a header.
                             logger.warning(
                                 "Closing collector session after incomplete frame payload "
-                                "remote=%s tid=%d fc=%d expected=%d",
+                                "remote=%s tid=%d fc=%d expected=%d header=%s "
+                                "rtu7_crc_valid=%s",
                                 self._collector.remote_ip,
                                 header.tid,
                                 header.fcode,
                                 header.payload_len,
+                                header_bytes.hex(),
+                                modbus_rtu_crc_is_valid(header_bytes[:7]),
                             )
                             return
 
