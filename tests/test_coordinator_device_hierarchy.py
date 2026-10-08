@@ -1509,6 +1509,47 @@ class CoordinatorDeviceHierarchyTests(unittest.TestCase):
 
         asyncio.run(_run())
 
+    def test_scheduled_poll_skips_instead_of_queueing_behind_a_diagnostic(self) -> None:
+        # A diagnostic run holds the operation lock for its whole duration. The
+        # poll must return the last snapshot at once rather than block on it.
+        async def _run() -> None:
+            coordinator = object.__new__(
+                self.coordinator_module.EybondLocalCoordinator
+            )
+            snapshot = types.SimpleNamespace()
+            coordinator.data = snapshot
+            coordinator._diagnostic_active = True
+            coordinator._runtime_operation_lock = asyncio.Lock()
+
+            async with coordinator._runtime_operation_lock:
+                result = await asyncio.wait_for(
+                    coordinator._async_update_data(), timeout=1.0
+                )
+            self.assertIs(result, snapshot)
+
+        asyncio.run(_run())
+
+    def test_poll_queued_after_shutdown_returns_without_waiting_for_the_lock(
+        self,
+    ) -> None:
+        async def _run() -> None:
+            coordinator = object.__new__(
+                self.coordinator_module.EybondLocalCoordinator
+            )
+            snapshot = types.SimpleNamespace()
+            coordinator.data = snapshot
+            coordinator._diagnostic_active = False
+            coordinator._shutdown_complete = True
+            coordinator._runtime_operation_lock = asyncio.Lock()
+
+            async with coordinator._runtime_operation_lock:
+                result = await asyncio.wait_for(
+                    coordinator._async_update_data(), timeout=1.0
+                )
+            self.assertIs(result, snapshot)
+
+        asyncio.run(_run())
+
     def test_diagnostic_waits_for_in_progress_runtime_refresh(self) -> None:
         async def _run() -> None:
             coordinator = object.__new__(

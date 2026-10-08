@@ -192,17 +192,9 @@ class _BaseCollectorConnection(ABC):
             # only this exact id, so an overlapping successor remains untouched.
             if session_id and session_closed_callback is not None:
                 session_closed_callback(session_id, self)
-            # RACE FIX: The epoch check below is a TOCTOU race. A replacement
-            # connection could increment _run_epoch between the check and the
-            # disconnect_callback invocation, causing the callback to fire for
-            # the replacement connection. By capturing the epoch once and using
-            # it consistently, and by re-checking immediately before the callback,
-            # we minimize the window. The _disconnect call is also guarded by
-            # the same epoch to ensure we only disconnect our own session.
-            # Both checks compare against the epoch captured at the top of this
-            # run(), never against a fresh read: re-reading would compare the
-            # current epoch with itself and pass even when a replacement bumped
-            # it during the disconnect below.
+            # Compare against the epoch captured at the top of this run(), never
+            # a fresh read: re-reading would compare the current epoch with
+            # itself and pass even when a replacement bumped it.
             if self._run_epoch == epoch:
                 await self._disconnect(skip_task=current_task)
             # Re-check: a replacement may have started while the disconnect

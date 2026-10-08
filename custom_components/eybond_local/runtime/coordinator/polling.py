@@ -72,11 +72,20 @@ class CoordinatorPollingMixin:
             snapshot.values.pop(key, None)
 
     async def _async_update_data(self) -> RuntimeSnapshot:
-        # RACE FIX: The shutdown and diagnostic checks below were previously
-        # performed outside the lock, creating a TOCTOU race: shutdown could
-        # complete or a diagnostic could start between the check and lock
-        # acquisition. By moving all state checks inside the lock, we ensure
-        # the decision to proceed is atomic with respect to state changes.
+        # Cheap early exits BEFORE waiting on the lock. A diagnostic command run
+        # holds _runtime_operation_lock for its whole duration, so without these a
+        # scheduled poll would queue behind it (and a poll queued behind shutdown
+        # would linger) instead of returning the last snapshot immediately. The
+        # same conditions are re-checked inside the lock below, which is what
+        # makes the decision safe against a state change while waiting.
+        if getattr(self, "_shutdown_complete", False) and self.data is not None:
+            # A refresh queued before shutdown (debounced request, connection
+            # watcher, write follow-up) must not drive the stopped link.
+            return self.data
+        if self._diagnostic_active and self.data is not None:
+            # A diagnostic command run holds the shared transport. Skip the live
+            # poll so it does not contend on the bus; return the last snapshot.
+            return self.data
         async with self._runtime_operation_lock:
             if getattr(self, "_shutdown_complete", False) and self.data is not None:
                 # A refresh queued before shutdown (debounced request, connection

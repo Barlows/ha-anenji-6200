@@ -14,6 +14,18 @@ onto upstream `main`, so the version history below this section is upstream's
 own changelog, carried through unchanged. This section covers only what's
 different in this fork, most recent first:
 
+- **2026-10-08** — Integrated the v0.3.0 code-quality refactor (PR #9) with the
+  disconnect-reason and Wi-Fi-scan fixes above, and corrected two behaviour
+  regressions the refactor introduced. (1) The listener's owner reference counts
+  were extracted into `OwnerCounter`, but unregistering an owner with no fixed
+  collector IP became a no-op, so that entry leaked and the listener kept
+  treating every incoming collector as claimed until Home Assistant restarted.
+  (2) Polling lost its early exit for "diagnostic running" / "shut down", so a
+  scheduled refresh waited on the operation lock for the whole diagnostic run
+  instead of returning the last snapshot. Both have regression tests that fail
+  on the unmodified refactor. A comment in `connections.py` claiming a race that
+  cannot occur in single-threaded asyncio was replaced with the actual reason
+  the epoch is captured once.
 - **2026-10-08** — **Collector Retained Disconnect Reason** now actually
   retains the reason. When a collector session closed, the listener dropped the
   connection object (and the reason it held) from its indexes, and the redial

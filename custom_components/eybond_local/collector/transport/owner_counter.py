@@ -81,10 +81,16 @@ class OwnerCounter:
         self._decrement_owner_count(self._session_protocol_owner_counts, session_protocol)
 
     def _decrement_owner_count(self, counts: dict[str, int], key: str) -> None:
-        """Decrement an owner count, removing the entry when it reaches zero."""
+        """Decrement an owner count, removing the entry when it reaches zero.
+
+        An empty key is a legitimate owner: ``register_payload_owner("")`` and
+        ``register_at_owner("")`` register one (a listener owner with no fixed
+        collector IP, which ``_has_owner_for_remote_ip`` treats as owning every
+        collector). It must therefore be removable too, or the entry leaks and
+        the listener claims all incoming collectors until Home Assistant
+        restarts.
+        """
         owner = str(key or "").strip()
-        if not owner:
-            return
         current = counts.get(owner, 0)
         if current <= 1:
             counts.pop(owner, None)
