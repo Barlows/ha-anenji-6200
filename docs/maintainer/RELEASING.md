@@ -71,21 +71,23 @@ once it has run cleanly for long enough to trust.
 
    Then confirm the **Validate** workflow is green on the pull request (HACS
    validation, Hassfest, the quality gate and the Home Assistant lanes).
-4. **Merge the pull request.** Note the merge commit on `main`.
-5. **Tag and publish** that commit. With the GitHub CLI:
+4. **Merge the pull request.** That is the whole publishing step. The **Release**
+   workflow ([release.yml](../../.github/workflows/release.yml)) runs when
+   `manifest.json` changes on `main`: it renders the notes from the matching changelog
+   section and creates the tag `vX.Y.Z` and the GitHub release on the merge commit.
+   A version containing `-` (for example `1.1.0-rc.1`) is published as a
+   *pre-release*. If the tag already exists it does nothing, so re-running it is
+   harmless.
+5. **Confirm it ran.** Watch the **Release** run in the Actions tab and check the
+   [releases page](https://github.com/Barlows/ha-anenji-6200/releases). If the run
+   failed or was skipped, fix the cause and use **Run workflow** on it, or publish by
+   hand:
 
    ```bash
    python3 tools/render_release_notes.py vX.Y.Z --output .local/release-notes/vX.Y.Z.md
-   gh release create vX.Y.Z \
-     --target main \
-     --title "vX.Y.Z" \
-     --notes-file .local/release-notes/vX.Y.Z.md
+   gh release create vX.Y.Z --target main --title "vX.Y.Z" \
+     --notes-file .local/release-notes/vX.Y.Z.md   # add --prerelease for a release candidate
    ```
-
-   Add `--prerelease` for a release candidate. `gh release create` creates the tag
-   on the target commit as part of publishing. The same thing can be done through
-   the REST API (`POST /repos/Barlows/ha-anenji-6200/releases` with `tag_name`,
-   `target_commitish`, `name`, `body`, `prerelease`) where the CLI is not available.
 6. **Check HACS.** In HACS, use **Update information** on the repository, then open
    it: the new version should be offered, and the *Redownload* version list should
    show it next to the previous ones.
