@@ -26,8 +26,7 @@ Steps are explained in [docs/maintainer/RELEASING.md](../../docs/maintainer/RELE
 ## Publish
 
 - [ ] Pull request merged to `main`.
-- [ ] Release notes rendered to `.local/release-notes/vX.Y.Z.md`.
-- [ ] Tag `vX.Y.Z` and GitHub release created on the merge commit (`--prerelease` for release candidates).
+- [ ] **Release** workflow ran on the merge and created tag `vX.Y.Z` and the GitHub release (pre-release if the version contains `-`); otherwise published by hand per RELEASING.md.
 - [ ] Release title and tag match the manifest version.
 
 ## Post-release

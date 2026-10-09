@@ -1,0 +1,77 @@
+name: Release
+
+# Publishes a GitHub release (and its vX.Y.Z tag) for the version in manifest.json,
+# using the matching section of CHANGELOG.md as the release notes.
+#
+# It runs when manifest.json (or this file) changes on main, or by hand from the
+# Actions tab. If the tag for the manifest version already exists it does nothing,
+# so it is safe to re-run. Versions containing "-" (for example 1.1.0-rc.1) are
+# published as pre-releases, which HACS hides unless "Show beta versions" is on.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - custom_components/eybond_local/manifest.json
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Publish release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v6
+
+      - name: Read the manifest version
+        id: version
+        run: |
+          version="$(python3 -c "import json; print(json.load(open('custom_components/eybond_local/manifest.json'))['version'])")"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+          case "${version}" in
+            *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *)   echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Skip if this version is already released
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release ${TAG} already exists; nothing to do."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Render release notes from the changelog
+        if: steps.existing.outputs.exists == 'false'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: python3 tools/render_release_notes.py "${TAG}" --output "${RUNNER_TEMP}/release-notes.md"
+
+      - name: Create the tag and release
+        if: steps.existing.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          args=(--repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" --title "${TAG}" --notes-file "${RUNNER_TEMP}/release-notes.md")
+          if [ "${PRERELEASE}" = "true" ]; then
+            args+=(--prerelease)
+          else
+            args+=(--latest)
+          fi
+          gh release create "${TAG}" "${args[@]}"
