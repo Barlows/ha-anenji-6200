@@ -8,11 +8,18 @@ behind an EyeBond Wi-Fi collector.
 
 How to read it:
 
-- **There are no tagged releases.** HACS installs the latest commit on `main`, and
-  the "version" it shows is the short commit hash. Each entry names the pull
-  request and commit that introduced it, so you can match it to what HACS shows.
-- Entries are grouped by day, not by version number. The integration's own
-  `manifest.json` version is still upstream's (`0.3.0-beta.5`).
+- **Releases are versioned.** This fork follows [Semantic Versioning](https://semver.org/):
+  `MAJOR.MINOR.PATCH`. A patch release (`1.0.1`) is a fix, a minor release (`1.1.0`)
+  adds something, and a major release (`2.0.0`) changes something you would have to
+  react to. Each version has a section below, a git tag `vX.Y.Z`, and a
+  [GitHub release](https://github.com/Barlows/ha-anenji-6200/releases) whose notes are
+  that section. HACS offers those releases, so you can install any of them (see
+  [Install](README.md#install)).
+- Work that has been merged to `main` but not released yet is listed under
+  **Unreleased**.
+- The integration's `manifest.json` version is this fork's version, not upstream's
+  (upstream's was `0.3.0-beta.5` when this fork started versioning). The version is
+  also shown in the integration's diagnostics and in support archives.
 - Anything described as "confirmed" was seen on the real unit. Anything else is
   said to be untested.
 - Upstream's own release history is not repeated here. It is carried through
@@ -20,9 +27,69 @@ How to read it:
 
 ---
 
-## 2026-10-09
+## [Unreleased]
+
+Nothing yet.
+
+## [1.0.0] - 2026-10-09
+
+The first versioned release. It is the state of the fork after the work that ended
+the collector reset cycle on the SMG 6200, and the baseline to roll back to or
+forward from. The day-by-day account, with the log lines that identified each
+cause, is in the [history before 1.0.0](https://github.com/Barlows/ha-anenji-6200/blob/main/CHANGELOG.md#history-before-100).
+
+### Fixed
+
+- **Stray Modbus replies no longer close the collector session.** The collector
+  pushes bare Modbus RTU read replies outside any EyeBond frame. Upstream closes
+  the session on one; on this unit that was a reset about every 3.5 minutes. A
+  reply is now skipped only when its length is consistent **and its Modbus CRC
+  verifies**, including the 88-byte case that happens to decode as a valid EyeBond
+  header. Anything that fails the CRC, is truncated, or is genuinely malformed
+  still closes the session. (#11, #13)
+- **Register reads retry once on a wrong slave id or function byte**, as they
+  already did for short, bad-CRC and wrong-length answers. (#14)
+- **Collector Retained Disconnect Reason now survives a reconnect.** It used to
+  read `none` through every redial. (#10)
+
+### Added
+
+- **Collector Stray Modbus Replies Skipped** diagnostic sensor, also included in
+  the collector summary and the support bundle. (#11)
+- **Raw bytes of every rejected Modbus read answer are logged** (first 64 bytes,
+  length, register, attempt), and the incomplete-frame warnings carry their header
+  bytes, so an odd answer can be diagnosed from the log alone. (#12, #15)
+- The SMG 6200 firmware 7904 catalog entry, Solar-Utility-FeedIn output priority
+  and Output 2 Overload fault code this fork was started for.
 
 ### Changed
+
+- **Collector Last Disconnect Reason** reads `none` while the session has no
+  fault, instead of `unavailable`. (#14)
+- Collector metadata polling no longer sends the nearby Wi-Fi scan query
+  (`INTPARA49`). Same change as upstream's `e5b4a2d`. (2026-10-06)
+- The integration's documentation and bug-report links point at this fork, and
+  the Ukrainian README (a translation of upstream's) is gone. (#17)
+- The README and changelog were rewritten for this fork. (#16)
+
+### Known issues
+
+- Roughly one failed poll every couple of hours remains (a stray reply landing in
+  a poll's slot, or a wrong-length answer). It is retried once and costs one
+  refresh.
+- The collector's Wi-Fi occasionally resets the TCP connection on its own, and a
+  stray reply can be cut off mid-flight. Both close the session and it
+  reconnects. Seen twice in the first day after the fix.
+
+## [History before 1.0.0]
+
+Everything below happened before versioning started, so it is grouped by day
+instead of by version, and names the pull request and commit where there is one.
+These entries are the detail behind the 1.0.0 summary above.
+
+### 2026-10-09
+
+#### Changed
 
 - **Documentation and bug-report links now point at this fork.** The integration's
   `manifest.json` (`documentation` and `issue_tracker`) named upstream, so the
@@ -31,7 +98,7 @@ How to read it:
 - Removed the Ukrainian README, which was a translation of upstream's README and no
   longer matched this fork's. Upstream still has it.
 
-### Diagnostics
+#### Diagnostics
 
 - **Rejected register reads now log what actually arrived.** Every Modbus read
   answer the integration rejects (`unexpected_slave_id`, `unexpected_function`,
@@ -43,14 +110,14 @@ How to read it:
 
 ---
 
-## 2026-10-08 (ending the collector reset cycle)
+### 2026-10-08 (ending the collector reset cycle)
 
 The headline problem on this unit: the collector's session was being dropped about
 every 3.5 minutes (`collector_disconnected`, sometimes 11 resets in 40 minutes),
 and the "retained disconnect reason" sensor never showed why. Both are addressed
 below. The log lines quoted are the ones that identified each cause.
 
-### Fixed
+#### Fixed
 
 - **Stray Modbus replies no longer close the session.** The collector keeps
   pushing bare Modbus RTU read replies (`01 03 <byte count> data CRC`) outside any
@@ -87,7 +154,7 @@ below. The log lines quoted are the ones that identified each cause.
   the framed transport restores it, with a regression test that drives the real
   drop-and-redial path. The AT-text transport is not covered. (#10, `3855600`)
 
-### Added
+#### Added
 
 - **Collector Stray Modbus Replies Skipped** diagnostic sensor: how many stray
   replies the current session has skipped. It restarts from 0 with every new
@@ -95,19 +162,19 @@ below. The log lines quoted are the ones that identified each cause.
   to 0 means the session was replaced. Also included in the collector summary and
   the support bundle. (#11)
 
-### Changed
+#### Changed
 
 - **Collector Last Disconnect Reason** reads `none` while the current session has
   no fault, instead of `unavailable`, matching the Retained Disconnect Reason
   sensor. (#14)
 
-### Diagnostics
+#### Diagnostics
 
 - The "incomplete frame payload" warning now includes the decoded header bytes and
   whether its first seven bytes form a CRC-valid Modbus reply (`header=…`,
   `rtu7_crc_valid=…`). Logging only. (#12, `8be68f2`)
 
-### Result on the real unit
+#### Result on the real unit
 
 Measured on the SMG 6200 (as of 2026-10-09 afternoon):
 
@@ -122,7 +189,7 @@ they look like Wi-Fi hiccups and the occasional stray reply that lands in a poll
 slot. They cost one refresh each, and the raw-byte logging above was added to find
 out exactly what arrives.
 
-### Reviewed, not adopted
+#### Reviewed, not adopted
 
 - PR #9 ("Release/v0.3.0 code quality improvements", a large
   `ConnectionManager` / `OwnerCounter` / `RouteReservationManager` refactor) was
@@ -133,9 +200,9 @@ out exactly what arrives.
 
 ---
 
-## 2026-10-06
+### 2026-10-06
 
-### Changed
+#### Changed
 
 - **Collector metadata polling no longer sends the nearby Wi-Fi scan query
   (`INTPARA49`).** A scan makes the dongle's radio leave its channel on every
@@ -149,7 +216,7 @@ out exactly what arrives.
 
 ---
 
-## 2026-09-26 — test suite
+### 2026-09-26 — test suite
 
 - **Documented the test requirements.** The unit suite needs the two libraries in
   `requirements-test.txt` (`aiohttp`, `voluptuous`); both are imported at module
@@ -168,7 +235,7 @@ out exactly what arrives.
   the remainder were only a missing `aiohttp`), verified by diffing the failure set
   against unmodified `main`.
 
-## 2026-09-25 — diagnostics and fork branding
+### 2026-09-25 — diagnostics and fork branding
 
 - **Transport-fault sensors and clearer service errors.** Added **Collector
   Callback Wire Framing**, **Collector Last Disconnect Reason**, **Collector
@@ -196,7 +263,7 @@ out exactly what arrives.
   finishing in about 3.
 - Pointed the README and changelog at this repository and named it as a fork.
 
-## 2026-09-13 — SMG 6200 firmware 7904 re-applied on upstream
+### 2026-09-13 — SMG 6200 firmware 7904 re-applied on upstream
 
 The original SMG 6200 work (below, July) was rebuilt on top of upstream's then-current
 `main` and extended:
@@ -213,7 +280,7 @@ The original SMG 6200 work (below, July) was rebuilt on top of upstream's then-c
 - Removed a dead `output_power < 0` branch and clarified a deliberately reverted
   Output 2 fix note; regenerated the model-catalog docs.
 
-## 2026-07-13 to 2026-07-20 — where this fork started
+### 2026-07-13 to 2026-07-20 — where this fork started
 
 The first commits, made directly against the SMG 6200:
 
@@ -228,3 +295,6 @@ The first commits, made directly against the SMG 6200:
 
 For everything before the fork point, see
 [UPSTREAM_CHANGELOG.md](UPSTREAM_CHANGELOG.md).
+
+[Unreleased]: https://github.com/Barlows/ha-anenji-6200/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Barlows/ha-anenji-6200/releases/tag/v1.0.0

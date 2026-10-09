@@ -65,7 +65,7 @@ python3 tools/model_catalog.py render --check \
 
 ## Cut a release
 
-Render GitHub release notes from `CHANGELOG.md`:
+Render GitHub release notes for a version from `CHANGELOG.md` (the `## [X.Y.Z]` section):
 
 ```bash
 python3 tools/render_release_notes.py vX.Y.Z \

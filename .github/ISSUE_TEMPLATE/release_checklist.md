@@ -1,42 +1,37 @@
 ---
 name: Release Checklist
-about: Maintainer checklist for publishing a new GitHub release and keeping HACS metadata consistent.
-title: "release: "
+about: Checklist for publishing a numbered release of this fork so HACS can install (and roll back to) it.
+title: "release: vX.Y.Z"
 labels: maintenance
-assignees: groove-max
+assignees: Barlows
 ---
 
-## Version And Metadata
+Steps are explained in [docs/maintainer/RELEASING.md](../../docs/maintainer/RELEASING.md).
 
-- [ ] Update `CHANGELOG.md` and confirm the release scope is reflected in the target version section.
-- [ ] Verify the version in `custom_components/eybond_local/manifest.json`.
-- [ ] Verify `hacs.json`, `README.md`, and public docs still reflect current installation/support guidance.
-- [ ] Verify `LICENSE` and repository metadata still match the intended publication state.
+## Version
+
+- [ ] Version number chosen (patch / minor / major / pre-release).
+- [ ] `CHANGELOG.md`: `## [Unreleased]` content moved into `## [X.Y.Z] - YYYY-MM-DD`, a fresh `## [Unreleased]` left above it, link references at the bottom updated.
+- [ ] `custom_components/eybond_local/manifest.json` `version` set to `X.Y.Z`.
+- [ ] README install/troubleshooting text still correct for this version.
 
 ## Validation
 
-- [ ] Refresh `docs/generated/INVERTER_MODEL_CATALOG.generated.md` with `tools/model_catalog.py` and commit it if changed.
-- [ ] Run `python3 tools/validate.py release` with both supported real-Home-Assistant lanes.
-- [ ] Confirm the public documentation link/index check passes.
-- [ ] Confirm GitHub Actions are green for HACS validation, Hassfest, Quality Gate, and the current HA runtime lane.
+- [ ] Unit suite passes (`python3 -m unittest discover -s tests -p "test_*.py"`).
+- [ ] `python3 tools/check_public_docs.py` passes.
+- [ ] `python3 tools/render_release_notes.py vX.Y.Z` prints the notes.
+- [ ] **Validate** workflow green on the pull request (HACS validation, Hassfest, quality gate, HA lanes).
+- [ ] Unreleased build ran cleanly on the real device for long enough to trust (logs, `Collector Stray Modbus Replies Skipped`, retained disconnect reason).
 
-## Release Notes
+## Publish
 
-- [ ] Render release notes from `CHANGELOG.md` with `python3 tools/render_release_notes.py vX.Y.Z --output .local/release-notes/vX.Y.Z.md`.
-- [ ] Summarize user-visible changes.
-- [ ] Call out any breaking changes or required reconfiguration.
-- [ ] Mention newly supported hardware, controls, or diagnostics if applicable.
-- [ ] Mention known limitations that still require Support Archive reports.
+- [ ] Pull request merged to `main`.
+- [ ] Release notes rendered to `.local/release-notes/vX.Y.Z.md`.
+- [ ] Tag `vX.Y.Z` and GitHub release created on the merge commit (`--prerelease` for release candidates).
+- [ ] Release title and tag match the manifest version.
 
-## GitHub Release
+## Post-release
 
-- [ ] Create or verify the Git tag.
-- [ ] Publish the GitHub release.
-- [ ] Make sure the release title and tag are aligned.
-- [ ] Use the rendered release notes file as the GitHub release body.
-
-## Post-Release
-
-- [ ] Confirm the repository still installs as a HACS custom repository.
-- [ ] Confirm issue templates and CODEOWNERS still match the current maintainer workflow.
-- [ ] Close or retarget any issues that were resolved by the release.
+- [ ] HACS offers `X.Y.Z` (Update information) and lists it in the Redownload version list.
+- [ ] Installed on the real device and the logs checked.
+- [ ] Previous known-good version noted in case a rollback is needed.
