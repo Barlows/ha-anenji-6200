@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import logging
 
 from ..link_models import EybondLinkRoute, LinkRoute
 from ..link_transport import (
@@ -11,6 +12,11 @@ from ..link_transport import (
     async_send_payload,
     select_payload_route,
 )
+
+_logger = logging.getLogger(__name__)
+
+# Enough to see a whole short answer and the start of a long one in a log line.
+_BAD_ANSWER_LOG_BYTES = 64
 
 
 class ModbusError(Exception):
@@ -423,6 +429,21 @@ class ModbusSession:
                 )
             except ModbusError as exc:
                 last_error = exc
+                # Field diagnostics: the error text alone (``unexpected_slave_id:0``)
+                # cannot show what actually arrived in the poll's slot.
+                _logger.warning(
+                    "Modbus read answer rejected: %s function=%d slave=%d "
+                    "address=%d count=%d attempt=%d len=%d bytes=%s%s",
+                    exc,
+                    function,
+                    self._slave_id,
+                    address,
+                    count,
+                    attempt + 1,
+                    len(response),
+                    response[:_BAD_ANSWER_LOG_BYTES].hex(),
+                    "..." if len(response) > _BAD_ANSWER_LOG_BYTES else "",
+                )
                 if attempt == 0 and _is_retryable_read_error(exc):
                     await asyncio.sleep(0.15)
                     continue

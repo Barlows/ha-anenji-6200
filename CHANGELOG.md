@@ -14,6 +14,14 @@ onto upstream `main`, so the version history below this section is upstream's
 own changelog, carried through unchanged. This section covers only what's
 different in this fork, most recent first:
 
+- **2026-10-09** — Diagnostics for the occasional single-poll failures
+  (`unexpected_slave_id:0`, `unexpected_function:0`, `unexpected_length:…`): every
+  rejected register-read answer is now logged at WARNING with the raw bytes that
+  arrived (first 64 bytes), their length, the register address and count, and
+  which attempt it was, e.g. `Modbus read answer rejected: unexpected_slave_id:0
+  function=3 slave=1 address=171 count=1 attempt=1 len=… bytes=…`. The "incomplete
+  unwrapped Modbus RTU reply" warning also carries the header bytes. Logging only:
+  no change to retries or to when sessions close.
 - **2026-10-08** — Two small follow-ups after the stray-reply fixes. (1) Register
   reads now retry once when the answer carries the wrong slave id or function
   byte (`unexpected_slave_id:0`, `unexpected_function:0`), the way they already

@@ -588,9 +588,11 @@ class _CollectorConnection:
                                 )
                                 logger.warning(
                                     "Closing collector session after an incomplete "
-                                    "unwrapped Modbus RTU reply remote=%s expected=%d",
+                                    "unwrapped Modbus RTU reply remote=%s expected=%d "
+                                    "header=%s",
                                     self._collector.remote_ip,
                                     rtu_length,
+                                    header_bytes.hex(),
                                 )
                                 return
                             if modbus_rtu_crc_is_valid(header_bytes + rtu_tail):

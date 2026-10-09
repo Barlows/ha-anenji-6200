@@ -85,6 +85,37 @@ class ModbusPayloadTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await session.read_holding(171, 1), [0x7300])
             self.assertEqual(transport.calls, 2)
 
+    async def test_rejected_read_answer_is_logged_with_its_raw_bytes(self) -> None:
+        bad = _read_reply(0, 3)
+        transport = _ScriptedTransport(bad, _read_reply(1, 3))
+        session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
+
+        with self.assertLogs(
+            "custom_components.eybond_local.payload.modbus", level="WARNING"
+        ) as captured:
+            await session.read_holding(171, 1)
+
+        joined = "\n".join(captured.output)
+        self.assertIn("unexpected_slave_id:0", joined)
+        self.assertIn(f"bytes={bad.hex()}", joined)
+        self.assertIn("attempt=1", joined)
+        self.assertIn("address=171 count=1", joined)
+
+    async def test_long_rejected_answer_is_truncated_in_the_log(self) -> None:
+        bad = bytes(200)
+        transport = _ScriptedTransport(bad, _read_reply(1, 3))
+        session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
+
+        with self.assertLogs(
+            "custom_components.eybond_local.payload.modbus", level="WARNING"
+        ) as captured:
+            await session.read_holding(171, 1)
+
+        line = captured.output[0]
+        self.assertIn("len=200", line)
+        self.assertIn(bytes(64).hex() + "...", line)
+        self.assertNotIn(bytes(65).hex(), line)
+
     async def test_read_gives_up_after_one_retry_on_a_persistent_wrong_slave(self) -> None:
         transport = _ScriptedTransport(_read_reply(9, 3), _read_reply(9, 3))
         session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
