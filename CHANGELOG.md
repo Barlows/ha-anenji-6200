@@ -1,1310 +1,221 @@
-# Changelog
+# Changelog — EyeBond Local SC
 
-All notable changes to this project are documented in this file.
+What has changed in **this fork**, [Barlows/ha-anenji-6200](https://github.com/Barlows/ha-anenji-6200),
+newest first. It is a build of
+[groove-max/ha-eybond-local](https://github.com/groove-max/ha-eybond-local) kept
+running against one real unit: an **Anenji / Aninerel SMG 6200** (firmware 7904)
+behind an EyeBond Wi-Fi collector.
 
-The format is inspired by Keep a Changelog, with one practical rule for this repository:
-the GitHub release body should be rendered from the matching version section here.
+How to read it:
 
-## This fork (Barlows/ha-anenji-6200)
+- **There are no tagged releases.** HACS installs the latest commit on `main`, and
+  the "version" it shows is the short commit hash. Each entry names the pull
+  request and commit that introduced it, so you can match it to what HACS shows.
+- Entries are grouped by day, not by version number. The integration's own
+  `manifest.json` version is still upstream's (`0.3.0-beta.5`).
+- Anything described as "confirmed" was seen on the real unit. Anything else is
+  said to be untested.
+- Upstream's own release history is not repeated here. It is carried through
+  unchanged in [UPSTREAM_CHANGELOG.md](UPSTREAM_CHANGELOG.md).
 
-This repository is a customized build of
-[groove-max/ha-eybond-local](https://github.com/groove-max/ha-eybond-local),
-maintained by [Barlows](https://github.com/Barlows). It is periodically rebased
-onto upstream `main`, so the version history below this section is upstream's
-own changelog, carried through unchanged. This section covers only what's
-different in this fork, most recent first:
+---
 
-- **2026-10-09** — Diagnostics for the occasional single-poll failures
-  (`unexpected_slave_id:0`, `unexpected_function:0`, `unexpected_length:…`): every
-  rejected register-read answer is now logged at WARNING with the raw bytes that
-  arrived (first 64 bytes), their length, the register address and count, and
-  which attempt it was, e.g. `Modbus read answer rejected: unexpected_slave_id:0
-  function=3 slave=1 address=171 count=1 attempt=1 len=… bytes=…`. The "incomplete
-  unwrapped Modbus RTU reply" warning also carries the header bytes. Logging only:
-  no change to retries or to when sessions close.
-- **2026-10-08** — Two small follow-ups after the stray-reply fixes. (1) Register
-  reads now retry once when the answer carries the wrong slave id or function
-  byte (`unexpected_slave_id:0`, `unexpected_function:0`), the way they already
-  did for short, bad-CRC and wrong-length answers. These showed up about three
-  times in two hours, each one costing a whole refresh; they are what a stray
-  collector reply looks like when it lands in a poll's slot. A genuinely wrong
-  slave id still fails after the single retry, and exception replies are never
-  retried. (2) **Collector Last Disconnect Reason** reads `none` when the
-  current session has no fault instead of `unavailable`, matching **Retained
-  Disconnect Reason**.
-- **2026-10-08** — The remaining collector reset (`incomplete frame payload …
-  tid=259 fc=19 expected=775`) is fixed. The captured bytes `0103580003090d13`
-  are an 88-byte bare Modbus RTU reply whose data bytes happen to decode as a
-  header that passes every check (length 777, function 19), so the earlier
-  stray-reply handling, which only looked at bytes that failed header
-  validation, never examined it; the reader then waited for a 775-byte payload
-  that never came. A header-valid frame that is longer than a CRC-checkable
-  reply candidate is now probed: if the candidate's Modbus CRC verifies it is
-  skipped (and counted), otherwise every byte is handed back to the normal frame
-  parser unchanged, and a frame no longer than the candidate is never delayed.
-  Covered by tests for the captured shape, a bad-CRC variant, a truncated
-  reply, and genuine long and short frames that open with the same bytes.
-- **2026-10-08** — The "Closing collector session after incomplete frame payload"
-  warning now includes the decoded header bytes and whether its first seven bytes
-  form a CRC-valid Modbus RTU reply (`header=…`, `rtu7_crc_valid=…`). After the
-  stray-reply fix, a remaining reset every ~20 minutes logs `tid=259 fc=19
-  expected=775`; those bytes were not visible, so this separates a genuine
-  EyeBond frame that never finished from a bare reply misread as a header.
-  Logging only: no change to when sessions close.
-- **2026-10-08** — The integration no longer drops the collector session every
-  few minutes because of a stray Modbus reply. The dongle periodically pushes a
-  bare Modbus RTU read reply (`01 03 <byte count> data CRC`) outside any EyeBond
-  frame, in rotating sizes (0x14, 0x18, 0x6c data bytes, plus a 7-byte
-  one-register form). Upstream deliberately closes the session on one (issue
-  #39); on this inverter that was the roughly 3.5-minute `collector_disconnected`
-  reset cycle. This fork now recognises such a reply only when its length is
-  consistent and its **Modbus CRC verifies**, skips exactly those bytes, and
-  keeps the session. A reply that looks the same but fails the CRC, a truncated
-  one, or any genuinely malformed header still closes the session as before, and
-  real EyeBond frames that merely start with look-alike bytes are handed back to
-  the normal parser untouched. New diagnostic sensor **Collector Stray Modbus
-  Replies Skipped** counts skips per session (also in the collector summary and
-  support bundle). Not yet proven on the real device: if the collector stream is
-  genuinely misaligned rather than carrying whole stray replies, resets will
-  continue, and the reset count and the new sensor will show it. Changes
-  upstream's issue-#39 behaviour, so the original close-on-bare-reply test was
-  rewritten and a bad-CRC variant added to keep the close path covered.
-- **2026-10-08** — **Collector Retained Disconnect Reason** now actually
-  retains the reason. When a collector session closed, the listener dropped the
-  connection object (and the reason it held) from its indexes, and the redial
-  got a fresh object, so the sensor read `none` through every reconnect —
-  confirmed live: 11 resets in 40 minutes and the sensor never left `none`. The
-  listener now keeps the last real disconnect reason per collector (by IP and
-  PN) and the framed transport restores it, and **Last Disconnect Reason** now
-  shows the reason while the collector is between connections instead of
-  `unavailable`. Diagnostics only: no change to when sessions are closed or how
-  often the collector resets. Covered by a regression test that drives the real
-  drop-and-redial path. The AT-text transport is not covered by this change.
-- **2026-10-06** — Collector metadata polling no longer sends the nearby
-  Wi-Fi scan query (`INTPARA49`). A scan makes the dongle's radio leave its
-  channel on every metadata cycle, which is a plausible contributor to the
-  `collector_disconnected` / malformed-frame resets seen on this setup. This is
-  the same change upstream made in `e5b4a2d`, taken on its own: upstream
-  explicitly does not claim it fixes connection interruptions, and neither do
-  we until the reconnect rate has been compared before and after. Connected
-  SSID and signal strength are still read; Wi-Fi setup still scans on demand
-  over BLE. The disabled-by-default **Collector Wi-Fi Scan List** diagnostic
-  sensor remains defined but no longer receives a value.
+## 2026-10-09
 
-- **2026-09-26** — Documented that the unit suite requires the two libraries
-  in `requirements-test.txt` (`aiohttp`, `voluptuous`). Both are imported at
-  module scope by production modules the stub-based suite cannot fake:
-  `aiohttp` by `support/download.py` and `voluptuous` by `config_flow.py`.
-  Running the suite without them is worse than skipping a few tests.
-  `test_config_flow` installs nine `homeassistant.*` fakes into `sys.modules`
-  and *then* fails on the `aiohttp` import, so the half-initialised state
-  survives into every module that runs afterwards. That is what produced a
-  misleading spread of order-dependent failures, including
-  `TypeError: WriteCapability() takes no arguments`, a cascade of
-  `ImportError: cannot import name ... (unknown location)`, and assertion
-  failures in driver and catalog tests that all trace back to the one missing
-  library. With both installed the suite is fully green: 4,596 tests, 0
-  failures. No production code changed; the fix is to install the documented
-  test requirements.
-- **2026-09-26** — Stopped the stub-based test harnesses from leaking test
-  doubles into the real integration modules. The shared `ensure_module()`
-  helper only consulted `sys.modules`, so the first test to ask for a
-  not-yet-imported name installed an empty synthetic module that then
-  shadowed the real one for the rest of the process; harnesses patched a few
-  attributes onto a blank object and every later test that imported that
-  module failed with `ImportError: cannot import name ... (unknown location)`.
-  It now attempts the real import first and only synthesises a module when
-  there is genuinely nothing to import (the `homeassistant.*` stubs, which do
-  not exist in this repository). That exposed a second leak: the coordinator
-  harness overwrote `get_driver`, `all_write_capabilities` and
-  `support_marker` on what is now the real `drivers.registry` and never
-  restored them, so every later suite ran against a registry whose
-  `get_driver()` always returned `None` and whose `support_marker()` was a
-  stub that never dispatched. The originals are captured once and restored,
-  with the restore registered via `addClassCleanup` so it still runs when
-  `setUpClass` raises partway through (`tearDownClass` is skipped in that
-  case). Two further tests were corrected: one rebound `get_driver` on the
-  module object although `support_marker` resolves that name from its own
-  `__globals__`, and one patched an attribute on `support.download`, a
-  submodule nothing had imported, which `mock.patch` cannot reach because it
-  walks attributes on already-imported packages. Full suite: 46 failures down
-  to 22, 24 tests fixed and none newly broken, verified by diffing the
-  failure set against unmodified `main`. Of the 22 remaining, 12 are only a
-  missing `aiohttp` in the development container; the other 10 are
-  pre-existing, order-dependent, and not addressed here.
-- **2026-09-25** — Fixed three test-infrastructure defects found by actually
-  running the full suite rather than reading it: seven test modules imported
-  from `helpers` above the `sys.path` guard meant to make that import work
-  (and the guard pointed at the repo root instead of `tests/`), so they only
-  passed under `unittest discover` and failed if run directly; the detection
-  suite's scan-composition tests drove the real live-socket scan path with
-  multi-second polling deadlines instead of stubbing it, making one test take
-  9s and the module 36s; and an unbounded `asyncio.Event` wait in the UART
-  sweep authority test could hang the entire suite indefinitely if a
-  precondition ever failed. Full suite: was hanging past 15 minutes,
-  now completes in ~3 minutes (3,853 tests), with no change to the 48
-  pre-existing, order-dependent failures verified against pristine `main`.
-- **2026-09-25** — Recognized unwrapped Modbus RTU replies in the collector
-  transport's malformed-frame log line. Header-decode failures that begin
-  with a Modbus slave address, a read-registers function code, and a
-  plausible byte count are real RTU replies arriving outside the EyeBond
-  frame envelope, not wire corruption; the log now says so instead of
-  reporting a generic "malformed frame header". Recovery behavior and the
-  stored disconnect-reason value are unchanged — diagnostics only.
-- **2026-09-25** — `fix(diagnostics)`: retained disconnect reason across
-  reconnects and stopped reporting healthy systems as unavailable.
-  `last_disconnect_reason` reset to `""` on every new session attach, which
-  could erase the exact fault reason before it was ever read. Added
-  `retained_disconnect_reason`, set at both disconnect sites, which survives
-  reconnects and is projected into the snapshot, session inventory and
-  support bundle. Also fixed `last_error` and the new retained-reason entity
-  publishing `"none"` instead of going `unavailable` on a healthy system,
-  since both are enabled by default.
-- **2026-09-25** — `feat(diagnostics)`: exposed transport faults and
-  clarified collector service errors. Added **Collector Callback Wire
-  Framing**, **Collector Last Disconnect Reason**, **Collector Management
-  Adapter** (+ provenance), and **Observed Session Protocol** diagnostic
-  sensors. Failed `eybond_local` service calls (reboot collector, set
-  endpoint, start/stop proxy capture, etc.) now raise an actionable
-  `HomeAssistantError` with a plain-language hint instead of a bare
-  exception, and unsupported management actions fail fast with a clear code
-  when the live adapter can report its own availability.
-- **2026-09-13** — Added an exact-fingerprint catalog entry (`smg_6200_fw7904`)
-  for SMG 6200 firmware revision 7904 (`model_code 0x7904`, layout 11,
-  Aninerel/Anenji 6200 dual-output), bound to the existing
-  `anenji_op2_6200_full` control surface.
-- **2026-09-13** — Added a **Solar-Utility-FeedIn (SUF)** output-source-priority
-  option and an **Output 2 Overload** fault code to the classic SMG RS232 V1
-  profile and register schema.
-- **2026-09-13** — Added hardware-tested support notes for
-  `automatic_mains_output_enabled`, `output2_cutoff_soc`, and
-  `output2_overload_threshold` on the SMG 6200 (fw7904) model, from local
-  write testing on real hardware.
-- **2026-09-13** — Renamed the project display name to **EyeBond Local SC**
-  (`hacs.json`, README).
+### Diagnostics
 
-## [Unreleased]
+- **Rejected register reads now log what actually arrived.** Every Modbus read
+  answer the integration rejects (`unexpected_slave_id`, `unexpected_function`,
+  `unexpected_length`, bad CRC and so on) is logged at WARNING with the first 64
+  bytes received, their length, the register address and count, and which attempt
+  it was. The "incomplete unwrapped Modbus RTU reply" warning also carries its
+  header bytes. Logging only: nothing about retries or session handling changed.
+  (#15, `9d23494`)
 
-### Added
+---
 
-- SRNE support archives can check five smaller, documented battery/PV register
-  groups after the inverter explicitly rejects the combined DC block (#44).
-  These read-only diagnostics share a 15-second limit and stop on communication
-  errors. They do not change normal polling, enable sensors or add controls.
+## 2026-10-08 (ending the collector reset cycle)
 
-- Added an offline MPPT-frame inspector for maintainers, with strict runtime
-  decoding and explicit warnings about overlapping wire formats. This does not
-  enable live PV polling or create additional Home Assistant entities.
-
-- Added a generic read-only **EyeBond Short-ASCII family** profile for the
-  captured MP/Q1/MD dialect seen on some Anern and Maxinn devices (#45).
-  It provides grid/output voltage, load percentage, output frequency,
-  temperature and status diagnostics. Battery Reference Voltage is shown
-  separately from full-pack voltage. No retail model, serial number, PV power
-  or inverter controls are inferred.
-
-- Short-ASCII devices can also expose documented BMS and rated readings through
-  optional read-only RB/F queries. These entities are disabled by default.
-  Missing, invalid or expired BMS samples remove their old values without
-  interrupting basic telemetry. BMS current scaling and PV remain unqualified;
-  this is not full device or control support (#45).
+The headline problem on this unit: the collector's session was being dropped about
+every 3.5 minutes (`collector_disconnected`, sometimes 11 resets in 40 minutes),
+and the "retained disconnect reason" sensor never showed why. Both are addressed
+below. The log lines quoted are the ones that identified each cause.
 
 ### Fixed
 
-- Framed collector replies must match both the request's transaction ID and
-  function code. An unrelated heartbeat or response can no longer complete a
-  collector-management or inverter request merely by reusing its transaction
-  ID. Reply devcode/address differences remain supported. This is an independently
-  reproduced safeguard, not a confirmed fix for the connection resets in #43.
-
-- MUST PV/PH18 telemetry distinguishes signed inverter-converter power from
-  load power (#46). Corrected cumulative PV energy uses a new **PV Energy Total**
-  entity in kWh so the old incorrectly scaled statistics are not continued.
-  The former **PV Generation Day** reading was elapsed operating days, not
-  energy; it is replaced by an optional **PV Charger Operating Days** diagnostic.
-  Re-select the new total in Energy Dashboard if you used the old counter.
-  Historical statistics are not rewritten. Controls and transport are unchanged.
-
-- Local metadata path checks and missing-override messages handle configuration
-  directories reached through symbolic links (#47). Relative paths escaping a
-  configured metadata root remain rejected.
-
-- Read-only cloud analysis delivers queued progress updates before its final
-  stage, including when a background request completes immediately.
-
-- SmartClient read-only analysis accepts the native device-info array and can
-  obtain the history timezone from the same verified collector. Foreign or
-  ambiguous identities remain rejected. Background local observation is only
-  offered when the bound driver has a register read plan; cloud-only evidence
-  remains available for unidentified inverters (#23).
-
-- A recovered inverter payload read clears its old timeout diagnostic. Empty
-  scheduled reads and collector metadata updates do not falsely report recovery;
-  the diagnostic cannot leak to a replacement inverter (#44).
-
-- Collector endpoint-read failures identify the framed sub-request that failed
-  and record session generations. That context now reaches the Support Archive,
-  including its collector-management section, rather than remaining only in the
-  internal operation record. Later actions cannot inherit an earlier failed
-  request, and transport diagnostics omit free-form exception text. Live-endpoint
-  checks before proxy capture and transport behavior are unchanged (#43).
-
-- Collector listener shutdown now fences and drains TCP admission before
-  clearing its sessions. Reconnecting during an entry reload no longer enters
-  the `asyncio.Server` accept/close race or leaves a late socket in a retired
-  listener. Collector identity, protocol selection and polling are unchanged.
-
-- Proxy capture now renders its instructions, available actions and default
-  selection from the same current collector state, including after a failed
-  start. A stale poll snapshot can no longer contradict the reconnect/start
-  choice. Live connection and endpoint checks before redirect are unchanged (#43).
-
-- Older entries without a confirmed collector identity can now use the same
-  explicit read-only framed/AT identity check as manual setup. Successful repair
-  updates the existing entry and its selected connection settings in place;
-  failed checks preserve it. Runtime timeout diagnostics no longer imply that
-  no TCP connection arrived when identity was not confirmed (#18, #46).
-
-- SMG live voltage, current, frequency, power and temperature measurements are
-  ordinary sensors instead of diagnostics, including inherited model profiles
-  and OP2 apparent power. Entity IDs, units and default enablement are unchanged;
-  settings, protocol information and fault details remain diagnostic (#38).
-
-- Support archives preserve numeric-looking hex sequences in explicitly typed
-  wire-evidence fields instead of replacing their bytes with identifier masks.
-  Embedded ASCII identifiers remain masked. Short-ASCII archive creation and
-  authenticated download are covered for successful, partial, malformed and
-  offline reads through real Home Assistant.
-
-- Retired collector readers can no longer deliver buffered replies, identity
-  observations or read errors to a replacement connection during slow socket
-  shutdown. Auxiliary read results also retain their original session owner.
-
-- Queued collector commands now stay bound to the TCP session on which they
-  started. A reconnect cannot redirect an old read, write or UART bootstrap
-  to the replacement socket. A confirmed reply followed by normal peer closure
-  remains a valid result.
-
-- Closing an old collector socket no longer clears requests that already belong
-  to its replacement connection. This covers both framed and AT sessions when
-  socket shutdown is delayed.
-
-- Confirmed catalog-backed read-only metadata can now survive an entry reload
-  without a controls profile. Schema-only hints with no matching catalog
-  evidence remain invalid; this change does not enable inverter writes.
-
-- Callback identity checks now return their borrowed shared-listener reference
-  even if sending the trigger fails or the operation is cancelled before waiting
-  for a session. Existing session ownership and callback retry timing are unchanged
-  (#45).
-- Proxy capture now offers an explicit reconnect-and-start attempt when only
-  the last connection snapshot is offline and the route is known. The existing
-  live endpoint checks still run before any redirect; inverter identification
-  is not required (#43).
-- Read-only cloud analysis now retains its results for collector-only entries
-  with no local inverter driver. Recognized cloud readings no longer cause the
-  result-building step to fail while checking local sensor coverage (#23).
-  Failure artifacts now also include the selected source, workflow stage and
-  exception category without exception messages or credentials.
-- Proxy-capture guidance now distinguishes the collector's configured server
-  address from Home Assistant's callback address (#43). Capture still requires
-  a connected collector and a known endpoint that can be safely restored.
-
-## [0.3.0-beta.5] - 2026-09-09
+- **Stray Modbus replies no longer close the session.** The collector keeps
+  pushing bare Modbus RTU read replies (`01 03 <byte count> data CRC`) outside any
+  EyeBond frame, in rotating sizes (0x14, 0x18 and 0x6c data bytes, plus a 7-byte
+  one-register form). Upstream deliberately closes the session on one of these
+  (its issue #39), and on this unit that was the reset cycle. A reply is now
+  recognised only when its length is consistent **and its Modbus CRC verifies**;
+  exactly those bytes are skipped and the session stays up. A look-alike that
+  fails the CRC, a truncated reply, or any genuinely malformed header still closes
+  the session, and a real EyeBond frame that merely starts with similar bytes is
+  handed back to the normal parser untouched. This reverses upstream's
+  close-on-bare-reply behaviour on purpose, so that test was rewritten and a
+  bad-CRC variant added to keep the close path covered. (#11, `6a9394c`)
+- **…including replies that look like valid EyeBond headers.** One remaining
+  reset logged `incomplete frame payload … tid=259 fc=19 expected=775`. The
+  captured header bytes `0103580003090d13` turned out to be an 88-byte bare reply
+  whose data happens to decode as a header that passes every check, so the first
+  fix never examined it and the reader waited for a 775-byte payload that never
+  came. Header-valid frames longer than a CRC-checkable reply candidate are now
+  probed: a CRC-verified reply is skipped, anything else is handed back unchanged,
+  and a frame no longer than the candidate is never delayed. Covered by tests for
+  the captured shape, a bad-CRC variant, a truncated reply, and genuine long and
+  short frames that open with the same bytes. (#13, `6c4a4a8`)
+- **Register reads retry once on a wrong slave id or function byte.**
+  `unexpected_slave_id:0` and `unexpected_function:0` were costing a whole poll
+  refresh a few times an hour; they are what a stray reply looks like when it lands
+  in a poll's slot. A read now repeats once, as it already did for short, bad-CRC
+  and wrong-length answers. A genuinely wrong slave id still fails after the single
+  retry, and exception replies are never retried. (#14, `d439c75`)
+- **Collector Retained Disconnect Reason now actually retains the reason.** The
+  listener dropped the closed session's connection object from its indexes, and
+  the redial got a fresh one, so the sensor read `none` through every reconnect.
+  The listener now keeps the last real reason per collector (by IP and PN) and
+  the framed transport restores it, with a regression test that drives the real
+  drop-and-redial path. The AT-text transport is not covered. (#10, `3855600`)
 
 ### Added
 
-- Added a separate **SmartClient / ShineMonitor** source for read-only device
-  analysis. It collects exact-identity cloud readings, setting descriptions,
-  available daily history and raw-packet fingerprints without changing the collector
-  endpoint or sending control commands. Existing SmartESS/DESSMonitor defaults
-  and active learning are unchanged; this source does not yet offer active
-  verification or a built-in map for previously unsupported PV inverters.
-- Added protocol-level fallback profiles for unknown SMG models reporting
-  protocol 1, 2, or 11. Protocols 1 and 11 expose 30 compatible basic controls;
-  the July 2024 GM6200 protocol-2 document supplies a separate 54-capability
-  profile, CT power, schedules, clock and PV-energy decoding. All generic
-  controls remain untested and require Full Control; blocked operations stay
-  unavailable. Exact model profiles retain their existing behavior.
-- Added version-specific, document-backed write profiles for Anenji
-  Communication Protocol No. 3-10 variants 3, 4, 5, and 6. The exact HHS-11kW
-  Protocol 3 fingerprint can now opt into its documented controls through Full
-  Control; all new controls remain untested, and destructive reset/counter-clear
-  operations stay blocked.
-- Added built-in detection and telemetry mapping for the Sandisolar SD 11KP48V
-  WIFI fingerprint (`layout=4`, `model=0x8003`) from issue #13 evidence.
-  Its two hardware-confirmed Secondary Priority controls are available normally;
-  the other compatible controls remain explicitly untested and Full-Control-only.
-- Added a typed support-acquisition boundary so read-only cloud evidence can be
-  collected for an identified collector before an inverter driver is known.
-- Added 118 opt-in, document-backed settings for the exact Kevolt
-  PD0080G-TPM-EU / Deye-compatible 8 kW fingerprint. They remain untested,
-  hidden in Auto mode, and disabled by default; six Time of Use schedule fields
-  use native Home Assistant time entities.
+- **Collector Stray Modbus Replies Skipped** diagnostic sensor: how many stray
+  replies the current session has skipped. It restarts from 0 with every new
+  session, so a counter that keeps climbing means the fix is working and a drop
+  to 0 means the session was replaced. Also included in the collector summary and
+  the support bundle. (#11)
 
 ### Changed
 
-- Marked the documented Anenji `0x8401` Protocol 4 control surface as tested for
-  this exact fingerprint after device-owner validation included working OP2
-  controls that are not exposed by the vendor apps. The irreversible
-  generation-data clear and user-parameter reset actions remain blocked by the
-  independent destructive-action safety policy even though the profile is
-  treated as compatible.
-- Unknown inverter models that report documented Anenji Communication Protocol
-  3, 4, 5, or 6 now select the matching protocol-specific telemetry map
-  automatically instead of requiring a new exact-model catalog entry. Their
-  document-backed controls remain untested and monitoring-only in Auto mode;
-  users can opt into non-blocked controls through Full Control.
-- Replaced the ambiguous writable `modbus_smg/base.json` profile with one
-  explicit, document-backed classic SMG RS232 V1 map shared by compatible
-  layout 1/2/11 model profiles. Exact hardware overlays retain their existing
-  tested controls and model-only registers. Unknown fingerprints now use the
-  compatible protocol profiles described above, not a known model's tested
-  write surface. The V1 document version is no longer presented as proof
-  that register 184 must contain protocol number 1.
-- Rebuilt the Anenji Protocol No. 3-10 telemetry layer as one documented shared
-  schema with separate Protocol 3 and Protocol 4 output projections. ANJ-11KW,
-  HHS-11kW and Sandisolar fingerprints now select registers by protocol identity,
-  never by a zero/non-zero value fallback, while ordinary SMG Protocol 1 devices
-  retain their existing map.
-- Moved device-support analysis and collector cloud-traffic capture under one
-  **Expand device support** menu with separate readiness rules for read-only
-  metadata, active learning, and proxy capture.
-- Active-learning consent now explicitly covers the temporary collector
-  endpoint change, bounded cloud test commands, local interception, and route
-  restoration.
-- Large Modbus settings surfaces now refresh one compact block per poll and
-  keep their cache in non-persisted per-session driver state. Confirmed writes
-  update that same cache only after immediate wire read-back.
+- **Collector Last Disconnect Reason** reads `none` while the current session has
+  no fault, instead of `unavailable`, matching the Retained Disconnect Reason
+  sensor. (#14)
 
-### Fixed
+### Diagnostics
 
-- A failed temporary proxy or cloud-learning connection no longer disables
-  normal collector callback recovery. Auxiliary port conflicts and upstream
-  failures preserve the primary listener's status; cancelled cloud-route
-  startup also releases its resources and ownership before a retry.
-- Collector protocol hints no longer label SmartClient/SmartValue devices as
-  SmartESS merely because they expose the same metadata fields. Cloud source
-  selection remains explicit and independent of those hints.
-- Device-learning credentials preserve intentional password whitespace before
-  cloud authentication.
-- Modbus exception `03` no longer claims that a rejected write was necessarily
-  outside the inverter's allowed setting range. Diagnostics distinguish the
-  profile's UI bounds from the device's unexplained rejection; write validation
-  and confirmation behavior are unchanged.
-- Schema-driven Modbus polling now reports a failed cycle when every runtime
-  block fails, instead of publishing an empty successful snapshot. Cached
-  settings cannot hide the failure; valid partial telemetry remains available,
-  and a disconnected transport stops the sweep immediately.
-- Fixed long diagnostic states exceeding Home Assistant's 255-character limit.
-  Write-capability sensors now show a count with the full list in the
-  `capabilities` attribute; other long texts retain their full value in
-  `full_value`. Support archives keep the original data.
-- Fixed false rejection of successful secondary-priority schedule writes:
-  normal SMG polling now uses the same native capability decoder as write
-  confirmation, including HHMM times such as `655` → `06:55`.
-- Updated device-registry access for Home Assistant 2026.9, preserving
-  entry-scoped ownership, collector links, entity ids and older HA compatibility.
-  The current real-HA CI lane now runs on 2026.9.1.
-- Moved SMG battery voltage and Protocol 3-10 lifetime PV generation out of the
-  diagnostic category without changing registers, entity ids or statistics.
-- Corrected the exact Anenji `0x8401` display name to ANJ-11KW-48V-WIFI after
-  owner clarification; existing profile keys and the `0x8000` WIFI-P identity
-  remain unchanged. The fingerprint is not a parallel-capability test.
-- Fixed a framed-transport desynchronization where one unexpected unwrapped
-  Modbus RTU response could be combined with the next EyeBond header, consume
-  subsequent valid frames, and stall telemetry until the socket was replaced.
-  Malformed, oversized, or incomplete frames now close only the affected
-  session with a typed diagnostic reason, after which a fresh callback can
-  resume normally.
-- Preload the SmartESS semantic catalog with the other JSON metadata caches in
-  Home Assistant's executor, avoiding a first-use blocking file read from the
-  event loop when diagnostics or cloud evidence first resolves a field.
-- Restored exact Anenji 11kW identification for the captured
-  Protocol 4 fingerprint `layout=4`, `model=0x8401`. Unlike the broad legacy
-  heuristic, the new catalog entry affects only this proven fingerprint; it
-  uses the documented Protocol 4 telemetry map and its own control profile.
-  The old displayed name remains a compatibility alias so an existing entry
-  cannot accidentally select the other hardware variant before a live probe.
-- Fixed cancellation cleanup for an in-progress inverter driver sweep on
-  Python 3.14. Expected late probe failures are now consumed by an owned
-  no-fail outcome relay instead of being reported as unhandled event-loop
-  exceptions after Home Assistant cancels or replaces the refresh.
-- Fixed AT-text collector restart verification by separating the vendor's
-  dedicated soft-reset command from its staged-settings apply command. A command
-  acknowledgement still does not count as recovery until the old session drops
-  and the same collector reconnects on a new physical session.
-- Fixed canonical power-flow estimates that could count the same PV watts both
-  as home consumption and battery charging when asynchronously sampled
-  Protocol 3/4 registers disagreed. Instantaneous routes and their accumulated
-  energy now share bounded source/sink budgets and leave unexplained remainder
-  unattributed instead of inventing a second power path.
-- Fixed stale callback-session inventory that could outlive its physical TCP
-  socket, suppress a new callback request, and leave Home Assistant waiting for
-  a connection that no longer existed.
-- Fixed Protocol 3/4 optional-register polling so one silent collector session
-  fails fast instead of expanding into minutes of per-register retries. Support
-  archives also refresh their runtime snapshot after a capture reconnect.
-- Fixed fully silent callback collectors that open a TCP session without an
-  initial payload. Home Assistant now performs one bounded FC=1 identity
-  challenge on the exact observed session, accepts only a correlated full-PN
-  response, and never falls back to peer-IP routing. Unknown wire dialects are
-  tried only on separate callback attempts and separate physical sockets.
-- Corrected the canonical grid and inverter power projection for documented
-  Protocol 3/4 layouts. Grid Power now comes from holding register 340, with
-  protocol-specific output/load blocks; legacy total fields remain diagnostic
-  evidence rather than speculative runtime fallbacks.
-- Corrected the Kevolt PD0080G-TPM-EU rated-power scale from 80 kW to its
-  hardware-confirmed 8 kW rating without changing the stable internal
-  fingerprint key or its already-correct battery-value sign.
-- Treat a catalog-declared previous model name as the same runtime inverter
-  identity after a display-name correction. Unknown and ambiguous aliases still
-  fail closed instead of replacing a durable binding.
-- Fixed the admission failure menu so switching a failed selected-route attempt
-  to manual setup starts a fresh callback transaction instead of raising an
-  internal lifecycle error into the Home Assistant UI.
-- Preserve the exact collector-management error in the normal Home Assistant
-  log when restart confirmation fails during recovery verification.
-- Renamed the four optional PI30 Q1 temperature channels to neutral numbered
-  names. Clone manufacturers can wire the same protocol fields to different
-  physical components, so the integration no longer presents an inferred
-  tracker, inverter, battery, or transformer location as a confirmed fact.
-- Fixed SMG-family setting confirmation when firmware applies a write after a
-  short delay. The integration now records the exact-register read-back and
-  subsequent full-poll convergence, never exposes the requested value as if it
-  had already been observed, and includes the bounded trace in Support
-  Archives for field diagnosis.
-- Fixed stale generic-SMG projections that could survive a stronger runtime
-  fingerprint and hide the correct model-specific telemetry surface.
-- Added typed per-route probe evidence so support diagnostics can distinguish
-  framed and raw-serial attempts without exposing endpoints or payloads.
-- Kept support evidence and proxy diagnostics available when the collector is
-  identified but the inverter driver is still unresolved, while active
-  route-owning operations continue to fail closed.
-- Fixed AT-primary collectors that accept AT management commands but carry
-  inverter payloads in correlated EyeBond FC4 frames. The exact live session
-  now negotiates raw serial versus FC4 from replies instead of inferring the
-  data plane from model, endpoint, PN, cloud family, or peer address.
+- The "incomplete frame payload" warning now includes the decoded header bytes and
+  whether its first seven bytes form a CRC-valid Modbus reply (`header=…`,
+  `rtu7_crc_valid=…`). Logging only. (#12, `8be68f2`)
 
-### Docs
+### Result on the real unit
 
-- Documented the unresolved intermittent cloud-telemetry issue in both READMEs,
-  including how to distinguish it from intentional HA-only operation and what
-  evidence to collect during an outage.
-- Added safe instructions for manually testing the unreleased `main` branch
-  without creating a tag or GitHub release.
-- Updated device-learning and proxy-capture guides for the current menu names,
-  trust boundaries, and recovery behavior.
-- Added a Kevolt / Deye-compatible advanced-controls guide covering explicit
-  opt-in, read-back guarantees, and deliberately excluded service operations.
+Measured on the SMG 6200 (as of 2026-10-09 afternoon):
 
-### Known issues
+| | Before | After |
+|---|---|---|
+| Collector session drops | about every 3.5 minutes | none for 14 h 51 min, then one dongle-side TCP reset (13:22) and one cut-off stray reply (13:52) |
+| Stray replies skipped | — | 160 in a single overnight session |
+| Single-poll failures (`unexpected_*`) | roughly hourly | roughly every two hours |
 
-- Intermittent vendor-cloud telemetry gaps remain under investigation on some
-  **Cloud + Home Assistant** setups, even while local readings continue. The
-  fixes above do not establish that these gaps are resolved; see the
-  [README guidance](https://github.com/groove-max/ha-eybond-local/blob/main/README.md#known-cloud-telemetry-issue) and
-  [issue #13](https://github.com/groove-max/ha-eybond-local/issues/13).
+The remaining single-poll failures and the two afternoon drops are not fixed;
+they look like Wi-Fi hiccups and the occasional stray reply that lands in a poll
+slot. They cost one refresh each, and the raw-byte logging above was added to find
+out exactly what arrives.
 
-## [0.3.0-beta.4] - 2026-08-25
+### Reviewed, not adopted
 
-### Added
+- PR #9 ("Release/v0.3.0 code quality improvements", a large
+  `ConnectionManager` / `OwnerCounter` / `RouteReservationManager` refactor) was
+  reviewed against current `main`, found to need two regression fixes to integrate
+  safely, and **closed without merging**: the risk outweighed the benefit for a
+  fork whose job is to keep one device stable. The integration attempt is kept on
+  the `integrate-pr9` branch for reference.
 
-- Added a built-in profile for the Anenji HHS 11 kW Wi-Fi inverter family from
-  redacted field evidence, including its model-specific entity scope.
-- Added exact-session identity bootstrap for silent framed collectors so a
-  collector can be admitted without trusting a stale or foreign connection.
+---
 
-### Fixed
-
-- Fixed mixed-protocol collector negotiation so the framed channel remains the
-  primary inverter and management authority while AT is used only for
-  compatible supplemental metadata.
-- Fixed collector metadata ownership and refresh merging so an empty or failed
-  supplemental observation cannot erase a current SSID or other live metadata.
-- Hardened capability-aware reboot, recovery, driver detection, and device
-  routing for E500-class collectors that expose both framed and AT interfaces.
-- Fixed Support Archive build diagnostics so the loaded integration version is
-  read from the actual package manifest instead of an adjacent runtime folder.
-- Replaced collector identifiers in newly tracked regression fixtures with
-  synthetic allowlisted values so release privacy validation remains effective.
-
-### Docs
-
-- Added collector-first setup and runtime inverter-detection guides covering
-  discovery results, background discovery, Fast versus Full protocol checks,
-  polling, controls, UART management, and entity availability.
-- Updated device-learning, proxy-capture, remote-network, and Support Archive
-  instructions to match the current options flows and safety boundaries.
-- Added a plain-language legend to the generated inverter model catalog and
-  strengthened documentation checks for the current public workflows.
-
-## [0.3.0-beta.3] - 2026-08-24
-
-### Added
-
-- Added a strict typed-telemetry boundary between drivers, runtime state, Home
-  Assistant entities, derived energy, diagnostics, and support tooling. Values
-  now retain their source and observation state instead of being passed through
-  one broad untyped mapping.
-- Added focused architecture guards and a tiered validation command for fast,
-  affected, full-unit, real-Home-Assistant, and two-lane release checks.
-- Added a fixture-backed release-readiness gate that refuses publication when
-  required hardware evidence is missing or no longer replays cleanly.
-- Added a provider-neutral **Expand support for this device** workflow. Users
-  choose read-only analysis or advanced active verification first, then choose
-  a compatible SmartESS, DESSMonitor, or ValueCloud API without silent
-  cross-provider fallback.
-- Added bounded SmartESS and DESSMonitor history evidence plus an optional
-  background series of local read-only snapshots. Cloud labels remain hints;
-  no local sensor or register binding is created without local proof.
-- Added advanced diagnostic-command scenarios in the options flow and as a
-  Home Assistant action, with explicit write confirmation and a short-lived,
-  entry-scoped download for the redacted result.
+## 2026-10-06
 
 ### Changed
 
-- Unverified manual attempts no longer create **Pending device** entries. The
-  setup flow now keeps failures inside the active flow and offers retry or
-  background discovery; an identified session can then be added through the
-  normal collector admission path.
-- Collector admission, callback continuation, recovery verification, endpoint
-  switching, runtime orchestration, config/options flows, transport, proxy
-  capture, and device learning now use explicit package boundaries. This is an
-  internal reorganization with no configuration-path migration required.
-- Cloud-traffic tools are hidden for local-only ESP EyeBond Collector firmware,
-  while its local endpoint, connection, UART, diagnostics, and Wi-Fi controls
-  remain available.
-- Device-support analysis now defaults to read-only evidence. Active
-  verification, temporary cloud routing, and applying locally proven controls
-  remain separate, explicitly confirmed steps.
-- Proxy capture duration, start/stop, recovery, live status, and saved downloads
-  are managed through one options-flow screen instead of separate device
-  entities.
-
-### Fixed
-
-- Restored Anenji point-read identity detection and made late inverter
-  identification reload the entity set without losing the established
-  collector session.
-- Fixed callback and inbound admission around silent collectors, shared/NAT
-  peer addresses, routed collector addresses, exact-session ownership, and
-  cancellation cleanup. A stale or foreign connection can no longer substitute
-  for the collector selected by the user.
-- Fixed a discovery-flow completion race that could create the entry and then
-  show **Invalid flow specified** in Home Assistant.
-- Hardened connection-profile switching and recovery: callback-listener routes
-  and direct collector endpoints remain distinct, endpoint formats without an
-  explicit port stay valid for collectors that require them, and a failed
-  transition keeps enough durable state for a safe retry.
-- Fixed slow cloud-evidence reads blocking the Home Assistant event loop and
-  tightened callback-listener cleanup during replacement, cancellation, and
-  shutdown.
-- Fixed proxy-capture startup after the coordinator package split and preserved
-  safe, localized cloud failure reasons when device learning cannot finish.
-- Fixed DESSMonitor login/provider validation, partial device reads, history
-  pagination and time-basis handling; fixed SmartESS history collection and
-  monotonic progress so long cloud waits no longer make the progress bar move
-  backwards.
-- Fixed cancelled inverter-detection and cloud-learning tasks so their expected
-  cancellation cannot surface later as an unhandled task exception.
-- Hardened diagnostic result downloads: only the redacted shareable copy is
-  served by the signed API route; raw local results remain outside `/config/www`.
-- Fixed sensor, capability, collector-endpoint, cloud metadata, and derived
-  energy projections so they all publish from the same validated runtime
-  snapshot.
-- Fixed offline and reload startup so persisted inverter metadata creates the
-  model-specific entity set before a disconnected live refresh can replace it;
-  removed a self-waiting entity-migration timeout from the same lifecycle.
-- Fixed PI30 serial identity handling: repeated factory placeholder values stay
-  diagnostic-only, supported extended serials are read through QSID, and stale
-  serial metadata is removed instead of being exposed as device identity.
-
-### Docs
-
-- Reworked the English and Ukrainian setup guides around collector-first
-  onboarding, one bounded scan, runtime inverter detection, the current
-  connection/profile menus, and provider-neutral device-support analysis.
-- Updated the proxy capture, remote/NAT, Support Archive, collector management,
-  and release-validation guides; added a dedicated diagnostic-command safety
-  guide and an automated public-link/anchor/index check.
-
-### Migration
-
-- Existing obsolete **Pending device** config entries are removed automatically
-  during integration startup. They never owned a verified collector session or
-  endpoint, so removing them does not reconfigure the collector.
-- Existing normal collector entries require no manual migration. Their saved
-  connection strategy, endpoint, recovery proof, detected inverter, and entity
-  registry identities are retained.
-- Obsolete proxy start/stop buttons and the proxy-duration entity are removed
-  from the entity registry. Existing or interrupted captures remain recoverable
-  from **Configure → Cloud traffic tools → Capture collector traffic**.
-
-## [0.3.0-beta.2] - 2026-08-18
-
-### Added
-
-- Added a **Show discovered devices again** action to the
-  **EyeBond Local — Discovery** entry. It clears only temporary in-memory
-  discovery suppression and immediately rechecks connected, unconfigured
-  collectors without restarting Home Assistant or the collector.
-- Added a persistent **EyeBond Local — Discovery** service entry so passive
-  callback discovery remains available after all collector entries are removed
-  and across Home Assistant restarts.
-- Added model-specific support backed by protocol documents and sanitized
-  hardware evidence:
-  - **Gootu GT-H2436M14P5** — exact G-ASCII fingerprint, telemetry, and only the
-    charging-priority writes confirmed by the captured device.
-  - **Kevolt PD0080G-TPM-EU 8 kW** — exact Deye-compatible high-register
-    fingerprint and read-only three-phase, PV, battery, generator, and energy
-    telemetry.
-  - **Anenji ANJ-11KW-48V-WIFI-P** — documented Secondary Output Priority
-    read-back; writes remain conditional and appear only in Full Control until
-    hardware confirms them. Its separately confirmed Secondary Charging
-    Priority remains available.
-  - **Yingfa YF6.2K-LEL-1B** — a separate commercial model record and replay
-    evidence confirming the existing PI30 MAX runtime path.
-- Added collector-first onboarding: setup saves the identified collector, then
-  runtime detection identifies the inverter and creates its entities on the
-  owned session.
-- Added one bounded network scan that combines broadcast responses, reachable
-  local addresses, and already connected unconfigured collectors. The old
-  quick/deep split is no longer presented to users.
-
-### Changed
-
-- **Collector connection is now presented as one product-level operating
-  profile:** **Cloud + Home Assistant** keeps the vendor cloud working and asks
-  the collector to connect when needed; **Home Assistant only** verifies a
-  permanent collector connection and stops normal cloud reporting.
-- Switching profiles is a verified endpoint transaction. Home Assistant records
-  the previous cloud endpoint when it can, checks that the same collector PN
-  returns, and retains a recoverable transition state if activation is
-  interrupted.
-- Proxy capture and device learning now share one exclusive cloud-traffic
-  operation path. New operations start from **Cloud + Home Assistant**, restore
-  the original endpoint on exit, and retain explicit recovery state if restore
-  cannot be confirmed.
-- Inverter protocol selection is now a runtime concern. When more than one
-  protocol genuinely matches, the options flow offers the proven candidates
-  instead of persisting a speculative setup-time identity.
-- The legacy writable **Collector Operation Mode** is retired. Its existing
-  entity identity is retained only as a read-only operating-profile view for
-  compatibility.
-- Remote / NAT collectors are identified and owned by collector PN and exact
-  session, never by peer IP. Multiple collectors behind one router remain
-  distinct.
-
-### Fixed
-
-- PI30 polling now uses its own measured `2s` lower bound instead of inheriting
-  the generic ASCII `10s` floor. Manual recommendations use the same
-  driver-owned policy and therefore reflect the observed cycle duration.
-- Kept one passive-discovery flow alive while a short collector PN is enriched
-  to its full PN, instead of replacing the flow underneath the Home Assistant UI.
-- Fixed the failed inbound-verification and discovery-listener options steps so
-  Home Assistant no longer reports `Invalid flow specified` / `UnknownStep`.
-- Preserve the full runtime profile and controls for a previously detected,
-  high-confidence inverter when a startup catalog probe temporarily times out;
-  the saved model is resolved through one unambiguous full catalog surface and
-  remains provisional until live detection confirms it.
-- Fixed 24 V Anenji control validation so model-specific 48 V limits no longer
-  reject valid writes before the inverter can validate them.
-- Fixed duplicate placeholder inverter serials collapsing separate
-  collector-PN devices.
-- Fixed signed SMG output-power decoding and clamped negative idle noise.
-- Added the confirmed PI30 MAX `MCHGC` / `MUCHGC` charge-current controls.
-- Hardened silent callback identification, same-IP/NAT admission, cancellation,
-  ownership handoff, and recovery so stale or foreign sessions cannot be saved
-  as the selected collector.
-
-### Migration
-
-- **Existing entries are migrated automatically** to the new connection settings
-  the first time they load — no manual reconfiguration is needed.
-- **Your collector's server endpoint is not touched on upgrade.** If it pointed at
-  the vendor cloud, it still does; if it pointed at Home Assistant, it still does.
-- **Remote / NAT collectors are identified by their PN, not their IP address.**
-  Two collectors behind the same public IP stay distinct, and a collector's public
-  IP is never used as its identity.
-- If a collector's vendor app stops showing data because it was pointed at Home
-  Assistant only, use **Restore previous collector endpoint** to bring it back.
-- If anything looks wrong after the upgrade, open the integration's **Configure**
-  menu and create a **Support Archive**, then attach it to a GitHub issue.
-
-## [0.3.0-beta.1] - 2026-07-06
-
-### Added
-
-- Added a **catalog-driven generic Modbus driver**: supporting a new Modbus inverter family
-  is now a declarative device pack (identity anchors + register schema JSON) instead of a
-  Python driver. Detection uses plausibility anchors (device-type codes, rated power, value
-  envelopes) so one pack covers a whole family, and electrical variants (24 V vs 48 V) never
-  fork the map.
-- Added four inverter families from vendor protocol documents. These are
-  **datasheet-based and not yet confirmed on hardware** — telemetry should work out of the
-  box, and we would love a support package from early adopters:
-  - **Sandi Aohai FSA** (read-only telemetry).
-  - **Growatt SPF** off-grid series (telemetry + controls).
-  - **Deye single-phase LV storage hybrids** (SUN-3/3.6/5/6K-SG04LP1 class; telemetry +
-    controls). String inverters and microinverters share the wire protocol but not the
-    register meanings, so detection strictly gates on the storage device type.
-  - **Solis / Ginlong storage hybrids** speaking the ESINV energy-storage protocol
-    (read-only telemetry; the public protocol document ships without control registers).
-- Added **untested controls** as a first-class support state: controls derived only from a
-  vendor document and never corroborated by cloud evidence or hardware are hidden in the
-  default control mode and appear only when the user explicitly selects **Full control**.
-  Growatt SPF and Deye LV ship their control sets this way (priorities, charge-current limits,
-  grid/generator charge enables, and similar settings).
-- Added **model-specific control surfaces** for three EyeBond/SmartESS-collector inverters,
-  cross-referenced from cloud evidence and vendor register maps:
-  - **MUST PV/PH18** now exposes a control surface built from the SmartESS cloud
-    device-settings catalog and the vendor 1.4.15 register map — output voltage/frequency,
-    energy-use mode, grid-protection standard, charge-source priority, battery type, PV/grid/
-    combined charge-current limits, discharge current, and the battery voltage windows. The
-    20 controls the cloud exposes ship visible in the default control mode; datasheet-only
-    settings the cloud does not expose (grid charging, the battery-equalization block) stay
-    in Full control. Every control reads back its current value. Hardware write confirmation
-    is still pending a tester report, and the inverter validates its own writes (a locked or
-    absent register self-disables).
-  - **Aninerel ANL-4200T-24L-W-PRO** binds a model-specific full-control surface instead of
-    the read-only family fallback; a tester confirmed writes on hardware, so the
-    family-proven SMG settings are visible in the default control mode. Battery-voltage
-    windows are left wide because this is a 24 V unit and the family templates carry 48 V
-    windows, so the inverter's own validation is the authority.
-  - **SMG family 4200 variant** (a new SMG model) ships controls graduated from a full
-    shadow-learning run that correlated the SmartESS cloud's writes to real registers
-    (input/buzzer/LCD/boot mode, output voltage/frequency, and mains/off-grid battery
-    low-voltage protection).
-- Added a **raw AT wire-evidence probe** to support archives for `at_text` collectors: when
-  detection fails on a raw-serial ASCII collector, the archive now records a bounded PI30 and
-  G-ASCII read sweep with per-command request/response bytes, and the collector diagnostics
-  surface the raw request/response counters from the AT connection.
-- Added a **transactional inverter-link baud sweep** to the deep scan for ESP EyeBond
-  Collector bridges: when the inverter stays silent on the configured UART speed, the scan
-  walks the candidate speeds a protocol family declares, probing only the drivers expected at
-  each speed, and always restores the original speed. This finds e.g. SRNE/MUST-class units
-  on 19200 behind a bridge provisioned at 9600 (ESP32/ESP8266 bridges only; bk72xx UARTs are
-  fixed at runtime).
-- Added Modbus **input-register (FC 0x04) support** to the shared Modbus core, plus new
-  decode features packs needed: per-spec raw offset (Deye-style `(raw-1000)*0.1`
-  temperatures), low-word-first 32-bit counters, and divisor-implied precision.
-
-### Changed
-
-- Detection internals were consolidated around single owners: one anchor-matching semantic,
-  one resolution engine (the compiled decision tree), one decision-DAG walker shared by all
-  catalog probers, and one register decoder shared by SMG, SmartESS, and the generic packs.
-  Along the way a real mis-detection was fixed: integral-float signature values
-  (`220.0` vs `220`) could push a known LVYUAN unit into the read-only family fallback.
-- The deep-scan silence verdict is now grounded in transport-observed responses instead of
-  driver-reported outcomes, so "no supported device" and "device never answered" are
-  distinguished honestly.
-- Switching the control mode now reloads the config entry, so control entities that only
-  materialize at platform setup (the untested/Full-control set) appear and disappear
-  immediately instead of after a manual restart.
-- Support packages are now uniformly share-safe: every archive member masks long numeric
-  identifiers (collector PN, serial numbers) with the same rule, including identifiers
-  embedded in hex payload dumps; replay fixtures keep an anonymized twin, and the manifest
-  always references the real archive file.
-
-### Fixed
-
-- **MUST PV/PH18 battery power vs current**: register 25274 is the battery *current* (A),
-  which a third-party map mislabeled "Battery_Load"; it is now exposed as Battery Current,
-  and the vendor's actual "Batt power" register 25273 is exposed as Battery Power (W).
-- **MUST PV/PH18 control read-back**: the settings blocks were widened to gap-free register
-  ranges so the inverter no longer rejects them, and every control decodes its current value
-  (previously the wide blocks spanned absent registers and left the controls blank).
-- Pack control entities are registered enabled by default, so a device that exposes its pack
-  controls no longer needs each entity enabled by hand; the enabled-defaults self-heal
-  re-enables entities that a previous version had left disabled.
-- **ESP EyeBond Collector bridges**: the Home Assistant callback endpoint written into the
-  collector is now always the entry's own listener port (a proxy-template port could
-  previously leak into the collector and strand it), and bridge entries always resolve to the
-  framed transport profile — both at onboarding and through runtime reconciliation — fixing
-  scans that silently probed the wrong protocol after SmartESS-style metadata answers.
-  Endpoint changes pair best with esp-eybond-collector **v0.1.8**, which defers the endpoint
-  apply until the acknowledgement is flushed.
-- **Collector transport lifecycle**: a replacing collector session can no longer tear down
-  its successor (previously a live collector could "vanish" until it redialed); teardown no
-  longer inherits a dead peer's TCP timeout or a swallowed task cancellation (both could hang
-  Home Assistant shutdown); unidentified callback sockets are parked under a watcher instead
-  of lingering unwatched where a dead socket blocked same-IP routing; and the byte-shape
-  sniff defers to registered per-PN session owners.
-- **Phantom daily grid import on SMG-class hybrids**: the power-flow split now trusts the
-  charger's own PV measurement over headroom derived from an under-reading `pv_power`
-  register. A PV-only system no longer accrues fake grid-import energy.
-- Onboarding fixes from a deep review pass: the scan aggregator no longer cancels an
-  extendable deadline based on a stale snapshot, probe logs survive scan errors, a slow first
-  refresh no longer blocks entry setup, restricted re-scans no longer spend probes on
-  excluded drivers, and explicit `decimals: 0` is honored in register decoding.
-
-## [0.2.0] - 2026-07-02
-
-### Added
-
-- Added first-class support for the community **ESP EyeBond Collector** virtual bridge
-  (firmware for inverters without a factory collector). The bridge is detected from the
-  collector hardware-version token read through FC=2 parameter 6
-  (`collector_hardware_version = esp-collector/<version>/<platform...>`); detection never uses
-  the collector PN, devcode, or factory firmware-version string, and no extra AT probe is sent
-  during detection. A detected bridge is shown as an honest **ESP EyeBond Collector** device
-  (manufacturer, model, firmware version, and project link) and its cloud-only actions —
-  device learning / shadow learning, proxy capture, and cloud-assist actions — are hidden
-  unless a future firmware explicitly advertises cloud capabilities. Its collector operation
-  mode is fixed to **Home Assistant only** (the Cloud + HA choice is not shown), and reverse
-  discovery stays on so it can reconnect. Local actions (runtime settings, diagnostics, and
-  Change Collector Wi-Fi) stay fully available. Already-onboarded bridges keep working from
-  their persisted bridge identity; fresh bridge onboarding requires esp-eybond-collector
-  firmware that emits the `esp-collector/<version>/<platform...>` token.
-- Added an adaptive sensor refresh scheduler. New entries default to
-  **Automatic** refresh, where EyeBond Local chooses the next poll interval from
-  the observed device response time and protocol-specific limits; **Manual**
-  refresh keeps the existing fixed-interval behavior for upgraded entries and
-  users who want a fixed cadence.
-- Added collector diagnostics for poll mode, current/next interval, poll
-  duration, utilization, recommended interval, and scheduler delay.
-- Added poll-context diagnostics so collector-only, detection, and runtime
-  polling cycles are visible separately.
-- Added an offline device identification catalog: inverters are now identified by a
-  deterministic register fingerprint (protocol layout + model code + rated power) with explicit
-  support tiers, and the catalog — not heuristics — decides which schema and controls apply.
-- Added a detection summary step to onboarding: after the scan you see the identified model,
-  its support tier (full / partial / not recognized), and what to do next, before the device
-  is created.
-- Added canonical power-flow telemetry for the SRNE and MUST PV PH18 drivers: `pv_power`
-  (SRNE: PV1+PV2 sum, MUST: solar-charger power), signed `battery_power` (SRNE register 270,
-  MUST register 25274), and the six `*_to_*_power` flow-split sensors now populate from
-  registers these drivers already poll, so the power-flow card renders fully for both
-  families. SRNE has no grid-power register and MUST has no battery-SOC register, so those
-  two slots stay empty until the registers are identified.
-- Added a guided control-discovery wizard ("Add controls (device learning)") for partially
-  supported and unrecognized inverters: one linear flow (consent → vendor-app sign-in → progress
-  → review → apply) replaces the old technical action menu. Sessions are fail-closed: the
-  collector is always restored even when a run fails.
-- Added read-sensor learning: during a learning session the integration also captures which
-  registers the cloud reads, binds cloud sensor labels to registers by value correlation and
-  enum matching, and can apply the learned read sensors even when no controls were selected.
-- Added new supported models from community-donated captures: **Anenji 6200 (dual output)** —
-  full support including second-output telemetry (power, apparent power, load, voltage,
-  cut-off SOC, overload threshold) and an **Output 2 on/off switch** — and **Anenji 6200**
-  (single output, full support with the SMG control set).
-- Added more supported models: **Anenji ANJ-4000W-24V** (full SMG telemetry), and read-only
-  telemetry support for **MUST PV18**, **SRNE-compatible Modbus** inverters, and **LVYUAN**
-  units on the new **SmartValue / EyeBond G-ASCII** protocol. The full, always-current device
-  matrix is the generated [inverter model catalog](docs/generated/INVERTER_MODEL_CATALOG.generated.md).
-- Added collector **callback identity routing**: collector callbacks are routed by collector
-  identity (PN) instead of peer IP, so several collectors behind one router/NAT are tracked
-  separately, and a collector callback-identity diagnostic sensor surfaces the routing state.
-- Added bit-level write capabilities: controls that own a single bit of a shared register are
-  written read-modify-write, preserving the other bits (this enables the Output 2 switch).
-- Added a memory guard to learning: on memory-tight hosts the scan refuses to start
-  (`insufficient_memory`) instead of risking an out-of-memory crash.
-- Added a contribution toolchain for donated captures: contribution record builder, vetting
-  tool, and a GitHub issue template for sharing support packages.
-- Added a validation toggle (`EYBOND_FORCE_UNSUPPORTED=1` env var, or a
-  `force_unsupported.flag` sentinel file in the HA config data dir) that treats every model as
-  unsupported so the learning flow can be exercised on a fully supported device.
-- Added a developer-directed **diagnostic command runner** — the
-  `eybond_local.run_diagnostic_commands` action and an "Run diagnostic commands" options screen
-  (shown only with Home Assistant Advanced Mode) — that runs a small read/`write`/`write_bit`/
-  `ascii` scenario against the inverter over the existing collector connection, for adding or
-  debugging device support. It never changes config-entry settings, runs one scenario per entry
-  at a time, and requires an explicit `confirm_write` before any scenario that writes to the
-  device. Results are saved locally; the shareable copy has known identifiers redacted.
-
-### Changed
-
-- Deep scan is now a real extended detection path instead of a lightly longer quick scan:
-  it keeps structured evidence for each target, does not stop a target batch after the first
-  matched inverter, uses a distinct extended timeout budget, and surfaces detection timeouts
-  separately from ordinary collector-only results.
-- The deep-scan time budget is now derived from the registered drivers' own signature and
-  probe budgets instead of a hand-maintained constant that was smaller than the worst-case
-  driver sweep, and each connected target gets its own sweep deadline so one slow target
-  cannot starve the identification of another. Together these remove the main cause of
-  connected collectors finishing as "detection ran out of time".
-- Driver detection now uses the protocol metadata a collector reports (mapped through the
-  protocol catalog, not a hardcoded family list) to probe the matching local driver first.
-  Previously the probe order fell back to the registry order when the signature pre-pass
-  did not match, so a PI30-family inverter could burn most of the deep-scan budget on
-  Modbus drivers before its own driver was ever tried.
-- Deep detection now records a per-driver probe log (driver, elapsed time, outcome) into
-  the detection evidence and the created entry (`detection_probe_log`), so real
-  installations produce the data needed to validate and tune the per-driver probe budgets
-  instead of guessing.
-- The driver-choice step was made human-readable: options are now
-  "model — driver (recommended)" with the measured identification time per candidate,
-  the raw probe-route digits are gone (the device address is shown only when two
-  candidates differ by nothing else), and the summary explains that protocols can
-  differ in polling speed. Candidates show the localized driver display names
-  ("SmartESS 0925 / Modbus", "SMG / Modbus", "PI30") instead of internal keys, and the
-  missing English fallback label for the SmartESS-local driver in the driver selector
-  was added.
-- After a deep scan the repeat action is labeled "Repeat deep scan" (repeating always
-  re-ran the same scan mode, but the generic label made it look like a quick scan and
-  sent users through the advanced menu to reach deep scan again).
-- Scan targets whose probe was deliberately cancelled because another target already
-  matched are no longer reported as detection timeouts: they carry the dedicated
-  `cancelled_first_match_found` evidence status, keep what was learned about the
-  candidate, and present by their actual state (collector replied / connected) instead
-  of "detection ran out of time".
-- The scan-results screen lets you add a found device directly: the device list and the
-  follow-up actions (refresh, advanced setup) live in one selector, replacing the extra
-  "Add detected device" menu hop and its separate selection step.
-- Deep scan now starts immediately when the selected interface has a known, normally
-  sized network; the intermediate confirmation step remains only where the user has a
-  real decision to make (a large subnet, or an unknown network).
-- The deep-scan identification headroom now sits on top of the discovery budget instead
-  of sharing one ceiling with it, so scanning a /16 network (whose discovery alone takes
-  ~14 minutes) no longer consumes the identification budget.
-- Collectors owned by existing entries are now visible in the scan results as
-  "Already added" (previously the unprobed marker was filtered out of the list, so the
-  summary claimed zero configured devices).
-- The scan-results list was decluttered: the status chip is not repeated in the details
-  (no more "SmartESS hint — ... SmartESS metadata ... collector connected"), the
-  "Unconfirmed inverter" filler is gone, serial numbers are shown only when known, and
-  confidence is lowercased mid-line.
-- The deep-scan time budget now follows the discovered work instead of being fixed
-  upfront: every collector that connects and is admitted for identification extends the
-  shared scan deadline by one full driver-sweep budget (bounded by a 15-minute runaway
-  ceiling). A site with many inverters gets one sweep per collector instead of all of
-  them starving on a budget sized for one or two.
-- Scans no longer probe collectors that already belong to a configured entry: probing
-  stole the collector's callback session from the running entry and burned the shared
-  scan time budget on devices that cannot be added again anyway. Such collectors are
-  listed as "Already added" without being touched.
-- A collector that dials back in now triggers an immediate refresh when the entry is not
-  bound, instead of idling until the next scheduled poll — after failed detection cycles
-  that could be more than a minute away. Together with the next change this removes most
-  of the "one update, then unavailable for a minute" churn right after adding a device.
-- Consecutive failed refresh cycles no longer re-run the full (slow) collector AT metadata
-  sweep every time: the caches are invalidated once per outage, and collector liveness is
-  proven with the cheap framed query when available. This also stops the failed-cycle
-  duration — and therefore the retry backoff derived from it — from being inflated by our
-  own metadata reads.
-- Deep scan now keeps every successful local driver/protocol probe for the same device.
-  When one inverter responds through multiple protocols, onboarding shows a driver choice
-  step with the successful candidates instead of silently keeping only the first match.
-  Choosing an alternative keeps the full probe metadata (SmartESS details included) and
-  re-runs the confirm-time detail refresh with the chosen driver, and if the deep-scan
-  time budget runs out mid-probe the candidates found so far are kept instead of being
-  discarded with a bare timeout.
-- New entries persist detection evidence (`detection_depth`, `detection_status`,
-  `detected_probe_route`, and the candidate driver list when more than one protocol
-  matched) so the support package can explain how a device was onboarded.
-- Onboarding UX overhaul: the welcome form is gone, the happy path is decluttered, cloud
-  assist is an explicit optional choice (never an interstitial), developer tooling is
-  removed from the options flow, and long wall-of-text screens were rewritten into short
-  actionable guidance (en/ru/uk).
-- Unknown-but-SMG-family inverters now onboard at the partial tier with base read sensors and
-  a clear pointer to device learning, instead of being rejected with
-  "no supported driver matched".
-- Inverter-communication loss during detection now surfaces as "inverter link down / retry"
-  instead of a false "no supported driver matched".
-- Startup is lighter: metadata catalogs are warmed off the event loop, removing blocking file
-  reads during driver detection (matters on slow or throttled hosts).
-- The runtime settings flow now hides the fixed poll interval while Automatic
-  refresh is selected and shows it only for Manual refresh.
-- High-utilization warnings now point Manual-mode users either to a larger
-  interval or to Automatic refresh.
-- Automatic refresh no longer learns from collector-only, offline, or inverter
-  detection cycles, so a missing or unsupported inverter does not permanently
-  inflate the normal runtime poll interval.
-
-### Fixed
-
-- The poll-debugging diagnostic sensors (Poll Phase Breakdown, Refresh Phase Breakdown,
-  Slowest Driver Requests) are disabled by default — enable them per collector when
-  chasing a slow poll — and all of them live on the collector device (the refresh
-  breakdown and slow-requests sensors previously landed on the inverter device).
-- Added "Refresh Phase Breakdown" and "Slowest Driver Requests" diagnostic sensors: the
-  runtime refresh reports where its time went (collector metadata, driver detection,
-  driver read, snapshot build) and the SmartESS-local driver reports its five slowest
-  register requests per cycle with outcomes.
-- Added a "Poll Phase Breakdown" diagnostic sensor: each poll cycle reports where its
-  wall-clock time actually went (network reconcile, session profile, runtime refresh,
-  snapshot profile, endpoint reconcile), so a slow cycle is explained by a sensor read
-  instead of a packet capture.
-- The Collector Protocol Asset ID and Collector Devcode diagnostics no longer flip
-  between two values every cycle. Parameter 14 on some collectors returns a composite
-  serial-protocol config string ("02FF,0,0,#0#") — the id is now parsed from its first
-  field, and an asset id is claimed from parameter 14 only when the protocol catalog
-  knows it, so it cannot fight the asset id the bound driver reports. The devcode
-  diagnostic now shows the collector's stable heartbeat devcode instead of the devcode
-  of whatever frame happened to arrive last.
-- Whether a collector answers the AT metadata channel at all is now a learned per-device
-  fact, like unsupported inverter commands: framed collectors tunnel AT via raw
-  passthrough and only some firmwares support it, so after two evidence-gated failures
-  the channel is skipped entirely (persisted as `collector:at_metadata`, cleared by the
-  same "Re-check Supported Commands" button). Collectors where AT-over-passthrough works
-  (Wi-Fi scan, signal metadata) keep it.
-- Fixed the actual cause of the stable ~60-second poll cycles on EyeBond collectors with
-  a framed callback session: the collector AT-metadata sweep (12 commands: DTUPN, ATVER,
-  WFSS, ...) ran against an AT channel that never answers, burning a full request timeout
-  per command, and the empty result was never cached — so the sweep repeated every
-  cycle. The sweep now aborts after the first timeout (a dead AT link times out for
-  every command), and its retry cadence is keyed on attempts instead of successful
-  results. The refresh-phase diagnostic additionally splits collector metadata into its
-  framed (FC) and AT parts.
-- The SmartESS-local (Modbus) driver applies the same unsupported-command memory to its
-  register blocks: a bulk read the inverter rejects or ignores was retried every cycle
-  (block failures never marked the block as read), spending most of a ~60-second poll on
-  consecutive request timeouts while the wire carried only a few seconds of real traffic.
-  Rejected blocks and dead fallback registers are now remembered per device
-  (`block:config`, `register:5005`, ...), the capability values keep coming from the
-  cheap single-register fallbacks, and the same "Re-check Supported Commands" button
-  clears the memory.
-- The ASCII drivers (PI30, PI18, EyeBond G-ASCII) no longer re-send unsupported commands
-  on every poll cycle. On inverters that only answer the core command set, every optional
-  or energy command burned a full request timeout each cycle, turning a ~2-second poll
-  into a ~60-second poll. A command that fails twice — in cycles where the device
-  answered something else, so a link outage never counts as evidence — is marked
-  unsupported for this device permanently: the learned set is persisted into the config
-  entry (`driver_unsupported_commands`), survives restarts and reconnects, and is shown
-  as a diagnostic value. A new "Re-check Supported Commands" diagnostic button clears the
-  learned set and probes everything again (for example after an inverter firmware
-  update).
-- One collector seen through two scan sources (the configured-IP marker plus a
-  PN-carrying callback-session result) is now collapsed into a single scan line; the
-  PN-carrying duplicate wins so the line keeps the identity.
-- Collector callbacks that no config entry owns are now parked (held open passively,
-  bounded and with a TTL) instead of being closed after classification. Closing made the
-  collector firmware redial within seconds, producing a permanent connect/close loop for
-  collectors whose entry was removed; a parked callback also stays instantly claimable by
-  a scan or a newly added entry, including its already-received identity bytes.
-- A collector whose management link answers but whose inverter sends no heartbeat is no
-  longer reported as offline. The runtime now separates the two layers: collector-level
-  sensors keep updating, the state becomes `driver_unbound` with the new
-  `inverter_heartbeat_missing` code (instead of the misleading `collector_heartbeat_timeout`),
-  and a bound inverter still goes through the normal reconnect/recovery path. This fixes the
-  esp-collector bridge appearing stuck as "waiting for collector" after a power cycle even
-  though its TCP session was live.
-- Stale UDP discovery details (`collector_udp_reply`, `collector_udp_reply_from`) are now
-  dropped when the collector goes offline instead of being shown from the previous session.
-- The manual-mode high-utilization warning no longer misfires after a device outage. Cycles
-  that bound the driver or recovered the collector connection measure that recovery work,
-  not the normal poll cost, so they are now excluded from the warning streak, from the
-  poll-duration statistics (average/max/recent sensors), and from the adaptive scheduler's
-  learning samples — a device coming back online no longer inflates the reported
-  utilization or the recommended minimum interval. The warning is also dismissed
-  automatically once polling stays within the configured interval again.
-- Device learning now actually works on the partial / unrecognized tier it targets. Two
-  coupled defects made it unusable there: those devices silently inherited the full controls
-  profile (so overlay generation deduped against the wrong base), and the readiness check kept
-  reporting `missing_effective_metadata_snapshot` because that tier never persists a snapshot.
-- Changing the collector Wi-Fi no longer fails with
-  "collector_listener_bind_failed … address in use" while the entry is loaded.
-- Guided control discovery is more robust: closing the dialog mid-scan now still restores the
-  collector route (fail-closed), a single bad cloud value can no longer abort a successful run,
-  a successful-but-empty run is no longer shown as a failure, and re-running the wizard no
-  longer shows the previous run's results.
-- The Output 2 / bitmask switches no longer get permanently blocked when a transient read error
-  happens while toggling them.
-- Partially supported devices: the add flow now tells you the next step to unlock controls,
-  and the learning consent dialog is correctly translated (ru/uk).
-- Removed a harmless but noisy "Unable to remove unknown job listener" error on unload.
-- Catalog entries are validated on load (support tier and its controls-profile invariant), so a
-  malformed entry fails fast instead of silently degrading onboarding.
-- Privacy: all real device identifiers (collector PNs, serials, credentials, network details)
-  were replaced with synthetic stand-ins across tests and catalog provenance, and a guard test
-  now fails the suite if a real-looking identifier enters the source tree.
-
-### Performance
-
-- Lighter coordinator refresh on resource-constrained hosts: metadata base-name resolution is
-  cached instead of reading overlay files from disk every poll, the shadow-learning session
-  state is no longer re-read from disk every refresh, and redundant per-poll Modbus reads on
-  multi-output variants were removed.
-
-### Docs
-
-- Updated the README hardware table, device-learning guide, and setup walkthrough (en/uk) for
-  the catalog-based identification, the guided learning wizard, and the new Anenji 6200 models.
-
-## [0.2.0-beta.1] - 2026-05-12
-
-### Beta Notice
-
-- This is a prerelease for the 0.2.0 line; install it only when testing the new collector-first onboarding, local callback ownership, and collector operation mode flows.
-- Keep a Support Archive before reporting collector matching, callback ownership, proxy capture, or inverter detection issues.
-
-### Added
-
-- Added a collector-first onboarding flow with collector network choice, optional Bluetooth Wi-Fi provisioning, scan-interface selection, and clearer quick-scan / deep-scan / manual-setup branching.
-- Added separate collector device management with collector operation mode, Wi-Fi change, restart, proxy capture, and collector-scoped diagnostics.
-
-### Changed
-
-- EyeBond Local now presents collector and inverter devices as separate parts of one installation, with user-facing runtime settings centered on collector mode and control mode.
-- User-facing setup and runtime copy now explain the two everyday collector modes, `Cloud + HA` and `HA only`, in plain user terms.
-- Support artifacts now split collector, inverter, and integration roles so beta reports are easier to triage.
-
-### Fixed
-
-- Switching between `Auto` and `Full Control` now reloads the entity set correctly instead of leaving stale expert entities behind.
-- Collector callback endpoint override is available again in `Full Control`, and hidden full-control entities are cleaned up correctly when returning to safer modes.
-- Legacy EyeBond cloud endpoints now resolve with the legacy port default when only the host name is known.
-- Legacy collector signal entities are cleaned up from existing installs instead of remaining visible after their defaults changed.
-- Removed collector entries and Home Assistant Core restarts now close owner-specific callback sockets and avoid accepting orphan collector callbacks.
-- Local onboarding no longer offers cloud assist before creating a local entry, and HA-only mode applies its callback binding silently.
-
-### Docs
-
-- Updated the English README around the new onboarding flow and collector modes, added a public collector-management guide, refreshed the docs index, and replaced outdated setup screenshots.
-
-## [0.1.53] - 2026-04-25
-
-### Added
-
-- Collector diagnostics now track connection churn, dropped pending requests, disconnect reasons, and discovery restarts to make local write-path contention easier to diagnose.
-
-### Changed
-
-- Declarative SMG runtime gates now surface advisory warnings instead of locally hiding or hard-blocking controls; the inverter response and immediate readback confirmation are now the final authority for non-action writes.
-
-### Fixed
-
-- Non-action writes no longer report silent success when the refreshed value stays unchanged; EyeBond Local now raises an explicit `write_not_confirmed` error after readback.
-- Temperature sensors backed by the affected PI18 and Anenji schemas now report `°C` instead of plain `C`.
-
-### Docs
-
-- Updated the English and Ukrainian READMEs plus the SMG support matrix to describe advisory runtime warnings, explicit readback confirmation, and the new collector contention diagnostics.
-
-## [0.1.52] - 2026-04-23
-
-### Added
-
-- Added an explicit built-in `anenji_4200_protocol_1` SMG runtime path for classic protocol-1 hardware that matches the documented `device_type=0x3501`, `protocol_number=1`, and `rated_power=4200` anchors.
-- Added documented `power_flow_status` decoding for classic SMG protocol-1 layouts, exposing diagnostic connection, battery, load, and charge-source states instead of leaving the raw register uninterpreted.
-- Added documented classic protocol-1 fault/log support-capture coverage for `700..744`, so support archives retain a broader evidence window for SMG 6200 and the document-backed Anenji 4200 path.
-
-### Changed
-
-- SMG protocol-1 writable metadata is now layered through a real shared base plus model overlays, so the common path carries only the shared protocol-1 controls and presets while 6200-only extras stay model-scoped.
-- The support workflow and support-bundle markers now treat explicit but still-unverified model-specific profiles separately from the read-only SMG family fallback, keeping the new Anenji 4200 path at partial support instead of labeling it as a generic fallback.
-
-### Fixed
-
-- SMG common protocol-1 schemas and probe metadata no longer leak 6200-only diagnostics like `341..343` and `max_discharge_current_protection` into other protocol-1 variants.
-- The Anenji ANJ-11KW-48V-WIFI-P schema no longer depends on accidentally inherited low-DC measurement metadata after the SMG common/base cleanup.
-- The project-wide support overview export now includes the new built-in Anenji 4200 protocol-1 runtime profile instead of silently omitting it from release documentation.
-- Runtime control-mode labels in the options flow are now localized instead of falling back to hard-coded English labels.
-- Re-adding the verified default SMG 6200 integration now restores the tested write controls that should be enabled by default, including the equalization settings and the previously verified battery threshold controls.
-- `Sync Inverter Clock` no longer leaks into the verified default SMG 6200 runtime path; it now stays scoped to the Anenji ANJ-11KW-48V-WIFI-P model-specific tooling path.
-- Pending onboarding no longer stalls when a saved manual or pending device keeps the default broadcast discovery target as `collector_ip`; the shared listener now aliases that placeholder to the real collector callback IP.
-
-### Docs
-
-- Updated the English and Ukrainian READMEs, the SMG support matrix, and the generated support overview to describe the new Anenji 4200 protocol-1 path, the stricter SMG common-vs-model layering, the verified default SMG runtime path wording, and the current protocol-1 read coverage more accurately.
-- Expanded the English and Ukrainian READMEs and onboarding copy to explain what the Pending Device / `EyeBond Setup Pending` state means, what to expect from it, and which retry steps to use before opening a support issue.
-
-## [0.1.51] - 2026-04-18
-
-### Fixed
-
-- Anenji inverter date/time sensors no longer stay unavailable on hardware that returns valid clock registers only when the optional inverter clock range is read as one contiguous block.
-
-## [0.1.50] - 2026-04-18
-
-### Added
-
-- Added a separate deep-scan onboarding path that can probe the full selected IPv4 network from both the first setup step and the scan-results screen.
-- Added BusyBox-compatible IPv4 interface parsing for Home Assistant OS, so deep-scan network size and broadcast metadata still resolve correctly when `ip -j` is unavailable.
-- Added runtime-schema-aware entity selection for model-specific SMG variants, which restores Anenji PV1/PV2 and other variant-only entities when the detected runtime metadata differs from the generic driver defaults.
-
-### Changed
-
-- The Anenji ANJ-11KW-48V-WIFI-P model-specific write surface is now marked as tested on real hardware, so its validated controls can participate in normal high-confidence `auto` exposure.
-- The setup wizard now distinguishes quick scan from deep scan explicitly, with scan-mode-aware hints, timing estimates, and follow-up actions.
-
-### Fixed
-
-- Quick scan now stays effectively broadcast-first by removing duplicate broadcast targets and shortening reverse-connection waits when no UDP reply was received.
-- Deep scan no longer reports zero-address networks on BusyBox-based Home Assistant OS hosts and remains available from the results screen even when candidates were already found.
-- The scan progress bar now publishes its first determinate update immediately instead of briefly jumping from an indeterminate-looking state.
-
-### Docs
-
-- Updated the English and Ukrainian READMEs, SMG support docs, and generated support overview to describe deep scan, the validated Anenji control surface, and the current onboarding fallback flow more accurately.
-
-## [0.1.49] - 2026-04-17
-
-### Added
-
-- Added a dedicated SMG `family_fallback` runtime path with explicit read-only/unverified markers in the support workflow, support bundle, and exported support archive.
-- Added broader built-in Anenji ANJ-11KW-48V-WIFI-P monitoring, including PV1/PV2 telemetry, inverter date/time readback, native PV day/total counters, and a `Sync Inverter Clock` tooling button.
-- Added broader SMG read-side diagnostics for the verified default path, including `program_version`, `protocol_number`, `device_type`, `battery_type`, `warning_mask_i`, `dry_contact_mode`, and `automatic_mains_output_enabled`, with cautious hidden-by-default exposure for lower-value raw fields.
-
-### Changed
-
-- SMG writable metadata is now layered through shared family/base/default/model profiles with capability templates instead of one duplicated monolithic profile file.
-- The Anenji profile is now shipped as a real 47-capability model-specific control surface, but those writes remain intentionally untested and stay out of normal `auto` exposure.
-- Runtime metadata and support reporting now label internal runtime paths separately from commercial hardware names, so docs and exported reports are less misleading.
-- The daily grid-export helper now stays available when signed or direct export power keys are present, even if `solar_feed_to_grid_enabled` is missing.
-
-### Fixed
-
-- The default SMG binding now stays limited to verified 6200-class hardware; other SMG-like power classes fall back to the read-only family path instead of inheriting the default write surface.
-- Optional SMG probe diagnostics now backfill missing details during normal refresh, so the surviving probe-only sensors remain available after Home Assistant restarts.
-- Placeholder all-zero SMG `device_name` values are now suppressed instead of surfacing as misleading identifiers on the verified SMG 6200 path.
-- Local draft and SmartESS bridge generation now copy fully resolved profile JSON, so profile shims and layered metadata do not leak into generated local files.
-
-### Docs
-
-- Updated the README, Ukrainian README, SMG support docs, and generated runtime-profile reports to describe the verified default SMG path, the Anenji-specific path, and the read-only SMG family fallback more explicitly.
-- Release docs and CLI examples now use the changelog-first flow with version placeholders instead of stale hard-coded historical tags.
-- Removed the extra README card badge while keeping the companion card link in place.
-
-## [0.1.48] - 2026-04-17
-
-### Added
-
-- Added optional cloud assist for onboarding and diagnostics, including reusable cloud-evidence export for one collector identity.
-- Added JSON-first SmartESS protocol and model-binding catalogs plus imported SmartESS assets `0912`, `0921`, and `0925` for metadata ownership, diagnostics, and local draft tooling.
-- Added SmartESS local collector helpers for collector query/set commands, protocol-id parsing from query `14`, and known-family metadata planning.
-- Added read-only SMG model coverage and wider support-archive capture windows for Anenji ANJ-11KW-48V-WIFI-P / Protocol 3-10 devices.
-
-### Changed
-
-- `Create support archive` is now the main diagnostics flow and can include saved cloud evidence automatically or refresh it inline before the ZIP is built.
-- Runtime diagnostics, support export, and local draft tooling now resolve effective profile/register-schema ownership from saved or live SmartESS metadata hints, so imported SmartESS assets can be used before a native SmartESS runtime driver exists.
-- PI30 default metadata now uses the canonical SmartESS `0925` compatibility paths, while user-facing naming presents raw `VMII-NXPW5KW` devices as PowMr 4.2kW.
-- Advanced metadata tools now focus on raw JSON export plus SmartESS draft and bridge generation instead of duplicating routine archive and reload actions.
-
-### Fixed
-
-- Metadata cache priming now also warms catalog-driven metadata, avoiding blocking file reads when Home Assistant starts or reloads local overrides.
-- Support archives now store matching cloud evidence only once inside the ZIP under `evidence/cloud_evidence.json`.
-- Support-archive raw register capture now follows the effective schema name, so model-specific SMG evidence windows are not dropped for variant overlays.
-- External relative metadata overrides can now fall back to built-in parent profile and schema files when the local parent file is missing.
-
-### Docs
-
-- Public docs now explain cloud evidence, inline archive refresh, and the retention behavior of saved cloud-evidence files.
-- Public docs now call out PowMr 4.2kW and Sandisolar SD-HYM-4862HWP as the currently verified commercial examples for the PI30 and SMG families.
-
-## [0.1.43] - 2026-04-15
-
-### Added
-
-- First public GitHub release of EyeBond Local.
-- Built-in local support for SMG / Modbus and PI30-family collectors, plus experimental PI18 replay coverage.
-- Support Archive export workflow for unsupported or partially supported inverters.
-- SMG writable and readback coverage for registers `341`, `342`, and `343`.
-
-### Changed
-
-- Config-flow runtime copy now loads from private `flow_translations/` bundles while Home Assistant-validated translation files remain Hassfest-compatible.
-- Public release validation now passes HACS Validation, Hassfest, and the repository quality gate in GitHub Actions.
-
-### Fixed
-
-- Publication blockers around config schema exposure, manifest ordering, and unsupported translation key placement.
-
-### Docs
-
-- Public README and release metadata were aligned for the first published release.
+- **Collector metadata polling no longer sends the nearby Wi-Fi scan query
+  (`INTPARA49`).** A scan makes the dongle's radio leave its channel on every
+  metadata cycle, a plausible contributor to the `collector_disconnected` and
+  malformed-frame resets seen here. This is the same change upstream made in
+  `e5b4a2d`, taken on its own; upstream explicitly does not claim it fixes
+  connection interruptions, and neither does this fork. Connected SSID and signal
+  strength are still read, and Wi-Fi setup still scans on demand over Bluetooth.
+  The disabled-by-default **Collector Wi-Fi Scan List** diagnostic sensor remains
+  defined but no longer receives a value.
+
+---
+
+## 2026-09-26 — test suite
+
+- **Documented the test requirements.** The unit suite needs the two libraries in
+  `requirements-test.txt` (`aiohttp`, `voluptuous`); both are imported at module
+  scope by production modules the stub-based suite cannot fake. Running without
+  them left a half-initialised set of `homeassistant.*` stubs behind and produced a
+  misleading spread of order-dependent failures, none of which pointed at the
+  missing library. With both installed the suite was fully green at the time
+  (4,596 tests, 0 failures). No production code changed.
+- **Stopped the stub test harnesses leaking test doubles into real modules.**
+  `ensure_module()` only consulted `sys.modules`, so the first test to ask for a
+  not-yet-imported name installed an empty module that shadowed the real one for
+  the rest of the process. It now tries the real import first. That exposed a
+  second leak, where the coordinator harness overwrote functions on
+  `drivers.registry` and never restored them; they are now captured once and
+  restored via `addClassCleanup`. Full-suite failures went from 46 to 22 (12 of
+  the remainder were only a missing `aiohttp`), verified by diffing the failure set
+  against unmodified `main`.
+
+## 2026-09-25 — diagnostics and fork branding
+
+- **Transport-fault sensors and clearer service errors.** Added **Collector
+  Callback Wire Framing**, **Collector Last Disconnect Reason**, **Collector
+  Management Adapter** (+ provenance) and **Observed Session Protocol**
+  diagnostic sensors. Failed `eybond_local` service calls (reboot collector, set
+  endpoint, start/stop proxy capture and so on) now raise an actionable error with
+  a plain-language hint instead of a bare exception, and unsupported management
+  actions fail fast with a clear code.
+- **Disconnect reason survives a reconnect.** `last_disconnect_reason` was reset
+  to empty on every new session, which could erase the exact fault before it was
+  read. Added `retained_disconnect_reason`, set at both disconnect sites and
+  carried into the snapshot, session inventory and support bundle. `last_error`
+  and the new sensor report `none` on a healthy system instead of `unavailable`.
+  (Superseded in part by the 2026-10-08 fix above, which made the retained value
+  genuinely survive.)
+- **Recognise unwrapped Modbus RTU replies in the malformed-frame log line.**
+  This was the first sign of what the 2026-10-08 fix later addressed: header
+  failures that begin with a slave address, a read function code and a plausible
+  byte count are real RTU replies outside the EyeBond envelope, not wire
+  corruption. Diagnostics only at the time.
+- **Test-suite fixes.** Seven test modules imported helpers above the `sys.path`
+  guard meant to make that work, one detection test drove the real scan path with
+  multi-second deadlines (9 s for one test), and an unbounded `asyncio.Event` wait
+  could hang the whole suite. The suite went from hanging past 15 minutes to
+  finishing in about 3.
+- Pointed the README and changelog at this repository and named it as a fork.
+
+## 2026-09-13 — SMG 6200 firmware 7904 re-applied on upstream
+
+The original SMG 6200 work (below, July) was rebuilt on top of upstream's then-current
+`main` and extended:
+
+- Exact-fingerprint catalog entry `smg_6200_fw7904` for firmware revision 7904
+  (`model_code 0x7904`, layout 11, Aninerel / Anenji 6200 dual-output), bound to
+  the `anenji_op2_6200_full` control surface.
+- **Solar-Utility-FeedIn (SUF)** output-source-priority option (first added in July)
+  and an **Output 2 Overload** fault code in the classic SMG RS232 V1 profile and
+  register schema.
+- Hardware-tested support notes for `automatic_mains_output_enabled`,
+  `output2_cutoff_soc` and `output2_overload_threshold` on that exact
+  model and firmware, from local write testing on the real inverter.
+- Removed a dead `output_power < 0` branch and clarified a deliberately reverted
+  Output 2 fix note; regenerated the model-catalog docs.
+
+## 2026-07-13 to 2026-07-20 — where this fork started
+
+The first commits, made directly against the SMG 6200:
+
+- Added the SMG 6200 inverter entry, new Solar-Utility profiles, a
+  Solar-Utility-FeedIn output-source-priority option, and validation of output power
+  against the model's rated power limits.
+- Added tested-status and support notes for the Output 2 settings and battery SOC
+  register, and a new error code for a battery-connection fault.
+- Renamed the display name from **EyeBond Local** to **EyeBond Local SC**.
+
+---
+
+For everything before the fork point, see
+[UPSTREAM_CHANGELOG.md](UPSTREAM_CHANGELOG.md).
