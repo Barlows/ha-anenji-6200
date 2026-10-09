@@ -135,13 +135,26 @@ Assistant need to be on the same network.
 
 1. **Put the collector on your LAN** (vendor app, manual Wi-Fi setup, or Bluetooth
    Wi-Fi setup if the collector supports it).
+
+<p align="center"><img src="docs/images/setup-02-collector-network.png" alt="Collector network setup choice" width="420"></p>
+
+<p align="center"><img src="docs/images/setup-03-bluetooth-wifi.png" alt="Bluetooth Wi-Fi setup" width="420"></p>
+
 2. **Scan.** Choose the Home Assistant network interface and start a scan. If it
    finds nothing, retry, pick another interface, or enter the collector's address
    through advanced setup.
-3. **Review and confirm** the candidate ("Ready to set up", "Needs confirmation" or
-   "Check address"), then choose the refresh mode.
 
 <p align="center"><img src="docs/images/setup-02-scanning.png" alt="Scanning the local network" width="420"></p>
+
+<p align="center"><img src="docs/images/setup-04-scan-interface.png" alt="Advanced scan options" width="420"></p>
+
+<p align="center"><img src="docs/images/setup-05-scanning.png" alt="Scanning network" width="420"></p>
+
+3. **Review and confirm** the candidate ("Ready to set up", "Needs confirmation" or
+   "Check address"), then choose the refresh mode. Manual setup is there when
+   scanning is not practical.
+
+<p align="center"><img src="docs/images/setup-manual.png" alt="Manual setup" width="420"></p>
 
 The detailed walkthrough, including background discovery and manual and remote
 setup, is in [Setup and Discovery](docs/user/SETUP_AND_DISCOVERY.md) and the

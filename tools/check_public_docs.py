@@ -16,7 +16,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 ROOT_MARKDOWN = (
     REPO_ROOT / "README.md",
-    REPO_ROOT / "README.uk.md",
     REPO_ROOT / "CHANGELOG.md",
     REPO_ROOT / "CONTRIBUTING.md",
     REPO_ROOT / ".github" / "ISSUE_TEMPLATE" / "release_checklist.md",

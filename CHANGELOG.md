@@ -22,6 +22,15 @@ How to read it:
 
 ## 2026-10-09
 
+### Changed
+
+- **Documentation and bug-report links now point at this fork.** The integration's
+  `manifest.json` (`documentation` and `issue_tracker`) named upstream, so the
+  "Please create a bug report at …" line Home Assistant prints for slow entity
+  updates sent people to the wrong tracker.
+- Removed the Ukrainian README, which was a translation of upstream's README and no
+  longer matched this fork's. Upstream still has it.
+
 ### Diagnostics
 
 - **Rejected register reads now log what actually arrived.** Every Modbus read
