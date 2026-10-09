@@ -9,7 +9,7 @@ release work; they are not required to use the integration.
 
 - [Main README](../README.md) — installation, setup, connection settings, troubleshooting, and support flow
 - [Known cloud telemetry issue](../README.md#known-cloud-telemetry-issue) — cloud updates may pause while local readings continue; current status and useful support evidence
-- [Testing the unreleased main branch](../README.md#testing-the-unreleased-main-branch) — manual installation of a maintainer-requested test build
+- [Testing unreleased changes](../README.md#testing-unreleased-changes) — trying `main` before it is released; [installing a specific version](../README.md#installing-a-specific-version-rolling-back) — rolling back with HACS
 - [Setup and Discovery](user/SETUP_AND_DISCOVERY.md) — collector-first setup, scan results, address confirmation, background discovery, and manual setup
 - [Runtime Detection and Entities](user/RUNTIME_AND_INVERTER.md) — driver detection, Fast and Full protocol checks, polling, controls, and entity availability
 - [Kevolt / Deye-Compatible Advanced Controls](user/KEVOLT_DEYE_CONTROLS.md) — opt-in testing, read-back behavior, and intentionally excluded operations for the experimental 8 kW control surface
@@ -29,7 +29,7 @@ If you are extending or maintaining the project, use [../CONTRIBUTING.md](../CON
 
 - [Adding Drivers](maintainer/ADDING_DRIVERS.md) — driver structure, registration, tests, and documentation updates
 - [Validation](maintainer/VALIDATION.md) — focused tests, quality gate, and Home Assistant compatibility lanes
-- [Releasing](maintainer/RELEASING.md) — maintainer-only release preparation and publication checklist
+- [Releasing](maintainer/RELEASING.md) — how this fork cuts numbered releases, and how to roll back
 - [Issue Triage](maintainer/ISSUE_TRIAGE.md) — manual status labels, evidence requests, retest handling, and closing rules
 - [Graphify](maintainer/GRAPHIFY.md) — regenerating and querying the local architecture knowledge graph
 - [Graphify Architecture Audit](maintainer/GRAPHIFY_ARCHITECTURE_AUDIT.md) — findings and follow-up work from the current graph snapshot

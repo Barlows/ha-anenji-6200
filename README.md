@@ -86,8 +86,10 @@ inverters is inherited from upstream as-is.
 
 ## Install
 
-This fork has **no tagged releases**. HACS follows the latest commit on `main`, and
-the version it shows is that commit's short hash.
+This fork is **versioned**. Each release has a number (`1.0.0`, `1.0.1`, …), a git
+tag and a [GitHub release](https://github.com/Barlows/ha-anenji-6200/releases) with
+notes, and HACS can install any of the recent ones. What each version contains is in
+the [changelog](CHANGELOG.md).
 
 ### HACS
 
@@ -100,12 +102,34 @@ the version it shows is that commit's short hash.
 6. Go to **Settings → Devices & Services → Add Integration** and search for
    **EyeBond Local SC**.
 
-To update later, use HACS as usual and restart. The commit hash HACS shows should
-match the latest entry in the [changelog](CHANGELOG.md).
+To update later, use HACS as usual and restart. The version HACS shows should match
+the newest release in the [changelog](CHANGELOG.md).
+
+### Installing a specific version (rolling back)
+
+If a new release causes trouble, go back to the one that worked:
+
+1. Open **HACS → Integrations → EyeBond Local SC**.
+2. Menu (⋮) → **Redownload**.
+3. In the version list, choose the release you want (for example `1.0.0`) and
+   confirm. HACS lists the most recent releases only.
+4. **Restart Home Assistant.**
+
+The installed version is shown in HACS and in the integration's diagnostics. Include
+it, with a fresh [Support Archive](docs/user/SUPPORT_ARCHIVE.md), when you report a
+problem. Moving forward again is the same steps with the newer version.
+
+HACS installs the **newest release by default**, not the latest commit, so changes
+merged to `main` do not reach you until a release is cut. Pre-releases (such as
+`1.1.0-rc.1`) are hidden unless you switch on **Show beta versions** for this
+repository in HACS.
 
 ### Manual
 
-1. Download the [`main` branch archive](https://github.com/Barlows/ha-anenji-6200/archive/refs/heads/main.zip).
+1. Download the source archive of the release you want from the
+   [releases page](https://github.com/Barlows/ha-anenji-6200/releases) (or the
+   [`main` branch archive](https://github.com/Barlows/ha-anenji-6200/archive/refs/heads/main.zip)
+   for unreleased work).
 2. Copy `custom_components/eybond_local/` into `config/custom_components/`.
 3. Restart Home Assistant and add **EyeBond Local** from **Settings → Devices &
    Services**.
@@ -115,14 +139,14 @@ Keep backup copies **outside** `config/custom_components/`. Renaming an old copy
 discover its unchanged manifest and load the old code. Leave only the intended
 `eybond_local/` copy there.
 
-### Testing the unreleased `main` branch
+### Testing unreleased changes
 
-Because there are no releases, `main` *is* the build. Install it as above. If you
-are trying a specific change that has not been merged, replace the whole
-`config/custom_components/eybond_local/` directory with the one from that branch's
-archive (do not mix files from two builds) and restart.
+Merged-but-unreleased work is listed under **Unreleased** in the changelog and lives
+on `main`. To try it, redownload in HACS and pick the `main` branch from the version
+list, or replace the whole `config/custom_components/eybond_local/` directory with
+the one from the branch archive (do not mix files from two builds) and restart.
 
-When reporting a result, include the commit hash and a fresh
+When reporting a result, include the version and commit hash and a fresh
 [Support Archive](docs/user/SUPPORT_ARCHIVE.md).
 
 ---
@@ -301,7 +325,9 @@ Everything below is upstream functionality that this fork carries unchanged:
   two libraries in the requirements file are not optional: leaving them out gives a
   confusing spread of order-dependent failures rather than a clean error.
 - **Changes** come in as pull requests against `main`, each with a changelog entry
-  that names the PR and commit.
+  under **Unreleased** that names the PR. A release is cut deliberately from `main`:
+  version bump, changelog section, tag, GitHub release. The steps are in
+  [Releasing](docs/maintainer/RELEASING.md).
 - **Upstream.** Upstream changes are pulled in deliberately, not automatically.
   Its changelog goes into [UPSTREAM_CHANGELOG.md](UPSTREAM_CHANGELOG.md); this fork's
   own changes stay in [CHANGELOG.md](CHANGELOG.md).
