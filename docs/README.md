@@ -23,8 +23,6 @@ release work; they are not required to use the integration.
 - [Interface Screenshot Guide](user/INTERFACE_SCREENSHOTS.md) — examples from current and earlier interfaces, with notes about controls that moved
 - [ESP EyeBond Collector](https://github.com/groove-max/esp-eybond-collector) — community firmware bridge for inverters without a factory collector (detected and supported automatically; see [Collector Management](user/COLLECTOR_MANAGEMENT.md#virtual-bridge-collectors))
 
-Ukrainian readers can also use the [Ukrainian README](../README.uk.md).
-
 ## Contributing and maintenance
 
 If you are extending or maintaining the project, use [../CONTRIBUTING.md](../CONTRIBUTING.md).

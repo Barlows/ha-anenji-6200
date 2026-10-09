@@ -8,10 +8,10 @@
   "dependencies": [
     "http"
   ],
-  "documentation": "https://github.com/groove-max/ha-eybond-local",
+  "documentation": "https://github.com/Barlows/ha-anenji-6200",
   "integration_type": "device",
   "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/groove-max/ha-eybond-local/issues",
+  "issue_tracker": "https://github.com/Barlows/ha-anenji-6200/issues",
   "requirements": [
     "bleak>=0.22.3"
   ],
