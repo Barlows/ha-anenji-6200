@@ -316,6 +316,55 @@ def recover_read_reply_tail(
     return tail
 
 
+def is_read_reply_prefix(
+    frame: bytes,
+    *,
+    slave_id: int,
+    count: int,
+    function: int = 0x03,
+) -> bool:
+    """Return whether ``frame`` is the START of a read reply that is cut short.
+
+    True only for a non-empty strict prefix of the reply layout this read expects:
+    the bytes present agree with the right slave, function and byte count, and
+    there are fewer of them than a complete reply needs.
+    """
+
+    if function not in (0x03, 0x04) or count <= 0:
+        return False
+    expected_length = 3 + count * 2 + 2
+    if not 3 <= len(frame) < expected_length:
+        return False
+    return frame[0] == slave_id and frame[1] == function and frame[2] == count * 2
+
+
+def reassemble_split_read_reply(
+    prefix: bytes,
+    continuation: bytes,
+    *,
+    slave_id: int,
+    count: int,
+    function: int = 0x03,
+) -> bytes | None:
+    """Join a cut-short read reply with the bytes that completed it, if they fit.
+
+    Field-observed: the collector returned the first 20 bytes of a 25- or 29-byte
+    reply, and answered the retry with only the missing trailing 5 or 9 bytes
+    (``000000a367``). Joined, the two are exactly the complete reply. The result is
+    accepted only when ``prefix`` is a genuine prefix for this read, the joined
+    length is exactly the expected one, and the Modbus CRC verifies.
+    """
+
+    if not is_read_reply_prefix(prefix, slave_id=slave_id, count=count, function=function):
+        return None
+    joined = prefix + continuation
+    if len(joined) != 3 + count * 2 + 2:
+        return None
+    if int.from_bytes(joined[-2:], "little") != crc16_modbus(joined[:-2]):
+        return None
+    return joined
+
+
 def parse_write_single_response(
     frame: bytes,
     *,
@@ -432,6 +481,38 @@ class ModbusSession:
             payload_family="modbus_rtu",
         )
 
+    def _note_recovered_read(
+        self,
+        message: str,
+        message_args: tuple[int, ...],
+        *,
+        function: int,
+        address: int,
+        count: int,
+        attempt: int,
+        detail: str,
+    ) -> None:
+        """Count a recovered read and log it (INFO for the first and every 25th)."""
+
+        self.recovered_read_count += 1
+        log = (
+            _logger.info
+            if self.recovered_read_count == 1 or self.recovered_read_count % 25 == 0
+            else _logger.debug
+        )
+        log(
+            message + ": function=%d slave=%d address=%d count=%d attempt=%d "
+            "bytes=%s recovered_total=%d",
+            *message_args,
+            function,
+            self._slave_id,
+            address,
+            count,
+            attempt,
+            detail,
+            self.recovered_read_count,
+        )
+
     async def read_registers(
         self,
         address: int,
@@ -443,6 +524,7 @@ class ModbusSession:
 
         request = build_read_request(self._slave_id, address, count, function=function)
         last_error: ModbusError | None = None
+        held_prefix: bytes | None = None
         for attempt in range(2):
             try:
                 response = await async_send_payload(
@@ -473,25 +555,14 @@ class ModbusSession:
                 if tail is not None:
                     # Leftover bytes of an earlier truncated reply preceded this
                     # request's own, CRC-verified reply: use it, no retry needed.
-                    self.recovered_read_count += 1
-                    _log = (
-                        _logger.info
-                        if self.recovered_read_count == 1
-                        or self.recovered_read_count % 25 == 0
-                        else _logger.debug
-                    )
-                    _log(
-                        "Recovered Modbus read reply behind %d leftover byte(s): "
-                        "function=%d slave=%d address=%d count=%d attempt=%d "
-                        "leftover=%s recovered_total=%d",
-                        len(response) - len(tail),
-                        function,
-                        self._slave_id,
-                        address,
-                        count,
-                        attempt + 1,
-                        response[: len(response) - len(tail)][:16].hex(),
-                        self.recovered_read_count,
+                    self._note_recovered_read(
+                        "Recovered Modbus read reply behind %d leftover byte(s)",
+                        (len(response) - len(tail),),
+                        function=function,
+                        address=address,
+                        count=count,
+                        attempt=attempt + 1,
+                        detail=response[: len(response) - len(tail)][:16].hex(),
                     )
                     return parse_read_registers_response(
                         tail,
@@ -499,6 +570,36 @@ class ModbusSession:
                         count=count,
                         function=function,
                     )
+                if held_prefix is not None:
+                    joined = reassemble_split_read_reply(
+                        held_prefix,
+                        response,
+                        slave_id=self._slave_id,
+                        count=count,
+                        function=function,
+                    )
+                    if joined is not None:
+                        # The first answer was cut short and this one carries
+                        # exactly the missing tail: together a verified reply.
+                        self._note_recovered_read(
+                            "Reassembled split Modbus read reply from %d + %d byte(s)",
+                            (len(held_prefix), len(response)),
+                            function=function,
+                            address=address,
+                            count=count,
+                            attempt=attempt + 1,
+                            detail=held_prefix[:8].hex() + "+" + response[:8].hex(),
+                        )
+                        return parse_read_registers_response(
+                            joined,
+                            slave_id=self._slave_id,
+                            count=count,
+                            function=function,
+                        )
+                if is_read_reply_prefix(
+                    response, slave_id=self._slave_id, count=count, function=function
+                ):
+                    held_prefix = response
                 last_error = exc
                 # Field diagnostics: the error text alone (``unexpected_slave_id:0``)
                 # cannot show what actually arrived in the poll's slot.

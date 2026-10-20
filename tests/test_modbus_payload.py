@@ -15,6 +15,8 @@ from custom_components.eybond_local.payload.modbus import (
     ModbusError,
     ModbusSession,
     crc16_modbus,
+    is_read_reply_prefix,
+    reassemble_split_read_reply,
     recover_read_reply_tail,
     merge_register_bit,
     merge_register_field,
@@ -219,6 +221,102 @@ class ModbusPayloadTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ModbusError):
             await session.read_holding(100, 10)
         self.assertEqual(session.recovered_read_count, 0)
+
+
+    async def test_cut_short_reply_completed_by_the_leftover_only_retry(self) -> None:
+        # Byte-for-byte from the real unit (2026-10-20 14:54): a 25-byte read of
+        # ten zero registers came back as its first 20 bytes, and the retry as the
+        # missing last five (``000000a367``). Together they are the full reply.
+        first = bytes.fromhex("0103140000000000000000000000000000000000")
+        rest = bytes.fromhex("000000a367")
+        transport = _ScriptedTransport(first, rest)
+        session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
+
+        with self.assertLogs(
+            "custom_components.eybond_local.payload.modbus", level="INFO"
+        ) as captured:
+            values = await session.read_holding(100, 10)
+
+        self.assertEqual(values, [0] * 10)
+        self.assertEqual(transport.calls, 2)
+        self.assertEqual(session.recovered_read_count, 1)
+        self.assertIn(
+            "Reassembled split Modbus read reply from 20 + 5 byte(s)",
+            "\n".join(captured.output),
+        )
+
+    async def test_twelve_register_read_split_20_and_9(self) -> None:
+        full = _full_read_reply(1, 3, [0] * 12)
+        self.assertEqual(len(full), 29)
+        transport = _ScriptedTransport(full[:20], full[20:])
+        session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
+
+        self.assertEqual(await session.read_holding(172, 12), [0] * 12)
+        self.assertEqual(transport.calls, 2)
+
+    async def test_split_reply_with_non_matching_continuation_still_fails(self) -> None:
+        full = _full_read_reply(1, 3, [5] * 10)
+        bad_rest = bytearray(full[20:])
+        bad_rest[0] ^= 0xFF  # corrupted data: CRC over the joined reply fails
+        transport = _ScriptedTransport(full[:20], bytes(bad_rest))
+        session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
+
+        with self.assertRaises(ModbusError):
+            await session.read_holding(100, 10)
+        self.assertEqual(session.recovered_read_count, 0)
+
+    async def test_continuation_of_the_wrong_length_is_not_joined(self) -> None:
+        full = _full_read_reply(1, 3, [5] * 10)
+        transport = _ScriptedTransport(full[:20], full[20:] + b"\x00")
+        session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
+
+        with self.assertRaises(ModbusError):
+            await session.read_holding(100, 10)
+        self.assertEqual(session.recovered_read_count, 0)
+
+    async def test_prefix_is_not_held_across_separate_reads(self) -> None:
+        # A cut-short answer from one read must never complete a different read.
+        full = _full_read_reply(1, 3, [5] * 10)
+        transport = _ScriptedTransport(
+            full[:20], b"\x00" * 7,  # first read: prefix, then junk -> fails
+            full[20:], full[20:],  # second read: lone tail twice -> must fail
+        )
+        session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
+
+        with self.assertRaises(ModbusError):
+            await session.read_holding(100, 10)
+        with self.assertRaises(ModbusError):
+            await session.read_holding(100, 10)
+        self.assertEqual(session.recovered_read_count, 0)
+
+
+class SplitReadReplyHelperTests(unittest.TestCase):
+    def test_prefix_detection(self) -> None:
+        full = _full_read_reply(1, 3, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+        self.assertTrue(is_read_reply_prefix(full[:20], slave_id=1, count=10))
+        self.assertTrue(is_read_reply_prefix(full[:3], slave_id=1, count=10))
+        self.assertFalse(is_read_reply_prefix(full[:2], slave_id=1, count=10))
+        self.assertFalse(is_read_reply_prefix(full, slave_id=1, count=10))
+        self.assertFalse(is_read_reply_prefix(full[:20], slave_id=2, count=10))
+        self.assertFalse(is_read_reply_prefix(full[:20], slave_id=1, count=9))
+        self.assertFalse(
+            is_read_reply_prefix(full[:20], slave_id=1, count=10, function=0x04)
+        )
+
+    def test_reassembly_requires_exact_length_and_crc(self) -> None:
+        full = _full_read_reply(1, 3, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+        self.assertEqual(
+            reassemble_split_read_reply(full[:20], full[20:], slave_id=1, count=10), full
+        )
+        self.assertIsNone(
+            reassemble_split_read_reply(full[:20], full[20:-1], slave_id=1, count=10)
+        )
+        self.assertIsNone(
+            reassemble_split_read_reply(full[:19], full[20:], slave_id=1, count=10)
+        )
+        self.assertIsNone(
+            reassemble_split_read_reply(b"\x09" + full[1:20], full[20:], slave_id=1, count=10)
+        )
 
 
 class RecoverReadReplyTailTests(unittest.TestCase):
