@@ -31,6 +31,36 @@ How to read it:
 
 Nothing yet.
 
+## [1.0.1] - 2026-10-20
+
+Targets the failed polls that remained after 1.0.0. Tested against reconstructions
+of the byte patterns captured on the real unit; **not yet confirmed on the unit**.
+The sign it is working is the new `Recovered Modbus read reply` log line and fewer
+`Runtime refresh failed` warnings.
+
+### Fixed
+
+- **A register read now recovers when the collector hands back leftover bytes in
+  front of the real reply.** The raw-byte logging added in 1.0.0 showed what was
+  behind the `unexpected_slave_id:0`, `unexpected_function:0` and
+  `unexpected_length:*` failures. The collector sometimes returns only the first
+  20, 40 or 80 bytes of an inverter reply. The rest then arrives at the front of
+  the **next** request's answer, followed by that request's own complete reply: a
+  113-byte read came back as 33 + 113 = 146 bytes, 73 + 113 = 186 and 93 + 113 =
+  206, and in every captured case the leftover ended in the correct Modbus
+  checksum. Judged by its first bytes the answer looked like a wrong slave or
+  function, so the retry failed too and the whole refresh was lost. A read now also
+  accepts a reply that sits at the **end** of an over-long answer, but only when
+  that tail has exactly the length for this read, the right slave, function and byte
+  count, **and a verifying Modbus CRC**. Anything else is rejected and retried as
+  before. Overnight on 14 October, 7 refreshes failed this way in about 3.5 hours.
+
+### Diagnostics
+
+- A recovered read logs `Recovered Modbus read reply behind N leftover byte(s)`,
+  at INFO for the first one and every 25th (DEBUG otherwise), with the leftover's
+  first bytes, the register address and count, and a running total for the session.
+
 ## [1.0.0] - 2026-10-09
 
 The first versioned release. It is the state of the fork after the work that ended
@@ -296,5 +326,6 @@ The first commits, made directly against the SMG 6200:
 For everything before the fork point, see
 [UPSTREAM_CHANGELOG.md](UPSTREAM_CHANGELOG.md).
 
-[Unreleased]: https://github.com/Barlows/ha-anenji-6200/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/Barlows/ha-anenji-6200/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/Barlows/ha-anenji-6200/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Barlows/ha-anenji-6200/releases/tag/v1.0.0

@@ -46,8 +46,8 @@ Measured on the real unit, comparing before and after:
 
 The full story, with the log lines that identified each cause, is in the
 [changelog](CHANGELOG.md#2026-10-08-ending-the-collector-reset-cycle). It is
-honest about what is not fixed: roughly one failed poll every couple of hours
-remains, and the dongle's Wi-Fi occasionally resets the connection on its own.
+honest about what is not fixed: occasional failed polls remained after that fix
+(version 1.0.1 targets them), and the dongle's Wi-Fi occasionally resets the connection on its own.
 
 ---
 
@@ -224,10 +224,13 @@ When something closes the session, the retained reason says why:
 
 - `Updating state for number.… took 0.7 seconds` — slow, harmless, and not a bug in
   this fork. (The link it prints points at upstream's issue tracker.)
-- An occasional `Runtime refresh failed: unexpected_slave_id:0` or
-  `unexpected_function:0` — one poll lost to a stray reply, retried once, and the
-  next poll succeeds. The new `Modbus read answer rejected: … bytes=…` line shows
-  exactly what arrived if you want to look closer.
+- An occasional `Modbus read answer rejected: unexpected_length:20 …` (or
+  `unexpected_slave_id:0` / `unexpected_function:0`) — the collector returned only
+  the start of an inverter reply. The read is retried once, and since 1.0.1 a retry
+  that arrives with leftover bytes in front of a good reply is recovered, logged as
+  `Recovered Modbus read reply behind N leftover byte(s)`. Only a
+  `Runtime refresh failed` line means a poll was actually lost. The `bytes=…` in the
+  rejection line shows exactly what arrived if you want to look closer.
 
 ---
 
