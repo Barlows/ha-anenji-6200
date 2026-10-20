@@ -281,6 +281,41 @@ def parse_read_holding_response(frame: bytes, *, slave_id: int, count: int) -> l
     )
 
 
+def recover_read_reply_tail(
+    frame: bytes,
+    *,
+    slave_id: int,
+    count: int,
+    function: int = 0x03,
+) -> bytes | None:
+    """Return the complete reply at the END of an over-long answer, if there is one.
+
+    Field-observed on EyeBond collectors: the collector sometimes hands back only
+    the first 20/40/80 bytes of an inverter reply. The rest of those bytes then
+    arrive at the front of the NEXT request's answer, ahead of that request's own
+    complete reply (for example a 113-byte read answered by ``33 leftover bytes +
+    the full 113-byte reply = 146``). Judged by its first bytes such an answer
+    looks like a wrong slave id or function, although the reply the caller asked
+    for is intact at the end.
+
+    The tail is only accepted when it has the exact length for this read, the
+    right slave, function and byte count, AND a verifying Modbus CRC, so leftover
+    bytes can never be mistaken for data.
+    """
+
+    if function not in (0x03, 0x04) or count <= 0:
+        return None
+    expected_length = 3 + count * 2 + 2
+    if len(frame) <= expected_length:
+        return None
+    tail = frame[-expected_length:]
+    if tail[0] != slave_id or tail[1] != function or tail[2] != count * 2:
+        return None
+    if int.from_bytes(tail[-2:], "little") != crc16_modbus(tail[:-2]):
+        return None
+    return tail
+
+
 def parse_write_single_response(
     frame: bytes,
     *,
@@ -381,6 +416,7 @@ class ModbusSession:
             )
         self._route = route
         self._slave_id = slave_id
+        self.recovered_read_count = 0
 
     def _selected_route(self) -> LinkRoute:
         """Resolve the logical Modbus target through the active link adapter.
@@ -428,6 +464,41 @@ class ModbusSession:
                     function=function,
                 )
             except ModbusError as exc:
+                tail = recover_read_reply_tail(
+                    response,
+                    slave_id=self._slave_id,
+                    count=count,
+                    function=function,
+                )
+                if tail is not None:
+                    # Leftover bytes of an earlier truncated reply preceded this
+                    # request's own, CRC-verified reply: use it, no retry needed.
+                    self.recovered_read_count += 1
+                    _log = (
+                        _logger.info
+                        if self.recovered_read_count == 1
+                        or self.recovered_read_count % 25 == 0
+                        else _logger.debug
+                    )
+                    _log(
+                        "Recovered Modbus read reply behind %d leftover byte(s): "
+                        "function=%d slave=%d address=%d count=%d attempt=%d "
+                        "leftover=%s recovered_total=%d",
+                        len(response) - len(tail),
+                        function,
+                        self._slave_id,
+                        address,
+                        count,
+                        attempt + 1,
+                        response[: len(response) - len(tail)][:16].hex(),
+                        self.recovered_read_count,
+                    )
+                    return parse_read_registers_response(
+                        tail,
+                        slave_id=self._slave_id,
+                        count=count,
+                        function=function,
+                    )
                 last_error = exc
                 # Field diagnostics: the error text alone (``unexpected_slave_id:0``)
                 # cannot show what actually arrived in the poll's slot.

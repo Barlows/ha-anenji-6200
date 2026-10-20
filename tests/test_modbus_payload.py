@@ -15,6 +15,7 @@ from custom_components.eybond_local.payload.modbus import (
     ModbusError,
     ModbusSession,
     crc16_modbus,
+    recover_read_reply_tail,
     merge_register_bit,
     merge_register_field,
 )
@@ -46,6 +47,14 @@ class _RawSerialSelectingTransport:
 
 def _read_reply(slave: int, function: int, value: int = 0x7300) -> bytes:
     frame = bytearray((slave, function, 2, value >> 8, value & 0xFF))
+    frame.extend(crc16_modbus(frame).to_bytes(2, "little"))
+    return bytes(frame)
+
+
+def _full_read_reply(slave: int, function: int, values: list[int]) -> bytes:
+    frame = bytearray((slave, function, len(values) * 2))
+    for value in values:
+        frame.extend(value.to_bytes(2, "big"))
     frame.extend(crc16_modbus(frame).to_bytes(2, "little"))
     return bytes(frame)
 
@@ -149,6 +158,102 @@ class ModbusPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             transport.routes,
             [RawSerialLinkRoute(protocol="modbus_rtu")],
+        )
+
+
+    async def test_truncated_reply_then_leftover_plus_full_reply_is_recovered(self) -> None:
+        # Field-observed (SMG 6200, 54-register read = 113-byte reply): the
+        # collector returned only the first 20/40/80 bytes, and the retry came back
+        # as the leftover bytes followed by the complete next reply
+        # (33+113=146, 73+113=186, 93+113=206). Without recovery every such read
+        # failed the whole refresh with ``unexpected_slave_id:0`` / ``unexpected_function:0``.
+        first = _full_read_reply(1, 3, list(range(54)))
+        second_values = [(i * 7) & 0xFFFF for i in range(54)]
+        second = _full_read_reply(1, 3, second_values)
+        self.assertEqual(len(first), 113)
+        for cut in (20, 40, 80):
+            transport = _ScriptedTransport(first[:cut], first[cut:] + second)
+            session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
+
+            with self.assertLogs(
+                "custom_components.eybond_local.payload.modbus", level="INFO"
+            ) as captured:
+                values = await session.read_holding(300, 54)
+
+            self.assertEqual(values, second_values, f"cut={cut}")
+            self.assertEqual(transport.calls, 2)
+            self.assertEqual(session.recovered_read_count, 1)
+            self.assertIn(
+                f"Recovered Modbus read reply behind {113 - cut} leftover",
+                "\n".join(captured.output),
+            )
+
+    async def test_recovery_works_on_the_first_attempt_too(self) -> None:
+        previous = _full_read_reply(1, 3, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+        current_values = [100 + i for i in range(10)]
+        current = _full_read_reply(1, 3, current_values)
+        transport = _ScriptedTransport(previous[20:] + current)
+        session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
+
+        self.assertEqual(await session.read_holding(100, 10), current_values)
+        self.assertEqual(transport.calls, 1)
+
+    async def test_tail_with_bad_crc_is_not_recovered(self) -> None:
+        previous = _full_read_reply(1, 3, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+        current = bytearray(_full_read_reply(1, 3, [0] * 10))
+        current[5] ^= 0xFF  # corrupt a data byte: CRC no longer verifies
+        transport = _ScriptedTransport(
+            previous[20:] + bytes(current), previous[20:] + bytes(current)
+        )
+        session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
+
+        with self.assertRaises(ModbusError):
+            await session.read_holding(100, 10)
+        self.assertEqual(session.recovered_read_count, 0)
+
+    async def test_tail_for_a_different_slave_is_not_recovered(self) -> None:
+        other = _full_read_reply(7, 3, [0] * 10)
+        transport = _ScriptedTransport(b"\x00\x01\x02" + other, b"\x00\x01\x02" + other)
+        session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
+
+        with self.assertRaises(ModbusError):
+            await session.read_holding(100, 10)
+        self.assertEqual(session.recovered_read_count, 0)
+
+
+class RecoverReadReplyTailTests(unittest.TestCase):
+    def test_returns_none_when_not_longer_than_a_reply(self) -> None:
+        reply = _full_read_reply(1, 3, [1, 2])
+        self.assertIsNone(recover_read_reply_tail(reply, slave_id=1, count=2))
+        self.assertIsNone(recover_read_reply_tail(reply[:-1], slave_id=1, count=2))
+
+    def test_returns_the_trailing_reply(self) -> None:
+        reply = _full_read_reply(1, 3, [1, 2])
+        self.assertEqual(
+            recover_read_reply_tail(b"\xde\xad" + reply, slave_id=1, count=2), reply
+        )
+
+    def test_requires_slave_function_and_byte_count_to_match(self) -> None:
+        reply = _full_read_reply(1, 3, [1, 2])
+        junk = b"\x00\x00\x00"
+        self.assertIsNone(recover_read_reply_tail(junk + reply, slave_id=2, count=2))
+        self.assertIsNone(
+            recover_read_reply_tail(junk + reply, slave_id=1, count=2, function=0x04)
+        )
+        self.assertIsNone(recover_read_reply_tail(junk + reply, slave_id=1, count=3))
+
+    def test_input_register_replies_are_recovered_too(self) -> None:
+        reply = _full_read_reply(1, 4, [9])
+        self.assertEqual(
+            recover_read_reply_tail(b"\x01" + reply, slave_id=1, count=1, function=0x04),
+            reply,
+        )
+
+    def test_unsupported_function_or_count_returns_none(self) -> None:
+        reply = _full_read_reply(1, 3, [1])
+        self.assertIsNone(recover_read_reply_tail(b"\x00" + reply, slave_id=1, count=0))
+        self.assertIsNone(
+            recover_read_reply_tail(b"\x00" + reply, slave_id=1, count=1, function=0x06)
         )
 
 
