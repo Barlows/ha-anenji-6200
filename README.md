@@ -47,7 +47,7 @@ Measured on the real unit, comparing before and after:
 The full story, with the log lines that identified each cause, is in the
 [changelog](CHANGELOG.md#2026-10-08-ending-the-collector-reset-cycle). It is
 honest about what is not fixed: occasional failed polls remained after that fix
-(version 1.0.1 targets them), and the dongle's Wi-Fi occasionally resets the connection on its own.
+(versions 1.0.1 and 1.0.2 target them), and the dongle's Wi-Fi occasionally resets the connection on its own.
 
 ---
 
@@ -226,9 +226,10 @@ When something closes the session, the retained reason says why:
   this fork. (The link it prints points at upstream's issue tracker.)
 - An occasional `Modbus read answer rejected: unexpected_length:20 …` (or
   `unexpected_slave_id:0` / `unexpected_function:0`) — the collector returned only
-  the start of an inverter reply. The read is retried once, and since 1.0.1 a retry
-  that arrives with leftover bytes in front of a good reply is recovered, logged as
-  `Recovered Modbus read reply behind N leftover byte(s)`. Only a
+  the start of an inverter reply. The read is retried once, and since 1.0.1/1.0.2 the
+  retry is recovered when it carries either leftover bytes in front of a good reply
+  or just the missing tail, logged as `Recovered Modbus read reply behind N
+  leftover byte(s)` or `Reassembled split Modbus read reply`. Only a
   `Runtime refresh failed` line means a poll was actually lost. The `bytes=…` in the
   rejection line shows exactly what arrived if you want to look closer.
 

@@ -31,6 +31,36 @@ How to read it:
 
 Nothing yet.
 
+## [1.0.2] - 2026-10-20
+
+Completes the 1.0.1 fix. Within minutes of 1.0.1 being installed, the first failed
+poll showed a second shape of the same collector fault, which 1.0.1 did not cover.
+Tested against the exact bytes from that log line; **not yet confirmed over a long
+run on the unit**.
+
+### Fixed
+
+- **A read cut short by the collector is now completed by the bytes that follow.**
+  Besides "leftover + the next full reply" (fixed in 1.0.1), the collector often
+  answers the retry with **only** the missing tail of the first reply. A 25-byte
+  read came back as its first 20 bytes (`01031400…`) and then as `000000a367`; the
+  29-byte read of 12 registers as 20 + 9 bytes. Joined, each pair is exactly the
+  complete reply, but alone neither passed, so the refresh was lost
+  (`Runtime refresh failed: unexpected_slave_id:0`). A short first answer that is a
+  genuine start of the expected reply (right slave, function and byte count) is now
+  held for that one read, and the retry's answer is appended to it. The joined
+  reply is used only if it has exactly the expected length **and a verifying Modbus
+  CRC**. Nothing is carried from one read to another.
+
+### Diagnostics
+
+- A reassembled read logs `Reassembled split Modbus read reply from N + M byte(s)`
+  on the same schedule as 1.0.1's recovery line (INFO for the first and every 25th),
+  and both kinds share one per-session counter.
+- The first, cut-short answer is still logged as `Modbus read answer rejected`
+  before it is completed, so a recovered read still shows one rejected-answer
+  warning. Only `Runtime refresh failed` means a poll was actually lost.
+
 ## [1.0.1] - 2026-10-20
 
 Targets the failed polls that remained after 1.0.0. Tested against reconstructions
@@ -326,6 +356,7 @@ The first commits, made directly against the SMG 6200:
 For everything before the fork point, see
 [UPSTREAM_CHANGELOG.md](UPSTREAM_CHANGELOG.md).
 
-[Unreleased]: https://github.com/Barlows/ha-anenji-6200/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/Barlows/ha-anenji-6200/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/Barlows/ha-anenji-6200/releases/tag/v1.0.2
 [1.0.1]: https://github.com/Barlows/ha-anenji-6200/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Barlows/ha-anenji-6200/releases/tag/v1.0.0
