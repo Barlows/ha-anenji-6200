@@ -5068,20 +5068,51 @@ class TransportLifecycleHardeningTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(info.stray_rtu_reply_count, 0)
         self.assertEqual(info.last_disconnect_reason, "collector_frame_payload_timeout")
 
-    async def test_truncated_header_shaped_reply_closes_with_a_payload_timeout(self) -> None:
+    async def _run_cut_off_stray_then_real_frame(
+        self, cut_off: bytes, *, then: bytes, tid: int
+    ) -> tuple[_CollectorConnection, asyncio.Future, list[str]]:
+        """Feed a cut-off bare reply, let the reader give up on it, then feed ``then``."""
+
         connection = self._framed_connection()
+        real = self._expect_reply(connection, tid)
         reader = asyncio.StreamReader()
-        reader.feed_data(self._header_shaped_rtu_reply()[:40])
+        reader.feed_data(cut_off)
 
-        with patch(
-            "custom_components.eybond_local.collector.transport.connections._FRAMED_HEADER_COMPLETION_TIMEOUT",
-            0.05,
+        with (
+            patch(
+                "custom_components.eybond_local.collector.transport.connections._FRAMED_HEADER_COMPLETION_TIMEOUT",
+                0.05,
+            ),
+            self.assertLogs(
+                "custom_components.eybond_local.collector.transport.connections",
+                level="WARNING",
+            ) as captured,
         ):
-            await asyncio.wait_for(connection._read_loop(reader), timeout=2.0)
+            task = asyncio.create_task(connection._read_loop(reader))
+            await asyncio.sleep(0.3)  # header timeout (0.05s) plus the drain gap
+            reader.feed_data(then)
+            await asyncio.sleep(0.1)
+            reader.feed_eof()
+            await asyncio.wait_for(task, timeout=2.0)
+        return connection, real, captured.output
 
+    async def test_truncated_header_shaped_reply_is_skipped_not_fatal(self) -> None:
+        # The collector began one of its bare replies (here the header-shaped 88-byte
+        # one) and went quiet. The session used to close with a payload timeout;
+        # the cut-off bytes are now dropped and the next real frame is delivered.
+        connection, real, logs = await self._run_cut_off_stray_then_real_frame(
+            self._header_shaped_rtu_reply()[:40],
+            then=self._wrapped_reply(41, b"real-after-cutoff"),
+            tid=41,
+        )
+
+        self.assertEqual((await asyncio.wait_for(real, 1.0))[1], b"real-after-cutoff")
         info = connection.collector_info
-        self.assertEqual(info.stray_rtu_reply_count, 0)
-        self.assertEqual(info.last_disconnect_reason, "collector_frame_payload_timeout")
+        self.assertEqual(info.stray_rtu_reply_count, 0)  # not CRC-verified, so not counted
+        self.assertEqual(info.last_disconnect_reason, "collector_eof")
+        joined = "\n".join(logs)
+        self.assertIn("Skipped a cut-off unwrapped Modbus RTU reply", joined)
+        self.assertIn("expected=93 arrived=40", joined)
 
     async def test_genuine_frame_starting_like_a_reply_is_delivered_intact(self) -> None:
         # tid 0x0103 and a devcode whose high byte is 0x58 open exactly like an
@@ -5151,20 +5182,38 @@ class TransportLifecycleHardeningTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await asyncio.wait_for(look_alike, 1.0))[1], b"look-alike-payload")
         self.assertEqual(connection.collector_info.stray_rtu_reply_count, 0)
 
-    async def test_truncated_long_stray_reply_closes_with_a_payload_timeout(self) -> None:
-        connection = self._framed_connection()
-        reader = asyncio.StreamReader()
-        reader.feed_data(self._bare_rtu_reply(0x6C)[:40])  # never completes
+    async def test_truncated_long_stray_reply_is_skipped_not_fatal(self) -> None:
+        # Field-observed 2026-10-20/21: ``01036c...`` (113-byte reply) cut off after
+        # ~20 bytes, which used to close the session with a payload timeout.
+        connection, real, logs = await self._run_cut_off_stray_then_real_frame(
+            self._bare_rtu_reply(0x6C)[:20],
+            then=self._wrapped_reply(42, b"real-after-cutoff"),
+            tid=42,
+        )
 
-        with patch(
-            "custom_components.eybond_local.collector.transport.connections._FRAMED_HEADER_COMPLETION_TIMEOUT",
-            0.05,
-        ):
-            await asyncio.wait_for(connection._read_loop(reader), timeout=2.0)
-
+        self.assertEqual((await asyncio.wait_for(real, 1.0))[1], b"real-after-cutoff")
         info = connection.collector_info
-        self.assertEqual(info.last_disconnect_reason, "collector_frame_payload_timeout")
         self.assertEqual(info.stray_rtu_reply_count, 0)
+        self.assertEqual(info.last_disconnect_reason, "collector_eof")
+        joined = "\n".join(logs)
+        self.assertIn("expected=113 arrived=20", joined)
+        self.assertIn("header=01036c", joined)
+
+    async def test_late_tail_of_a_cut_off_reply_still_closes_the_session(self) -> None:
+        # If the stream really is out of step (the rest of the reply turns up as
+        # raw bytes after we gave up on it) the next header check must still close
+        # the session, exactly as it did before.
+        full = self._bare_rtu_reply(0x6C)
+        connection, real, _logs = await self._run_cut_off_stray_then_real_frame(
+            full[:20],
+            then=full[20:48] + self._wrapped_reply(43, b"never-delivered"),
+            tid=43,
+        )
+
+        self.assertFalse(real.done())
+        self.assertTrue(
+            connection.collector_info.last_disconnect_reason.startswith("collector_frame_")
+        )
 
     async def test_incomplete_payload_warning_names_the_header_bytes(self) -> None:
         # Field diagnostics: a payload timeout must say which header bytes it

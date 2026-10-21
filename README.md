@@ -216,7 +216,7 @@ When something closes the session, the retained reason says why:
 | Retained reason | Meaning |
 |---|---|
 | `collector_connection_reset` | The TCP connection was reset. Network or dongle side, often Wi-Fi related. |
-| `collector_frame_payload_timeout` | A frame or stray reply started but never finished, typically a Wi-Fi hiccup mid-transfer. |
+| `collector_frame_payload_timeout` | A real EyeBond frame started but never finished, typically a Wi-Fi hiccup mid-transfer. (Since 1.0.3 a *bare* reply that is cut off is skipped instead and does not close the session.) |
 | `collector_frame_header_timeout` | A frame header never completed. |
 | `collector_frame_length_invalid` / `collector_frame_function_invalid` | Bytes that failed header validation and did not verify as a Modbus reply. Likely wire corruption. |
 
@@ -232,6 +232,9 @@ When something closes the session, the retained reason says why:
   leftover byte(s)` or `Reassembled split Modbus read reply`. Only a
   `Runtime refresh failed` line means a poll was actually lost. The `bytes=…` in the
   rejection line shows exactly what arrived if you want to look closer.
+- `Skipped a cut-off unwrapped Modbus RTU reply … expected=113 arrived=20` — the
+  collector began one of its bare replies and stopped. Since 1.0.3 the few bytes are
+  dropped and the session carries on; it used to reconnect.
 
 ---
 

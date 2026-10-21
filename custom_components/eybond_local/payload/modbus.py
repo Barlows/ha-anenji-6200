@@ -679,9 +679,20 @@ def _is_retryable_read_error(error: ModbusError) -> bool:
     # real poll (field-observed ``unexpected_slave_id:0`` / ``unexpected_function:0``,
     # a few per hour, each of which cost a whole refresh). A repeat of the read
     # recovers them; a genuinely wrong slave id fails the same way twice.
+    #
+    # ``unexpected_byte_count:`` is the same thing one step later: a COMPLETE,
+    # well-formed reply for a different read (field-observed: the 25-byte reply to
+    # a 10-register read arriving in the slot of a 44-register read). It was the
+    # previous request's answer delivered a slot late, and consuming it clears the
+    # way for the real one on the repeat.
     return text in {
         "response_too_short",
         "crc_mismatch",
     } or text.startswith(
-        ("unexpected_length:", "unexpected_slave_id:", "unexpected_function:")
+        (
+            "unexpected_length:",
+            "unexpected_slave_id:",
+            "unexpected_function:",
+            "unexpected_byte_count:",
+        )
     )
