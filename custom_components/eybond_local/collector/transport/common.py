@@ -455,6 +455,25 @@ class _PrefixedAsyncReader:
 
         self._buffer[:0] = data
 
+    async def discard_available(self, idle_timeout: float = 0.02) -> int:
+        """Drop the bytes already buffered, plus any that follow within a short gap.
+
+        Used after a read gave up part-way through a cut-off bare Modbus reply:
+        the bytes that did arrive belong to that reply and must not be mistaken
+        for the start of the next frame. Returns how many bytes were dropped.
+        """
+
+        dropped = len(self._buffer)
+        self._buffer.clear()
+        while True:
+            try:
+                chunk = await asyncio.wait_for(self._reader.read(4096), timeout=idle_timeout)
+            except asyncio.TimeoutError:
+                return dropped
+            if not chunk:  # EOF: nothing more to drop
+                return dropped
+            dropped += len(chunk)
+
     async def readexactly(self, size: int) -> bytes:
         if size <= 0:
             return b""

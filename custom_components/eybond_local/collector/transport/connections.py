@@ -444,6 +444,34 @@ class _CollectorConnection:
             count,
         )
 
+    async def _skip_cut_off_stray_rtu_reply(
+        self,
+        reader: _PrefixedAsyncReader,
+        *,
+        header_bytes: bytes,
+        expected: int,
+    ) -> None:
+        """Drop a bare Modbus RTU reply the collector began but never finished.
+
+        Field-observed: the collector sometimes sends only the first ~20 bytes of
+        one of its bare replies and then goes quiet (the rest turns up glued onto
+        a later answer, which is length-prefixed and so unaffected). Closing the
+        session cost a reconnect and a lost refresh each time. The bytes that did
+        arrive are dropped and parsing resumes at the next frame; if the stream
+        really was out of step, the next header check closes the session exactly
+        as before.
+        """
+
+        arrived = len(header_bytes) + await reader.discard_available()
+        logger.warning(
+            "Skipped a cut-off unwrapped Modbus RTU reply remote=%s expected=%d "
+            "arrived=%d header=%s",
+            self._collector.remote_ip,
+            expected,
+            arrived,
+            header_bytes.hex(),
+        )
+
     def _handle_at_response(self, payload: bytes) -> None:
         try:
             response = parse_at_response(payload)
@@ -583,18 +611,12 @@ class _CollectorConnection:
                                     timeout=_FRAMED_HEADER_COMPLETION_TIMEOUT,
                                 ))
                             except asyncio.TimeoutError:
-                                self._collector.last_disconnect_reason = (
-                                    "collector_frame_payload_timeout"
+                                await self._skip_cut_off_stray_rtu_reply(
+                                    reader,
+                                    header_bytes=header_bytes,
+                                    expected=rtu_length,
                                 )
-                                logger.warning(
-                                    "Closing collector session after an incomplete "
-                                    "unwrapped Modbus RTU reply remote=%s expected=%d "
-                                    "header=%s",
-                                    self._collector.remote_ip,
-                                    rtu_length,
-                                    header_bytes.hex(),
-                                )
-                                return
+                                continue
                             if modbus_rtu_crc_is_valid(header_bytes + rtu_tail):
                                 self._note_skipped_stray_rtu_reply(rtu_length)
                                 continue
@@ -662,22 +684,14 @@ class _CollectorConnection:
                             ))
                         except asyncio.TimeoutError:
                             # Fewer bytes than the reply needs also means the
-                            # longer claimed frame cannot be complete.
-                            self._collector.last_disconnect_reason = (
-                                "collector_frame_payload_timeout"
+                            # longer claimed frame cannot be complete: this is a
+                            # cut-off bare reply, not a frame that never finished.
+                            await self._skip_cut_off_stray_rtu_reply(
+                                reader,
+                                header_bytes=header_bytes,
+                                expected=rtu_length,
                             )
-                            logger.warning(
-                                "Closing collector session after incomplete frame payload "
-                                "remote=%s tid=%d fc=%d expected=%d header=%s "
-                                "rtu_candidate_len=%d",
-                                self._collector.remote_ip,
-                                header.tid,
-                                header.fcode,
-                                header.payload_len,
-                                header_bytes.hex(),
-                                rtu_length,
-                            )
-                            return
+                            continue
                         if modbus_rtu_crc_is_valid(header_bytes + rtu_tail):
                             self._note_skipped_stray_rtu_reply(rtu_length)
                             continue

@@ -31,6 +31,37 @@ How to read it:
 
 Nothing yet.
 
+## [1.0.3] - 2026-10-21
+
+Two more of the collector's glitches that were still costing a refresh or a
+reconnect after 1.0.2. Both are tested against the shapes captured on the real unit;
+**not yet confirmed over a long run on the unit**.
+
+### Fixed
+
+- **A bare reply the collector starts and never finishes no longer closes the
+  session.** On 20 and 21 October the collector sent the first ~20 bytes of a
+  113-byte reply (`01036c…`) and went quiet. The reader waited its 2 seconds, gave
+  up, and closed the session (`collector_frame_payload_timeout`), costing a
+  reconnect and a lost refresh. That is the cause of two of the three drops seen on
+  20-21 October (the third was a dongle-side TCP reset). The bytes that did arrive are now dropped and reading
+  resumes at the next frame, logged as `Skipped a cut-off unwrapped Modbus RTU
+  reply … expected=N arrived=M`. This only applies to bytes that open like a bare
+  Modbus read reply and then stall. If the stream really is out of step (the rest of
+  the reply turns up as raw bytes afterwards), the next header check still closes the
+  session exactly as before, and a real EyeBond frame that stalls part-way still
+  closes it too.
+- **A read retries once on a wrong byte count.** At 02:59 on 21 October a 44-register
+  read received a complete, CRC-valid 25-byte reply that belonged to the previous
+  10-register read, one slot late. A wrong byte count was not retryable, so the
+  whole refresh was lost. It is now retried once like the other wrong-answer cases.
+  A persistently wrong byte count still fails after the single retry.
+
+### Diagnostics
+
+- The new `Skipped a cut-off unwrapped Modbus RTU reply` line is logged at WARNING
+  (it is rare, and the log level on this setup hides INFO).
+
 ## [1.0.2] - 2026-10-20
 
 Completes the 1.0.1 fix. Within minutes of 1.0.1 being installed, the first failed
@@ -356,7 +387,8 @@ The first commits, made directly against the SMG 6200:
 For everything before the fork point, see
 [UPSTREAM_CHANGELOG.md](UPSTREAM_CHANGELOG.md).
 
-[Unreleased]: https://github.com/Barlows/ha-anenji-6200/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/Barlows/ha-anenji-6200/compare/v1.0.3...HEAD
+[1.0.3]: https://github.com/Barlows/ha-anenji-6200/releases/tag/v1.0.3
 [1.0.2]: https://github.com/Barlows/ha-anenji-6200/releases/tag/v1.0.2
 [1.0.1]: https://github.com/Barlows/ha-anenji-6200/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Barlows/ha-anenji-6200/releases/tag/v1.0.0

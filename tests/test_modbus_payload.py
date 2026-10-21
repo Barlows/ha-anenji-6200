@@ -290,6 +290,28 @@ class ModbusPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.recovered_read_count, 0)
 
 
+    async def test_read_retries_once_after_a_late_reply_for_a_different_read(self) -> None:
+        # Field-observed 2026-10-21 02:59: a read of 44 registers received the
+        # complete, CRC-valid 25-byte reply to the previous 10-register read.
+        stale = _full_read_reply(1, 3, [0, 0, 0, 0, 0, 0x4000, 0, 0, 0, 0x40])
+        wanted_values = list(range(44))
+        wanted = _full_read_reply(1, 3, wanted_values)
+        transport = _ScriptedTransport(stale, wanted)
+        session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
+
+        self.assertEqual(await session.read_holding(201, 44), wanted_values)
+        self.assertEqual(transport.calls, 2)
+
+    async def test_wrong_byte_count_twice_still_fails(self) -> None:
+        stale = _full_read_reply(1, 3, [1] * 10)
+        transport = _ScriptedTransport(stale, stale)
+        session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
+
+        with self.assertRaisesRegex(ModbusError, "unexpected_byte_count:20"):
+            await session.read_holding(201, 44)
+        self.assertEqual(transport.calls, 2)
+
+
 class SplitReadReplyHelperTests(unittest.TestCase):
     def test_prefix_detection(self) -> None:
         full = _full_read_reply(1, 3, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
