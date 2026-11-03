@@ -218,7 +218,7 @@ When something closes the session, the retained reason says why:
 | `collector_connection_reset` | The TCP connection was reset. Network or dongle side, often Wi-Fi related. |
 | `collector_frame_payload_timeout` | A real EyeBond frame started but never finished, typically a Wi-Fi hiccup mid-transfer. (Since 1.0.3 a *bare* reply that is cut off is skipped instead and does not close the session.) |
 | `collector_frame_header_timeout` | A frame header never completed. |
-| `collector_frame_length_invalid` / `collector_frame_function_invalid` | Bytes that failed header validation and did not verify as a Modbus reply. Likely wire corruption. |
+| `collector_frame_length_invalid` / `collector_frame_function_invalid` | Bytes that failed header validation and did not verify as a Modbus reply. Likely wire corruption. (Since 1.0.4, on a session that has already delivered valid frames, a first or second such header in a row is dropped and resynchronised instead; a third closes the session.) |
 
 ### Warnings you can ignore
 
@@ -231,10 +231,16 @@ When something closes the session, the retained reason says why:
   or just the missing tail, logged as `Recovered Modbus read reply behind N
   leftover byte(s)` or `Reassembled split Modbus read reply`. Only a
   `Runtime refresh failed` line means a poll was actually lost. The `bytes=…` in the
-  rejection line shows exactly what arrived if you want to look closer.
+  rejection line shows exactly what arrived if you want to look closer. Since 1.0.4 a
+  read that was cut short twice gets a third attempt before the poll is given up.
 - `Skipped a cut-off unwrapped Modbus RTU reply … expected=113 arrived=20` — the
   collector began one of its bare replies and stopped. Since 1.0.3 the few bytes are
   dropped and the session carries on; it used to reconnect.
+- `Dropped unrecognised bytes where a frame header was expected and resumed …` —
+  leftover bytes of an earlier cut-off reply landed where a frame header should be.
+  Since 1.0.4 they are dropped (a real frame glued behind them is kept) and the
+  session carries on; it used to reconnect. Three in a row, with no valid frame
+  between them, still close the session.
 
 ---
 

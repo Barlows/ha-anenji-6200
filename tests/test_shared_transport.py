@@ -5215,6 +5215,154 @@ class TransportLifecycleHardeningTests(unittest.IsolatedAsyncioTestCase):
             connection.collector_info.last_disconnect_reason.startswith("collector_frame_")
         )
 
+    async def _run_healthy_session(
+        self, connection: _CollectorConnection, *chunks: bytes, pause: float = 0.2
+    ) -> list[str]:
+        """Feed ``chunks`` one at a time, letting the reader settle between them."""
+
+        reader = asyncio.StreamReader()
+        with self.assertLogs(
+            "custom_components.eybond_local.collector.transport.connections",
+            level="WARNING",
+        ) as captured:
+            task = asyncio.create_task(connection._read_loop(reader))
+            for chunk in chunks:
+                reader.feed_data(chunk)
+                await asyncio.sleep(pause)
+            reader.feed_eof()
+            await asyncio.wait_for(task, timeout=2.0)
+        return captured.output
+
+    # Field-observed 2026-11-01 01:52: leftover bytes of a cut-off reply turned up
+    # where a header was expected (``000000000000006c``).
+    _LEFTOVER_FRAGMENT = bytes.fromhex("000000000000006c")
+
+    async def test_leftover_fragment_header_is_dropped_on_a_healthy_session(self) -> None:
+        connection = self._framed_connection()
+        first = self._expect_reply(connection, 50)
+        second = self._expect_reply(connection, 51)
+
+        logs = await self._run_healthy_session(
+            connection,
+            self._wrapped_reply(50, b"before-fragment"),
+            self._LEFTOVER_FRAGMENT,
+            self._wrapped_reply(51, b"after-fragment"),
+        )
+
+        self.assertEqual((await asyncio.wait_for(first, 1.0))[1], b"before-fragment")
+        self.assertEqual((await asyncio.wait_for(second, 1.0))[1], b"after-fragment")
+        self.assertEqual(connection.collector_info.last_disconnect_reason, "collector_eof")
+        joined = "\n".join(logs)
+        self.assertIn("Dropped unrecognised bytes", joined)
+        self.assertIn("dropped=8 kept_frame_bytes=0", joined)
+        self.assertIn("header=000000000000006c", joined)
+        self.assertNotIn("Closing collector session", joined)
+
+    async def test_real_frame_glued_behind_the_fragment_is_kept(self) -> None:
+        connection = self._framed_connection()
+        first = self._expect_reply(connection, 52)
+        glued = self._expect_reply(connection, 53)
+        frame = self._wrapped_reply(53, b"glued-behind-junk")
+
+        logs = await self._run_healthy_session(
+            connection,
+            self._wrapped_reply(52, b"healthy-first"),
+            self._LEFTOVER_FRAGMENT + b"\x00" * 5 + frame,
+        )
+
+        self.assertEqual((await asyncio.wait_for(first, 1.0))[1], b"healthy-first")
+        self.assertEqual((await asyncio.wait_for(glued, 1.0))[1], b"glued-behind-junk")
+        self.assertIn(
+            f"dropped=13 kept_frame_bytes={len(frame)}", "\n".join(logs)
+        )
+
+    async def test_fragment_before_any_valid_frame_still_closes_the_session(self) -> None:
+        # A peer that has not yet spoken EyeBond is rejected immediately, as before.
+        connection = self._framed_connection()
+        later = self._expect_reply(connection, 54)
+
+        await self._feed_and_run(
+            connection,
+            self._LEFTOVER_FRAGMENT,
+            self._wrapped_reply(54, b"never-delivered"),
+        )
+
+        self.assertEqual(
+            connection.collector_info.last_disconnect_reason,
+            "collector_frame_length_invalid",
+        )
+        self.assertFalse(later.done())
+
+    async def test_repeated_unrecognised_headers_close_the_session(self) -> None:
+        connection = self._framed_connection()
+        self._expect_reply(connection, 55)
+        later = self._expect_reply(connection, 56)
+
+        logs = await self._run_healthy_session(
+            connection,
+            self._wrapped_reply(55, b"healthy"),
+            self._LEFTOVER_FRAGMENT,
+            self._LEFTOVER_FRAGMENT,
+            self._LEFTOVER_FRAGMENT,
+            self._wrapped_reply(56, b"never-delivered"),
+        )
+
+        joined = "\n".join(logs)
+        self.assertIn("resyncs_in_a_row=1", joined)
+        self.assertIn("resyncs_in_a_row=2", joined)
+        self.assertNotIn("resyncs_in_a_row=3", joined)
+        self.assertIn("Closing collector session after malformed frame header", joined)
+        self.assertEqual(
+            connection.collector_info.last_disconnect_reason,
+            "collector_frame_length_invalid",
+        )
+        self.assertFalse(later.done())
+
+    async def test_a_valid_frame_resets_the_resync_allowance(self) -> None:
+        connection = self._framed_connection()
+        futures = [self._expect_reply(connection, tid) for tid in range(60, 64)]
+
+        logs = await self._run_healthy_session(
+            connection,
+            self._wrapped_reply(60, b"a"),
+            self._LEFTOVER_FRAGMENT,
+            self._LEFTOVER_FRAGMENT,
+            self._wrapped_reply(61, b"b"),
+            self._LEFTOVER_FRAGMENT,
+            self._LEFTOVER_FRAGMENT,
+            self._wrapped_reply(62, b"c"),
+            self._wrapped_reply(63, b"d"),
+        )
+
+        for future, payload in zip(futures, (b"a", b"b", b"c", b"d")):
+            self.assertEqual((await asyncio.wait_for(future, 1.0))[1], payload)
+        self.assertEqual(connection.collector_info.last_disconnect_reason, "collector_eof")
+        self.assertNotIn("Closing collector session", "\n".join(logs))
+
+    async def test_late_tail_after_a_valid_frame_is_resynced_past(self) -> None:
+        # The healthy-session counterpart of the late-tail test above: the rest of
+        # a cut-off reply arrives as raw bytes, followed by a real frame.
+        full = self._bare_rtu_reply(0x6C)
+        connection = self._framed_connection()
+        first = self._expect_reply(connection, 57)
+        after = self._expect_reply(connection, 58)
+
+        with patch(
+            "custom_components.eybond_local.collector.transport.connections._FRAMED_HEADER_COMPLETION_TIMEOUT",
+            0.05,
+        ):
+            await self._run_healthy_session(
+                connection,
+                self._wrapped_reply(57, b"healthy"),
+                full[:20],
+                full[20:48] + self._wrapped_reply(58, b"after-late-tail"),
+                pause=0.3,
+            )
+
+        self.assertEqual((await asyncio.wait_for(first, 1.0))[1], b"healthy")
+        self.assertEqual((await asyncio.wait_for(after, 1.0))[1], b"after-late-tail")
+        self.assertEqual(connection.collector_info.last_disconnect_reason, "collector_eof")
+
     async def test_incomplete_payload_warning_names_the_header_bytes(self) -> None:
         # Field diagnostics: a payload timeout must say which header bytes it
         # decoded so a misread bare Modbus reply can be told from a real frame.

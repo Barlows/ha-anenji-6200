@@ -258,16 +258,19 @@ class ModbusPayloadTests(unittest.IsolatedAsyncioTestCase):
         full = _full_read_reply(1, 3, [5] * 10)
         bad_rest = bytearray(full[20:])
         bad_rest[0] ^= 0xFF  # corrupted data: CRC over the joined reply fails
-        transport = _ScriptedTransport(full[:20], bytes(bad_rest))
+        transport = _ScriptedTransport(full[:20], bytes(bad_rest), bytes(bad_rest))
         session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
 
         with self.assertRaises(ModbusError):
             await session.read_holding(100, 10)
         self.assertEqual(session.recovered_read_count, 0)
+        self.assertEqual(transport.calls, 3)  # a held prefix earns the third read
 
     async def test_continuation_of_the_wrong_length_is_not_joined(self) -> None:
         full = _full_read_reply(1, 3, [5] * 10)
-        transport = _ScriptedTransport(full[:20], full[20:] + b"\x00")
+        transport = _ScriptedTransport(
+            full[:20], full[20:] + b"\x00", full[20:] + b"\x00"
+        )
         session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
 
         with self.assertRaises(ModbusError):
@@ -278,7 +281,7 @@ class ModbusPayloadTests(unittest.IsolatedAsyncioTestCase):
         # A cut-short answer from one read must never complete a different read.
         full = _full_read_reply(1, 3, [5] * 10)
         transport = _ScriptedTransport(
-            full[:20], b"\x00" * 7,  # first read: prefix, then junk -> fails
+            full[:20], b"\x00" * 7, b"\x00" * 7,  # first read: prefix, then junk twice -> fails
             full[20:], full[20:],  # second read: lone tail twice -> must fail
         )
         session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
@@ -309,6 +312,85 @@ class ModbusPayloadTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(ModbusError, "unexpected_byte_count:20"):
             await session.read_holding(201, 44)
+        self.assertEqual(transport.calls, 2)
+
+
+    async def test_double_truncation_is_completed_by_a_third_attempt(self) -> None:
+        # Field-observed 2026-10-24 22:48 and 2026-10-26 16:26: both attempts came
+        # back as the same 20-byte prefix and the refresh was lost. A third read
+        # gets the tail the collector still owed.
+        full = _full_read_reply(1, 3, [0] * 10)
+        transport = _ScriptedTransport(full[:20], full[:20], full[20:])
+        session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
+
+        with self.assertLogs(
+            "custom_components.eybond_local.payload.modbus", level="INFO"
+        ) as captured:
+            self.assertEqual(await session.read_holding(100, 10), [0] * 10)
+
+        self.assertEqual(transport.calls, 3)
+        self.assertEqual(session.recovered_read_count, 1)
+        self.assertIn(
+            "Reassembled split Modbus read reply from 20 + 5 byte(s)",
+            "\n".join(captured.output),
+        )
+
+    async def test_third_attempt_can_complete_the_second_cut_short_answer(self) -> None:
+        # The two prefixes may belong to different replies; the tail that arrives
+        # third may complete either of them.
+        first = _full_read_reply(1, 3, [1] * 10)
+        second_values = [2] * 10
+        second = _full_read_reply(1, 3, second_values)
+        transport = _ScriptedTransport(first[:20], second[:20], second[20:])
+        session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
+
+        self.assertEqual(await session.read_holding(100, 10), second_values)
+        self.assertEqual(transport.calls, 3)
+
+    async def test_third_attempt_may_simply_return_the_full_reply(self) -> None:
+        full = _full_read_reply(1, 3, [7] * 10)
+        transport = _ScriptedTransport(full[:20], full[:20], full)
+        session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
+
+        self.assertEqual(await session.read_holding(100, 10), [7] * 10)
+        self.assertEqual(transport.calls, 3)
+
+    async def test_read_gives_up_after_three_cut_short_answers(self) -> None:
+        full = _full_read_reply(1, 3, [7] * 10)
+        transport = _ScriptedTransport(full[:20], full[:20], full[:20])
+        session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
+
+        with self.assertRaisesRegex(ModbusError, "unexpected_length:20"):
+            await session.read_holding(100, 10)
+        self.assertEqual(transport.calls, 3)
+
+    async def test_no_third_attempt_when_nothing_cut_short_is_held(self) -> None:
+        # Two wrong answers that are not prefixes of this read fail as before.
+        transport = _ScriptedTransport(_read_reply(9, 3), _read_reply(9, 3))
+        session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
+
+        with self.assertRaisesRegex(ModbusError, "unexpected_slave_id:9"):
+            await session.read_holding(171, 1)
+        self.assertEqual(transport.calls, 2)
+
+    async def test_timeouts_still_get_only_one_retry_after_a_cut_short_answer(self) -> None:
+        full = _full_read_reply(1, 3, [7] * 10)
+
+        class _CutThenTimeout:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def async_send_payload(self, payload: bytes, *, route) -> bytes:
+                self.calls += 1
+                if self.calls == 1:
+                    return full[:20]
+                raise asyncio.TimeoutError
+
+        transport = _CutThenTimeout()
+        session = ModbusSession(transport, devcode=1, collector_addr=255, slave_id=1)
+
+        with self.assertRaisesRegex(ModbusError, "request_timeout"):
+            await session.read_holding(100, 10)
         self.assertEqual(transport.calls, 2)
 
 

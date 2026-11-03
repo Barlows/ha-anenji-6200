@@ -31,6 +31,46 @@ How to read it:
 
 Nothing yet.
 
+## [1.0.4] - 2026-11-03
+
+The last two ways the collector's truncated replies were still costing a poll or a
+reconnect after 1.0.3. Over the 13 days after 1.0.3 was installed (21 Oct to 3 Nov)
+there were four lost polls, against 20+ in a single day before the 1.0.x fixes: two
+reads cut short twice in a row, one collector reconnect (`collector_not_connected`),
+and one session closed on a stray fragment. This release covers the first two and
+the last. **Not yet confirmed over a long run on the unit**; both fixes are tested
+against the shapes seen in the log.
+
+### Fixed
+
+- **A read cut short twice in a row gets a third attempt.** At 22:48 on 24 October
+  and 16:26 on 26 October both attempts came back as the same 20-byte prefix, so the
+  poll was lost. When cut-short answers are being held (each one means the collector
+  still owes a tail), a second failure now earns one more read, which can also carry
+  the tail of either earlier answer. Anything that is not a cut-short answer still
+  gets only one retry, and timeouts still get only one retry, so a genuinely bad
+  slave does not add traffic.
+- **Leftover bytes where a frame header should be no longer close a healthy
+  session.** At 01:52 on 1 November a fragment (`000000000000006c`) arrived in place
+  of a header and the session was closed (`collector_frame_length_invalid`), costing
+  a reconnect. On a session that has already delivered valid frames, the
+  unrecognised bytes (plus anything following within 50 ms) are now dropped and
+  reading resumes, logged as `Dropped unrecognised bytes where a frame header was
+  expected and resumed`. If a complete real frame arrived glued behind the junk it
+  is kept. A second such header in a row is dropped too; a third, with no valid frame
+  in between, closes the session as before, and a peer that has not yet delivered a
+  valid frame is still rejected at once.
+
+### Diagnostics
+
+- The new `Dropped unrecognised bytes …` line is logged at WARNING and says how many
+  bytes were dropped, how many frame bytes were kept, and the header that was seen.
+
+### Not changed
+
+- The 29 October `collector_not_connected` and the roughly daily ~15:58 request
+  timeouts look like the dongle or inverter side, and are not addressed here.
+
 ## [1.0.3] - 2026-10-21
 
 Two more of the collector's glitches that were still costing a refresh or a
@@ -387,7 +427,8 @@ The first commits, made directly against the SMG 6200:
 For everything before the fork point, see
 [UPSTREAM_CHANGELOG.md](UPSTREAM_CHANGELOG.md).
 
-[Unreleased]: https://github.com/Barlows/ha-anenji-6200/compare/v1.0.3...HEAD
+[Unreleased]: https://github.com/Barlows/ha-anenji-6200/compare/v1.0.4...HEAD
+[1.0.4]: https://github.com/Barlows/ha-anenji-6200/releases/tag/v1.0.4
 [1.0.3]: https://github.com/Barlows/ha-anenji-6200/releases/tag/v1.0.3
 [1.0.2]: https://github.com/Barlows/ha-anenji-6200/releases/tag/v1.0.2
 [1.0.1]: https://github.com/Barlows/ha-anenji-6200/releases/tag/v1.0.1
