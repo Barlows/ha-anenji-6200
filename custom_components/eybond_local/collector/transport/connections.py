@@ -39,6 +39,7 @@ from .common import (
     _close_writer_bounded,
     _copy_collector_info,
     _disconnect_reason_from_exception,
+    _find_trailing_eybond_frame,
     _looks_like_plain_raw_response_start,
     _looks_like_stray_modbus_rtu_reply,
     _looks_like_uart_passthrough_value,
@@ -56,6 +57,13 @@ logger = logging.getLogger(__name__)
 # reader task and swallowing later valid responses on the same TCP socket.
 _FRAMED_HEADER_COMPLETION_TIMEOUT = 2.0
 _FRAMED_PAYLOAD_COMPLETION_TIMEOUT = 5.0
+
+# Leftover bytes of a cut-off reply can land where a header is expected on a
+# session that was otherwise healthy. Up to this many unrecognised headers in a
+# row (no valid frame in between) are dropped and the stream resynchronised;
+# beyond that the session is closed as before.
+_HEADER_RESYNC_LIMIT = 2
+_HEADER_RESYNC_IDLE_TIMEOUT = 0.05
 
 
 def _modbus_rtu_response_length(prefix: bytes) -> int | None:
@@ -110,6 +118,8 @@ class _CollectorConnection:
         self._session_identity_callback: Callable[[str, str, str], None] | None = None
         self._run_epoch = 0
         self._auxiliary_session = AuxiliaryReadSession()
+        self._header_resync_streak = 0
+        self._frames_this_session = 0
 
     @property
     def connected(self) -> bool:
@@ -472,6 +482,49 @@ class _CollectorConnection:
             header_bytes.hex(),
         )
 
+    async def _resync_after_unrecognised_header(
+        self,
+        reader: _PrefixedAsyncReader,
+        *,
+        header_bytes: bytes,
+        header_error: str,
+    ) -> bool:
+        """Drop leftover bytes that landed where a header was expected.
+
+        Field-observed (2026-11-01): after earlier cut-off replies, a fragment of
+        one (``000000000000006c``) turned up as the next "header" on a session that
+        had been delivering valid frames, and closing it cost a reconnect and a
+        lost refresh. The unrecognised bytes are dropped; a complete real frame
+        that arrived glued behind them is kept. Only sessions that already
+        delivered a valid frame qualify (a peer that never speaks EyeBond is still
+        rejected at once), and a second unrecognised header with no valid frame in
+        between closes the session as before. Returns False when it must close.
+        """
+
+        if (
+            self._frames_this_session == 0
+            or self._header_resync_streak >= _HEADER_RESYNC_LIMIT
+        ):
+            return False
+        self._header_resync_streak += 1
+        junk = header_bytes + await reader.take_available(_HEADER_RESYNC_IDLE_TIMEOUT)
+        offset = _find_trailing_eybond_frame(junk)
+        if offset > 0:
+            reader.unread(junk[offset:])
+        dropped = offset if offset > 0 else len(junk)
+        logger.warning(
+            "Dropped unrecognised bytes where a frame header was expected and "
+            "resumed remote=%s reason=%s dropped=%d kept_frame_bytes=%d header=%s "
+            "resyncs_in_a_row=%d",
+            self._collector.remote_ip,
+            header_error,
+            dropped,
+            len(junk) - dropped,
+            header_bytes.hex(),
+            self._header_resync_streak,
+        )
+        return True
+
     def _handle_at_response(self, payload: bytes) -> None:
         try:
             response = parse_at_response(payload)
@@ -505,6 +558,8 @@ class _CollectorConnection:
             reader = _PrefixedAsyncReader(reader)
         auxiliary = self._auxiliary_session
         read = auxiliary.read
+        self._header_resync_streak = 0
+        self._frames_this_session = 0
         try:
             while not auxiliary.closed:
                 auxiliary.at_boundary = True
@@ -621,6 +676,16 @@ class _CollectorConnection:
                                 self._note_skipped_stray_rtu_reply(rtu_length)
                                 continue
                             rtu_crc_failed = True
+                        if (
+                            not rtu_crc_failed
+                            and not _looks_like_stray_modbus_rtu_reply(header_bytes)
+                            and await self._resync_after_unrecognised_header(
+                                reader,
+                                header_bytes=header_bytes,
+                                header_error=header_error,
+                            )
+                        ):
+                            continue
                         self._collector.last_disconnect_reason = header_error
                         if rtu_crc_failed:
                             logger.warning(
@@ -723,6 +788,8 @@ class _CollectorConnection:
                             )
                             return
 
+                self._frames_this_session += 1
+                self._header_resync_streak = 0
                 self._collector.last_devcode = header.devcode
                 logger.debug(
                     "RX header remote=%s tid=%d devcode=0x%04X devaddr=0x%02X fc=%d payload=%d",

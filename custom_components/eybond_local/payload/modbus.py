@@ -17,6 +17,7 @@ _logger = logging.getLogger(__name__)
 
 # Enough to see a whole short answer and the start of a long one in a log line.
 _BAD_ANSWER_LOG_BYTES = 64
+_MAX_READ_ATTEMPTS = 3
 
 
 class ModbusError(Exception):
@@ -524,8 +525,8 @@ class ModbusSession:
 
         request = build_read_request(self._slave_id, address, count, function=function)
         last_error: ModbusError | None = None
-        held_prefix: bytes | None = None
-        for attempt in range(2):
+        held_prefixes: list[bytes] = []
+        for attempt in range(_MAX_READ_ATTEMPTS):
             try:
                 response = await async_send_payload(
                     self._transport,
@@ -570,7 +571,7 @@ class ModbusSession:
                         count=count,
                         function=function,
                     )
-                if held_prefix is not None:
+                for held_prefix in held_prefixes:
                     joined = reassemble_split_read_reply(
                         held_prefix,
                         response,
@@ -579,7 +580,7 @@ class ModbusSession:
                         function=function,
                     )
                     if joined is not None:
-                        # The first answer was cut short and this one carries
+                        # An earlier answer was cut short and this one carries
                         # exactly the missing tail: together a verified reply.
                         self._note_recovered_read(
                             "Reassembled split Modbus read reply from %d + %d byte(s)",
@@ -599,7 +600,7 @@ class ModbusSession:
                 if is_read_reply_prefix(
                     response, slave_id=self._slave_id, count=count, function=function
                 ):
-                    held_prefix = response
+                    held_prefixes.append(response)
                 last_error = exc
                 # Field diagnostics: the error text alone (``unexpected_slave_id:0``)
                 # cannot show what actually arrived in the poll's slot.
@@ -616,7 +617,14 @@ class ModbusSession:
                     response[:_BAD_ANSWER_LOG_BYTES].hex(),
                     "..." if len(response) > _BAD_ANSWER_LOG_BYTES else "",
                 )
-                if attempt == 0 and _is_retryable_read_error(exc):
+                # A first failure is retried once. A second one is retried only
+                # when answers cut short are being held: each of those means the
+                # collector still owes a tail, so one more read (which can also
+                # carry that tail) is likely to complete. Anything else that
+                # fails twice fails the same way a third time.
+                if _is_retryable_read_error(exc) and (
+                    attempt == 0 or (attempt == 1 and held_prefixes)
+                ):
                     await asyncio.sleep(0.15)
                     continue
                 raise

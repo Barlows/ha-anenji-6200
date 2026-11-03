@@ -171,6 +171,29 @@ def _looks_like_eybond_frame_start(chunk: bytes) -> bool:
     return _runtime_eybond_header_error(header) == ""
 
 
+def _find_trailing_eybond_frame(data: bytes) -> int:
+    """Return where one complete EyeBond frame begins and ends exactly at the end.
+
+    Used to resynchronise after leftover bytes of a cut-off reply landed where a
+    header was expected: the junk is dropped but a real frame that arrived glued
+    behind it is kept. Both a valid header and an exact fit to the end of the
+    data are required, so junk is very unlikely to be mistaken for a frame.
+    Returns ``-1`` when there is no such frame (position 0 is never returned,
+    because the caller already rejected the header there).
+    """
+
+    for offset in range(1, len(data) - HEADER_SIZE + 1):
+        try:
+            header = decode_header(data[offset : offset + HEADER_SIZE])
+        except Exception:
+            continue
+        if _runtime_eybond_header_error(header) != "":
+            continue
+        if offset + HEADER_SIZE + header.payload_len == len(data):
+            return offset
+    return -1
+
+
 def _classify_initial_protocol_shape(chunk: bytes) -> str:
     """Classify initial callback bytes without using owner/collector metadata."""
 
@@ -463,16 +486,21 @@ class _PrefixedAsyncReader:
         for the start of the next frame. Returns how many bytes were dropped.
         """
 
-        dropped = len(self._buffer)
+        return len(await self.take_available(idle_timeout))
+
+    async def take_available(self, idle_timeout: float = 0.02) -> bytes:
+        """Remove and return the buffered bytes plus any that follow within a short gap."""
+
+        taken = bytearray(self._buffer)
         self._buffer.clear()
         while True:
             try:
                 chunk = await asyncio.wait_for(self._reader.read(4096), timeout=idle_timeout)
             except asyncio.TimeoutError:
-                return dropped
-            if not chunk:  # EOF: nothing more to drop
-                return dropped
-            dropped += len(chunk)
+                return bytes(taken)
+            if not chunk:  # EOF: nothing more to take
+                return bytes(taken)
+            taken.extend(chunk)
 
     async def readexactly(self, size: int) -> bytes:
         if size <= 0:
