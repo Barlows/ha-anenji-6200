@@ -241,6 +241,10 @@ When something closes the session, the retained reason says why:
   Since 1.0.4 they are dropped (a real frame glued behind them is kept) and the
   session carries on; it used to reconnect. Three in a row, with no valid frame
   between them, still close the session.
+- `Accepted an unwrapped Modbus RTU write reply for the pending write …` — the
+  inverter's acknowledgement of a register write came back outside the EyeBond
+  envelope and was matched to the write that was waiting for it. Since 1.0.5 that
+  write succeeds; it used to time out although the inverter had answered.
 
 ---
 
