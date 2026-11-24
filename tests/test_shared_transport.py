@@ -5363,6 +5363,195 @@ class TransportLifecycleHardeningTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await asyncio.wait_for(after, 1.0))[1], b"after-late-tail")
         self.assertEqual(connection.collector_info.last_disconnect_reason, "collector_eof")
 
+    # Field-observed 2026-11-22 23:30: the acknowledgement of a register write
+    # (``0110014b00017023``) arrived bare, outside any EyeBond envelope. It is
+    # exactly header-sized, so it was dropped as stray bytes and the write timed
+    # out although the inverter had answered.
+    @staticmethod
+    def _modbus_with_crc(body: bytes) -> bytes:
+        return body + crc16_modbus(body).to_bytes(2, "little")
+
+    def _write_multiple_request(self, address: int, value: int, *, slave: int = 1) -> bytes:
+        return self._modbus_with_crc(
+            bytes([slave, 0x10]) + address.to_bytes(2, "big") + b"\x00\x01\x02"
+            + value.to_bytes(2, "big")
+        )
+
+    def _write_multiple_ack(self, address: int, *, slave: int = 1, corrupt_crc: bool = False) -> bytes:
+        ack = self._modbus_with_crc(
+            bytes([slave, 0x10]) + address.to_bytes(2, "big") + b"\x00\x01"
+        )
+        return ack[:-1] + bytes([ack[-1] ^ 0x01]) if corrupt_crc else ack
+
+    def _expect_write(
+        self, connection: _CollectorConnection, tid: int, request: bytes
+    ) -> asyncio.Future:
+        future = self._expect_reply(connection, tid)
+        connection._pending_write_request[tid] = (request[:6], 0x0200, 1)
+        return future
+
+    async def test_bare_write_reply_is_delivered_to_the_pending_write(self) -> None:
+        connection = self._framed_connection()
+        request = self._write_multiple_request(0x014B, 7)
+        write = self._expect_write(connection, 60, request)
+        after = self._expect_reply(connection, 61)
+        ack = self._write_multiple_ack(0x014B)
+        self.assertEqual(ack.hex(), "0110014b00017023")
+
+        logs = await self._run_healthy_session(
+            connection,
+            self._wrapped_reply(59, b"before"),
+            ack,
+            self._wrapped_reply(61, b"after"),
+        )
+
+        header, payload = await asyncio.wait_for(write, 1.0)
+        self.assertEqual(payload, ack)
+        self.assertEqual(header.tid, 60)
+        self.assertEqual(header.fcode, 4)
+        self.assertEqual(header.payload_len, len(ack))
+        self.assertEqual((await asyncio.wait_for(after, 1.0))[1], b"after")
+        self.assertEqual(connection.collector_info.last_disconnect_reason, "collector_eof")
+        joined = "\n".join(logs)
+        self.assertIn("Accepted an unwrapped Modbus RTU write reply", joined)
+        self.assertIn("tid=60 function=16 address=331", joined)
+        self.assertNotIn("Dropped unrecognised bytes", joined)
+        self.assertNotIn("Closing collector session", joined)
+
+    async def test_bare_write_reply_works_before_any_other_frame(self) -> None:
+        connection = self._framed_connection()
+        write = self._expect_write(connection, 62, self._write_multiple_request(0x014B, 1))
+
+        await self._feed_and_run(connection, self._write_multiple_ack(0x014B))
+
+        self.assertEqual((await asyncio.wait_for(write, 1.0))[1], self._write_multiple_ack(0x014B))
+
+    async def test_bare_single_register_write_echo_is_delivered(self) -> None:
+        connection = self._framed_connection()
+        request = self._modbus_with_crc(bytes([1, 0x06, 0x01, 0x4B, 0x00, 0x05]))
+        write = self._expect_write(connection, 63, request)
+
+        await self._feed_and_run(connection, request)
+
+        self.assertEqual((await asyncio.wait_for(write, 1.0))[1], request)
+
+    async def test_bare_write_reply_for_another_address_is_not_claimed(self) -> None:
+        connection = self._framed_connection()
+        write = self._expect_write(connection, 64, self._write_multiple_request(0x014B, 7))
+        after = self._expect_reply(connection, 65)
+
+        logs = await self._run_healthy_session(
+            connection,
+            self._wrapped_reply(59, b"before"),
+            self._write_multiple_ack(0x0150),
+            self._wrapped_reply(65, b"after"),
+        )
+
+        self.assertFalse(write.done())
+        self.assertEqual((await asyncio.wait_for(after, 1.0))[1], b"after")
+        joined = "\n".join(logs)
+        self.assertNotIn("Accepted an unwrapped", joined)
+        self.assertIn("Dropped unrecognised bytes", joined)
+
+    async def test_bare_write_reply_with_bad_crc_is_not_claimed(self) -> None:
+        connection = self._framed_connection()
+        write = self._expect_write(connection, 66, self._write_multiple_request(0x014B, 7))
+
+        logs = await self._run_healthy_session(
+            connection,
+            self._wrapped_reply(59, b"before"),
+            self._write_multiple_ack(0x014B, corrupt_crc=True),
+        )
+
+        self.assertFalse(write.done())
+        self.assertNotIn("Accepted an unwrapped", "\n".join(logs))
+
+    async def test_bare_write_reply_without_a_pending_write_is_not_claimed(self) -> None:
+        connection = self._framed_connection()
+        read = self._expect_reply(connection, 67)
+
+        logs = await self._run_healthy_session(
+            connection,
+            self._wrapped_reply(59, b"before"),
+            self._write_multiple_ack(0x014B),
+        )
+
+        self.assertFalse(read.done())
+        joined = "\n".join(logs)
+        self.assertNotIn("Accepted an unwrapped", joined)
+        self.assertIn("Dropped unrecognised bytes", joined)
+
+    async def test_bare_write_reply_matching_two_pending_writes_is_not_claimed(self) -> None:
+        connection = self._framed_connection()
+        request = self._write_multiple_request(0x014B, 7)
+        first = self._expect_write(connection, 68, request)
+        second = self._expect_write(connection, 69, request)
+
+        await self._run_healthy_session(
+            connection,
+            self._wrapped_reply(59, b"before"),
+            self._write_multiple_ack(0x014B),
+        )
+
+        self.assertFalse(first.done())
+        self.assertFalse(second.done())
+
+    async def test_late_bare_write_reply_after_the_write_gave_up_is_dropped(self) -> None:
+        # The write has already timed out and been cleaned up: nothing is waiting,
+        # so the reply is junk exactly as before.
+        connection = self._framed_connection()
+
+        logs = await self._run_healthy_session(
+            connection,
+            self._wrapped_reply(59, b"before"),
+            self._write_multiple_ack(0x014B),
+        )
+
+        joined = "\n".join(logs)
+        self.assertNotIn("Accepted an unwrapped", joined)
+        self.assertIn("Dropped unrecognised bytes", joined)
+
+    async def test_send_forward_write_completes_on_a_bare_reply(self) -> None:
+        # End to end through the real send path, so the pending-write bookkeeping
+        # that async_send_collector does is covered, not just the reader.
+        connection = self._framed_connection()
+        reader = asyncio.StreamReader()
+        request = self._write_multiple_request(0x014B, 7)
+        reader_task = asyncio.create_task(connection._read_loop(reader))
+        self.addCleanup(reader_task.cancel)
+
+        send = asyncio.create_task(
+            connection.async_send_forward(
+                request, devcode=0x0200, collector_addr=1, request_timeout=1.0
+            )
+        )
+        await asyncio.sleep(0.05)
+        self.assertEqual(len(connection._pending_write_request), 1)
+        reader.feed_data(self._write_multiple_ack(0x014B))
+
+        self.assertEqual(await asyncio.wait_for(send, 1.0), self._write_multiple_ack(0x014B))
+        self.assertEqual(connection._pending_write_request, {})
+        self.assertEqual(connection._pending, {})
+
+    async def test_send_forward_read_does_not_register_a_pending_write(self) -> None:
+        connection = self._framed_connection()
+        reader = asyncio.StreamReader()
+        reader_task = asyncio.create_task(connection._read_loop(reader))
+        self.addCleanup(reader_task.cancel)
+
+        send = asyncio.create_task(
+            connection.async_send_forward(
+                b"\x01\x03\x00\xAB\x00\x01\xF5\xEA",
+                devcode=0x0200,
+                collector_addr=1,
+                request_timeout=0.2,
+            )
+        )
+        await asyncio.sleep(0.05)
+        self.assertEqual(connection._pending_write_request, {})
+        with self.assertRaises(asyncio.TimeoutError):
+            await send
+
     async def test_incomplete_payload_warning_names_the_header_bytes(self) -> None:
         # Field diagnostics: a payload timeout must say which header bytes it
         # decoded so a misread bare Modbus reply can be told from a real frame.

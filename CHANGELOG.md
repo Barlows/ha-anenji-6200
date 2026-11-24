@@ -31,6 +31,40 @@ How to read it:
 
 Nothing yet.
 
+## [1.0.5] - 2026-11-24
+
+A register write could be reported as timed out although the inverter had
+answered it. At 23:30:53 on 22 November the acknowledgement of a write
+(`0110014b00017023`: slave 1, function 0x10, register 331, one register, CRC
+valid) came back outside any EyeBond envelope, the way the collector's bare read
+replies do. Eight bytes is the size of a header, so it was read as one, rejected,
+and dropped as stray bytes by the 1.0.4 resync; five seconds later the
+`Solar: Apply Inverter Settings` script failed with `request_timeout` for a write
+the inverter had already accepted. **Not yet seen again on the unit**; the fix is
+tested against the exact bytes from the log.
+
+### Fixed
+
+- **A bare write reply is delivered to the write that is waiting for it.** While a
+  forwarded function 0x06 or 0x10 write is pending, an eight-byte reply is accepted
+  as its answer when its CRC verifies and it echoes the first six bytes of that
+  request (slave, function, address and count or value) and exactly one pending
+  write matches. It is logged at WARNING as `Accepted an unwrapped Modbus RTU write
+  reply for the pending write`. A reply that does not match, has a bad CRC, matches
+  two writes, or arrives with no write waiting (for example after the write already
+  timed out) is handled exactly as before.
+
+### Diagnostics
+
+- The new `Accepted an unwrapped Modbus RTU write reply …` line names the request
+  id, function and register address.
+
+### Not changed
+
+- A bare write **exception** reply (five bytes) is not handled; none has been seen.
+- The roughly daily ~16:00 request timeout, which still drifts later by about 17
+  seconds a day, looks like the dongle or inverter side and is not addressed here.
+
 ## [1.0.4] - 2026-11-03
 
 The last two ways the collector's truncated replies were still costing a poll or a
@@ -427,7 +461,8 @@ The first commits, made directly against the SMG 6200:
 For everything before the fork point, see
 [UPSTREAM_CHANGELOG.md](UPSTREAM_CHANGELOG.md).
 
-[Unreleased]: https://github.com/Barlows/ha-anenji-6200/compare/v1.0.4...HEAD
+[Unreleased]: https://github.com/Barlows/ha-anenji-6200/compare/v1.0.5...HEAD
+[1.0.5]: https://github.com/Barlows/ha-anenji-6200/releases/tag/v1.0.5
 [1.0.4]: https://github.com/Barlows/ha-anenji-6200/releases/tag/v1.0.4
 [1.0.3]: https://github.com/Barlows/ha-anenji-6200/releases/tag/v1.0.3
 [1.0.2]: https://github.com/Barlows/ha-anenji-6200/releases/tag/v1.0.2

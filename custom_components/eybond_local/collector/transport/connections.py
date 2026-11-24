@@ -20,6 +20,7 @@ from ..protocol import (
     FC_HEARTBEAT,
     FC_QUERY_COLLECTOR,
     HEADER_SIZE,
+    WIRE_LEN_OFFSET,
     TIDCounter,
     build_collector_request,
     build_heartbeat_request,
@@ -65,6 +66,13 @@ _FRAMED_PAYLOAD_COMPLETION_TIMEOUT = 5.0
 _HEADER_RESYNC_LIMIT = 2
 _HEADER_RESYNC_IDLE_TIMEOUT = 0.05
 
+# A Modbus write reply (function 0x06 or 0x10) is always eight bytes: slave,
+# function, address (2), count or value (2), CRC (2). It echoes the first six
+# bytes of the request, which is how a bare one is matched to its write.
+_MODBUS_WRITE_FUNCTIONS = frozenset({0x06, 0x10})
+_BARE_WRITE_REPLY_LENGTH = 8
+_BARE_WRITE_REPLY_ECHO = 6
+
 
 def _modbus_rtu_response_length(prefix: bytes) -> int | None:
     """Return the complete RTU response length for a three-byte prefix.
@@ -107,6 +115,9 @@ class _CollectorConnection:
         self._connected = asyncio.Event()
         self._pending: dict[int, asyncio.Future[tuple[EybondHeader, bytes]]] = {}
         self._pending_fcode: dict[int, int] = {}
+        # tid -> (first six bytes of the Modbus write request, devcode, devaddr),
+        # kept only while a forwarded 0x06/0x10 write is waiting for its reply.
+        self._pending_write_request: dict[int, tuple[bytes, int, int]] = {}
         self._pending_at_response: asyncio.Future[CollectorAtResponse] | None = None
         self._request_lock = asyncio.Lock()
         self._write_lock = asyncio.Lock()
@@ -247,6 +258,16 @@ class _CollectorConnection:
             future: asyncio.Future[tuple[EybondHeader, bytes]] = loop.create_future()
             self._pending[tid] = future
             self._pending_fcode[tid] = fcode
+            if (
+                fcode == FC_FORWARD_TO_DEVICE
+                and len(payload) >= _BARE_WRITE_REPLY_LENGTH
+                and payload[1] in _MODBUS_WRITE_FUNCTIONS
+            ):
+                self._pending_write_request[tid] = (
+                    payload[:_BARE_WRITE_REPLY_ECHO],
+                    devcode,
+                    collector_addr,
+                )
 
             try:
                 await self._async_write(frame, owner=owner)
@@ -266,6 +287,7 @@ class _CollectorConnection:
                 if self._pending.get(tid) is future:
                     self._pending.pop(tid, None)
                     self._pending_fcode.pop(tid, None)
+                    self._pending_write_request.pop(tid, None)
                 finish_request_future(future)
 
     async def async_send_auxiliary_read(
@@ -482,6 +504,60 @@ class _CollectorConnection:
             header_bytes.hex(),
         )
 
+    def _claim_bare_write_reply(self, frame: bytes) -> bool:
+        """Hand a bare Modbus write reply to the one write waiting for it.
+
+        Field-observed (2026-11-22 23:30): the inverter's acknowledgement of a
+        register write (``0110014b00017023``, function 0x10) came back outside
+        any EyeBond envelope, exactly as the collector's bare read replies do.
+        Eight bytes is the size of a header, so it was read as one, failed the
+        header check and was dropped as stray bytes, and the write then waited
+        out its timeout for an answer it had already been given.
+
+        The frame is claimed only when it is a CRC-verified reply that echoes
+        the first six bytes (slave, function, address and count or value) of
+        exactly one write still waiting, so a stale or unrelated reply is never
+        attributed to the wrong request. Returns False to leave it to the
+        normal handling.
+        """
+
+        if (
+            len(frame) != _BARE_WRITE_REPLY_LENGTH
+            or frame[1] not in _MODBUS_WRITE_FUNCTIONS
+            or not modbus_rtu_crc_is_valid(frame)
+        ):
+            return False
+        echo = frame[:_BARE_WRITE_REPLY_ECHO]
+        matches = [
+            tid
+            for tid, (request_echo, _devcode, _devaddr) in self._pending_write_request.items()
+            if request_echo == echo
+            and (future := self._pending.get(tid)) is not None
+            and not future.done()
+        ]
+        if len(matches) != 1:
+            return False
+        tid = matches[0]
+        _request_echo, devcode, devaddr = self._pending_write_request[tid]
+        header = EybondHeader(
+            tid=tid,
+            devcode=devcode,
+            wire_len=len(frame) + HEADER_SIZE - WIRE_LEN_OFFSET,
+            devaddr=devaddr,
+            fcode=self._pending_fcode[tid],
+        )
+        self._pending[tid].set_result((header, frame))
+        self._last_liveness_monotonic = monotonic()
+        logger.warning(
+            "Accepted an unwrapped Modbus RTU write reply for the pending write "
+            "remote=%s tid=%d function=%d address=%d",
+            self._collector.remote_ip,
+            tid,
+            frame[1],
+            int.from_bytes(frame[2:4], "big"),
+        )
+        return True
+
     async def _resync_after_unrecognised_header(
         self,
         reader: _PrefixedAsyncReader,
@@ -652,6 +728,8 @@ class _CollectorConnection:
                             prefix.hex(),
                         )
                         return
+                    if self._claim_bare_write_reply(header_bytes):
+                        continue
                     header = decode_header(header_bytes)
                     header_error = _runtime_eybond_header_error(header)
                     if header_error:
@@ -914,6 +992,7 @@ class _CollectorConnection:
                 future.set_exception(ConnectionError("collector_disconnected"))
         self._pending.clear()
         self._pending_fcode.clear()
+        self._pending_write_request.clear()
 
         at_future = self._pending_at_response
         self._pending_at_response = None

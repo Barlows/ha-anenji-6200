@@ -4,7 +4,7 @@ Handoff for AI assistants (Claude or any other) picking up work on this reposito
 in a new chat. **Read this whole file first**, then ask Sean what he wants. It records
 the owner, the current state of his live system, what has been tried, how releases
 and tests work here, and how to check on the running integration. Last updated
-**2026-11-17**, at release **1.0.4**. If the date is much later, re-verify the
+**2026-11-24**, at release **1.0.5**. If the date is much later, re-verify the
 "Current status" section against the live system before relying on it.
 
 ## 1. What this is
@@ -54,9 +54,11 @@ and tests work here, and how to check on the running integration. Last updated
 | 1.0.2 | 2026-10-20 | A truncated reply whose tail arrives alone as the retry's whole answer ("shape B") is reassembled (prefix plus tail, CRC-verified). |
 | 1.0.3 | 2026-10-21 | A cut-off bare 113/93-byte reply is skipped instead of closing the session. A complete reply of the wrong byte count (previous read arriving a slot late) is retried. |
 | 1.0.4 | 2026-11-03 | Third read attempt when cut-short answers are held. A leftover fragment where a frame header should be is dropped and the stream resynchronised (on a session that already delivered a valid frame; at most 2 in a row). |
+| 1.0.5 | 2026-11-24 | A bare (unenveloped) 8-byte write reply (function 0x06/0x10) is delivered to the one pending write whose first six request bytes it echoes, instead of being dropped by the resync and timing the write out. |
 
-Full notes: [CHANGELOG.md](CHANGELOG.md). `1.0.4` is installed on Sean's Home
-Assistant (HACS shows installed = available = v1.0.4).
+Full notes: [CHANGELOG.md](CHANGELOG.md). Sean had `1.0.4` installed on 2026-11-24;
+1.0.5 was released that day, and he says "Installed" once he has updated in HACS.
+Check the installed version with `ha_get_hacs_info` before assuming either.
 
 ## 4. The fault and the code that handles it
 
@@ -75,6 +77,11 @@ the collector/dongle side:
 - **Bare stray replies.** The collector sometimes pushes `01 03 6c ...` Modbus RTU
   replies outside the envelope. Some are cut off after about 20 bytes and the rest
   never comes (or comes late).
+- **Bare write acknowledgements.** The inverter's reply to a register write can also
+  arrive outside the envelope (seen 2026-11-22 23:30: `0110014b00017023`, function
+  0x10, register 331). Eight bytes is header-sized, so before 1.0.5 it was dropped as
+  junk and the write timed out although the inverter had answered (Sean's
+  `Solar: Apply Inverter Settings` script reported `request_timeout`).
 - **A daily event around 16:00 UTC** (see section 6).
 
 Where it is handled:
@@ -83,6 +90,7 @@ Where it is handled:
 |---|---|
 | Tail recovery, prefix hold and reassembly, retry policy | `custom_components/eybond_local/payload/modbus.py`: `recover_read_reply_tail`, `is_read_reply_prefix`, `reassemble_split_read_reply`, `ModbusSession.read_registers` (`_MAX_READ_ATTEMPTS = 3`), `_is_retryable_read_error`, `_note_recovered_read`. Order per attempt: normal parse, tail recovery, prefix reassembly, hold the prefix, log a WARNING, retry. First failure retries once; a second failure retries only while a cut-short prefix is held; timeouts retry once. |
 | Bare/stray reply skipping, header resync | `custom_components/eybond_local/collector/transport/connections.py`: `_skip_cut_off_stray_rtu_reply`, `_resync_after_unrecognised_header` (`_HEADER_RESYNC_LIMIT = 2`, `_HEADER_RESYNC_IDLE_TIMEOUT = 0.05`; only after at least one valid frame this session) |
+| Bare write replies | same file: `_claim_bare_write_reply` (called in `_read_loop` right after the 8 header bytes are read), `_pending_write_request` (filled in `async_send_collector` for forwarded 0x06/0x10 writes), constants `_MODBUS_WRITE_FUNCTIONS`, `_BARE_WRITE_REPLY_LENGTH`, `_BARE_WRITE_REPLY_ECHO`. Claims only a CRC-valid reply echoing the first 6 request bytes of exactly one pending write. Bare write *exception* replies (5 bytes) are not handled; none seen. |
 | Reader helpers | `collector/transport/common.py`: `take_available`, `discard_available`, `_find_trailing_eybond_frame` |
 | Retry/reconnect orchestration | `custom_components/eybond_local/runtime/hub/refresh.py` |
 
@@ -173,7 +181,11 @@ a day would show how many reads are recovered. Do that only if Sean wants it.
 - `Skipped a cut-off unwrapped Modbus RTU reply ... expected=113|93 arrived=20`
   (1.0.3 and later), a few per week. The connection stays up.
 - `Dropped unrecognised bytes where a frame header was expected and resumed ...`
-  (1.0.4), rare (once so far, 2026-11-06, 206 bytes dropped).
+  (1.0.4), rare (2026-11-06, 206 bytes dropped; 2026-11-22 23:30, 8 bytes, which was
+  a write acknowledgement, fixed in 1.0.5).
+- `Accepted an unwrapped Modbus RTU write reply for the pending write ...` (1.0.5):
+  a bare write acknowledgement was matched to its write. Expected to be rare; it
+  replaces the write timeout described in section 4.
 - `attempt=2` rejections, a few per week; with no `Runtime refresh failed` after them
   they were rescued by the third attempt.
 - `Updating state for ... took 0.8 seconds` warnings from tooling buttons.
@@ -192,9 +204,9 @@ inside the dongle or inverter, not Home Assistant or Sean's automations (those f
 5-minute marks). It does not currently lose polls. If it ever starts to, the first
 experiment is power-cycling the dongle to see whether the timer restarts.
 
-## 7. Current status (2026-11-17)
+## 7. Current status (2026-11-24)
 
-- **Installed:** 1.0.4 (since 2026-11-03 about 15:00 UTC).
+- **Installed:** 1.0.4 since 2026-11-03 about 15:00 UTC; 1.0.5 released 2026-11-24 and not yet confirmed installed.
 - **Lost polls before the fixes:** 20+ per day (20 Oct).
 - **After 1.0.3** (21 Oct to 3 Nov): four lost polls. Two reads cut short twice
   (24 Oct 22:48, 26 Oct 16:26), one `collector_not_connected` (29 Oct 15:57), one
@@ -204,6 +216,12 @@ experiment is power-cycling the dongle to see whether the timer restarts.
   on the unit: header resync fired once (6 Nov 09:15), the third attempt rescued
   reads cut short twice (7 Nov 02:47, 17 Nov 16:42), cut-off bare replies skipped
   several times, all without closing the session.
+- **18 to 24 Nov:** no lost polls in any readable window. The daily event kept
+  drifting about 16.8 s/day (16:03:57 on 19 Nov, 16:05:21 on 24 Nov); it caused a
+  collector reconnect on 20 and 21 Nov and only a timeout on 22, 23 and 24 Nov.
+- **22 Nov 23:30:** one write timed out (see section 4, bare write acknowledgements);
+  fixed in 1.0.5, not yet seen again. The integration was also unavailable for ~10 s
+  on 20 Nov 13:13 and 23 Nov 21:12 (restarts or reloads; cause not determined).
 - **Reconnects:** the counter showed four in the six days to 17 Nov: three at the
   daily ~16:02 event and one at 22:20 on 15 Nov (cause not seen in the logs).
 - **Brief unavailability:** the integration's sensors went unavailable for 10 to 15
@@ -217,8 +235,8 @@ experiment is power-cycling the dongle to see whether the timer restarts.
 
 ## 8. Upstream tracking
 
-Last checked **2026-11-17** at upstream `347352b`. Before that: `165e1cb` (12 Nov),
-`5a912c7` (7 Nov). Nothing taken so far beyond ideas of our own. Decisions, so the
+Last checked **2026-11-24** at upstream `2335bdd`. Before that: `03d3681` (18 to 19 Nov),
+`347352b` (17 Nov), `165e1cb` (12 Nov), `5a912c7` (7 Nov). Nothing taken so far beyond ideas of our own. Decisions, so the
 same commits are not re-litigated:
 
 | Upstream | Decision | Why |
@@ -233,6 +251,9 @@ same commits are not re-litigated:
 | `81a26c3`, `c02307c`, `306261b` (#89) late-fragment and desynchronised-session handling | skip | opposite strategy (close/retire the session); would undo 1.0.3/1.0.4 |
 | Socket-storm series (#78, #81 and follow-ups) | skip | for collectors that open duplicate sockets; his reconnect count is normally 0 |
 | `9649436` (#92) expire stale readings after 3 poll intervals (min 60 s) | skip | he already has `runtime_last_success_age` and his own watchdog; the daily event could flip sensors unavailable and trip his automations |
+| `7a474ec`, `03d3681` PI18 query length, 09C1 battery fields, NAT scan results, manual Q1 telemetry, learning-history export | skip | other drivers and the setup flow |
+| `5a682dc`, `5cbf18a`, `2335bdd` Anenji 4200 Protocol 1 FC16 writes and Standby-only settings docs | skip | `anenji_4200_protocol_1` profile only |
+| `bd4378d`, `339dbcb` keep the session after a short empty FC4 reply, trace invalid FC4 suffixes | skip | FC4 (input register) empty replies; his reads are FC3. Edits the same `connections.py`/transport code we patched |
 | New drivers and maps (MarsRock, Sandisolar, LVYUAN, SMX-II, short-ASCII, VPHB, BLE diagnostics, support archives) | skip | other hardware |
 
 Check procedure: shallow-clone or fetch upstream, `git log --since=<last check>`,
